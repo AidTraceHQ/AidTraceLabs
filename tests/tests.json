@@ -1,0 +1,115 @@
+[
+  {
+    "name": "Freighter signed challenge creates a secure session",
+    "sanity": true,
+    "viewport": "desktop",
+    "covers": [
+      "Freighter login",
+      "SEP-53 signature verification",
+      "five-minute challenge expiry",
+      "single-use challenge",
+      "secure HttpOnly SameSite session cookie",
+      "CSRF token"
+    ],
+    "description": "Protects the existing wallet login flow and ensures the backend only creates sessions after a valid signature.",
+    "steps": [
+      "Connect Freighter on Testnet",
+      "Approve the public address request",
+      "Sign the AidTrace challenge",
+      "Open My Activity and then sign out"
+    ],
+    "expected": "A verified wallet session is created without a transaction; signing out clears the session cookie and no seed phrase is requested."
+  },
+  {
+    "name": "On-chain verification distinguishes matching and mismatching payments",
+    "viewport": "desktop",
+    "covers": [
+      "Horizon network selection",
+      "recipient destination comparison",
+      "amount comparison",
+      "asset and issuer comparison",
+      "Verified on-chain status only on full match",
+      "Mismatch",
+      "Not found",
+      "Unverified",
+      "cached verification and pending retry"
+    ],
+    "description": "Checks that a record is only verified when the transaction is successful and destination, amount and asset match.",
+    "steps": [
+      "Create a record with a real payment hash and matching recipient wallet, amount, asset and network",
+      "Verify it and inspect its status",
+      "Change one recorded field and verify again",
+      "Submit a missing hash and an invalid hash"
+    ],
+    "expected": "Only a successful full match is labelled Verified on-chain; differing fields are listed, unknown hashes are Not found, and blank hashes remain Unverified."
+  },
+  {
+    "name": "Public transparency filters, details, pagination and CSV export",
+    "viewport": "desktop",
+    "covers": [
+      "summary totals by asset",
+      "organization, asset, network, status and date filters",
+      "sortable columns",
+      "record detail drawer",
+      "Stellar Expert link",
+      "filtered CSV export",
+      "pagination",
+      "loading skeletons and empty states"
+    ],
+    "description": "Verifies that the public ledger remains browsable without a wallet and filters/export reflect the same record set.",
+    "steps": [
+      "Open Public Transparency without connecting a wallet",
+      "Filter by asset and date, then sort by amount/date",
+      "Open a record detail and follow its explorer link",
+      "Export the filtered rows and move between pages"
+    ],
+    "expected": "The page shows truthful summaries, all filters and sort controls work, record detail shows verification evidence, CSV contains only filtered rows, and empty/loading states are accessible."
+  },
+  {
+    "name": "My Activity streams payments and matches published aid records",
+    "viewport": "mobile",
+    "covers": [
+      "Horizon payment SSE",
+      "polling fallback when stream drops",
+      "network indicator",
+      "XLM balance",
+      "type and date filters",
+      "published record match by hash",
+      "responsive layout down to 360px"
+    ],
+    "description": "Verifies live activity updates with a polling fallback and identifies payments that have a published aid record.",
+    "steps": [
+      "Connect a funded Testnet wallet",
+      "Open My Activity and inspect the stream indicator and XLM balance",
+      "Filter by type and date",
+      "Simulate stream disconnect and wait for fallback"
+    ],
+    "expected": "Activity uses the Horizon payment stream when available, falls back to polling, identifies matching published transaction hashes and remains usable on a 360px screen."
+  },
+  {
+    "name": "Server permissions, void history, admin roles and audit events",
+    "viewport": "desktop",
+    "covers": [
+      "server authorization on every protected route",
+      "organization-owned edits",
+      "organization-owned voids",
+      "voided record remains visible",
+      "beneficiary records filtered to wallet",
+      "admin role add/remove",
+      "role changes audited",
+      "record creation actor and time",
+      "CSRF defense",
+      "logout everywhere",
+      "session expiry"
+    ],
+    "description": "Exercises the role matrix at the API boundary rather than relying on hidden UI controls.",
+    "steps": [
+      "Use a donor wallet to attempt organization/admin mutations",
+      "Use an organization wallet to create, edit and void its own record and attempt editing another organization's record",
+      "Use a beneficiary wallet to open its recipient view",
+      "Use an admin wallet to add/remove a role and filter the audit log",
+      "Use logout everywhere and attempt a protected request"
+    ],
+    "expected": "Forbidden roles receive 403, organizations can only edit/void their own records, voided records remain visible with a reason, beneficiary results are wallet-scoped, admin changes and record creation are audited, CSRF and expired sessions block writes, and logout everywhere revokes active sessions."
+  }
+]
