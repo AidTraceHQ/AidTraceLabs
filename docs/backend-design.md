@@ -52,7 +52,7 @@ PostgreSQL is the only supported database. All tables and indexes below are crea
 | `rate_limits` | `key_hash TEXT`, `window_start TIMESTAMPTZ`, `request_count INTEGER`, `expires_at TIMESTAMPTZ` | Composite primary key `(key_hash,window_start)`; nonnegative count; expiry index | Atomic per-key counters without storing the raw wallet/IP-derived key. |
 | `audit_events` | `id TEXT`, `action TEXT`, `actor_wallet TEXT`, `subject_wallet TEXT`, `record_id TEXT`, `summary TEXT`, `metadata_json JSONB`, `created_at TIMESTAMPTZ` | ID primary key; nullable wallet/record FKs; indexes by time, actor/time, record/time, action/time | Records security-relevant business actions. Database-level append-only permissions are not configured. |
 
-Migration 002's runner preflight counts duplicates partitioned by `(network, LOWER(tx_hash))`, prints all matching IDs/network/hash/count and aborts before applying the migration if any exist. The SQL then normalizes blank hashes to NULL, lowercases remaining hashes, and adds `UNIQUE (network, tx_hash)`. Operators must explicitly resolve duplicates; the migration never deletes or merges records. The migration itself has not been run against a live PostgreSQL instance in this environment.
+Migration 002's runner preflight counts duplicates partitioned by `(network, LOWER(tx_hash))`, prints all matching IDs/network/hash/count and aborts before applying the migration if any exist. The SQL then normalizes blank hashes to NULL, lowercases remaining hashes, and adds `UNIQUE (network, tx_hash)`. Operators must explicitly resolve duplicates; the migration never deletes or merges records. The duplicate-preflight test seeds case-variant duplicate rows and verifies that the migration aborts before creating the unique index. Migrations 001 and 002 have been applied to the Neon `dev`, `test`, and `production` branches; see [docs/parity-report.md](./parity-report.md) for run evidence.
 
 ## 3. API routes
 
@@ -87,16 +87,18 @@ Errors use `{error:string}`. Unknown routes return `404 {error:"Route not found.
 
    ```text
    AidTrace wallet login
+   Domain: <PUBLIC_APP_ORIGIN origin>
    Address: <G...>
    Network: <testnet|mainnet>
    Nonce: <64 lowercase hexadecimal characters>
+   Issued At: <UTC ISO-8601 timestamp>
    Expires: <UTC ISO-8601 timestamp>
    Purpose: prove wallet ownership; no transaction will be sent.
    ```
 
-   The approved compatibility decision was to retain the current message format; it does not contain a domain line. Request Origin is instead checked against the configured allowlist.
+   `Domain` is the origin component of `PUBLIC_APP_ORIGIN`. `Issued At` is the issuance time, exactly five minutes before `Expires`. These fields are part of the SEP-53 signed UTF-8 message and bind the signature to this application and challenge lifetime.
 4. `POST /api/auth/verify` checks challenge ID, address, network, unused state and expiry. It verifies `SHA-256(UTF-8("Stellar Signed Message:\n" + exactMessage))` using `Keypair.fromPublicKey(address).verify(...)` from `@stellar/stellar-sdk`.
-5. In a PostgreSQL transaction, an atomic conditional update consumes the challenge, updates the user, resolves the role, inserts the session, and writes an authentication audit event. A concurrently consumed challenge returns `409`.
+5. In a PostgreSQL transaction, an atomic conditional update consumes the challenge, updates the user, resolves the role, inserts the session, and writes an authentication audit event. An already-used challenge returns `409`; an expired challenge returns `401`.
 6. The server generates random session and CSRF values; it stores only their SHA-256 hashes. The CSRF value is HMAC-derived from the session token and returned to the client. Cookie: `aidtrace_session`, `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`, seven-day max age. Every request re-reads current role and checks expiry/revocation.
 7. Logout revokes the current session; logout-everywhere revokes every active session for the wallet. Both clear the cookie; state-changing requests require Origin and CSRF checks.
 
@@ -162,7 +164,6 @@ The executable suite is `npm test` (`Vitest` + `Supertest`); test scripts are de
 3. **Organization identity:** one organization is currently one wallet. Decide whether multi-wallet organizations or wallet rotation are required.
 4. **Beneficiary consent:** pseudonymous-by-default behavior is implemented, but explicit consent capture/evidence and retention policy require product/legal review. Consider whether creator wallet should also be hidden publicly.
 5. **Account creation and path payments:** operation support is implemented; product owners should confirm whether all these operation types count as disbursements and how sponsored/muxed accounts or revocable assets should be represented.
-6. **Auth domain:** the existing SEP-53 message format has no domain line. Origin allowlisting mitigates cross-origin requests, but confirm whether compatibility remains more important than domain binding.
 7. **Roles:** one role per wallet is enforced. Define last-admin protection and role reassignment policy.
 8. **Operational readiness:** choose DB backup retention/RPO/RTO, rate-limit policy for public reads, audit retention, challenge/rate-limit cleanup, and a separate DB readiness probe.
 9. **Parity gate:** AppDeploy removal remains blocked until the parity report's unmatched items are resolved or explicitly accepted and the required PostgreSQL/browser tests can run.

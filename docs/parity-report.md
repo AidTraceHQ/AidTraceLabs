@@ -4,16 +4,16 @@
 
 Reference: read-only `origin/main` at `3fd7cc9f3ef98405640ee9fecacf9bbf41633afe`, principally `backend/index.ts`. The table compares its explicit route handlers to the self-hosted Express handlers. It does not treat unknown AppDeploy runtime behavior as equivalent.
 
-**Verdict: API paths are present, but full parity is not demonstrated. Do not remove AppDeploy yet.** Multiple intentional behavior changes are documented below, AppDeploy SDK runtime semantics cannot be confirmed from repository source, and PostgreSQL-backed and browser/Freighter journeys have not been run. Approval is required for intentional public-data and authorization behavior changes where product semantics are affected.
+**Verdict: API paths are present, but full parity is not demonstrated. Do not remove AppDeploy yet.** Database migrations and the automated DB-backed suite now pass on isolated Neon branches, and a live server check against `dev` passed. AppDeploy SDK runtime semantics cannot be confirmed from repository source, and browser/Freighter journeys have not been run.
 
 ## Route comparison
 
 | Route | Reference behavior | Self-hosted behavior | Parity |
 |---|---|---|---|
 | `GET /api/_healthcheck` | `200 {ok:true,service:"aidtrace-wallet-api"}` | Same path/body/status; explicit `no-store`. It checks process liveness only. | **Intentionally changed** (cache policy); route response same. |
-| `POST /api/auth/challenge` | Public; validates address/network; creates stored random nonce; returns challenge ID, signed message and millisecond expiry; address-keyed limit | Same JSON fields and existing SEP-53 message format; five-minute challenge; exact Origin required; PostgreSQL persistence and explicit error middleware | **Intentionally changed** (Origin, explicit persistence/errors). Hosted SDK effects beyond handler source are not confirmed. |
-| `POST /api/auth/verify` | Checks stored one-use challenge and SEP-53 signature; returns session and sets a seven-day Secure/HttpOnly/SameSite=Lax cookie | Same success envelope and cookie policy; uses Stellar SDK; atomic challenge consumption, hashed session/CSRF data, audit event; explicit 401/409/429 behavior | **Intentionally changed** (SDK verifier, atomic DB semantics/audit, explicit errors). |
-| `GET /api/me` | Optional session; `{session:null}` or session address/network/role/CSRF/ISO expiry; invalid session clears cookie | Same path and primary JSON shape; role is re-read from DB; `no-store` | **Same** at the application response level. Cookie transport through hosted runtime is unconfirmed. |
+| `POST /api/auth/challenge` | Public; validates address/network; creates stored random nonce; returns challenge ID, signed message and millisecond expiry; address-keyed limit | Same JSON fields; five-minute challenge; message adds `Domain` from `PUBLIC_APP_ORIGIN` and `Issued At`; exact Origin required; PostgreSQL persistence | **Intentionally changed** (domain/time binding, Origin, explicit persistence/errors). Hosted SDK effects beyond handler source are not confirmed. |
+| `POST /api/auth/verify` | Used/expired/not-found challenges return 401 at the initial check; an atomic race that consumes the challenge returns 409. Sets a seven-day Secure/HttpOnly/SameSite=Lax cookie on success | Expired/not-found return 401; already-used challenges return 409, including replay after prior success; atomic challenge consumption, hashed session/CSRF data and audit event | **Intentionally changed** (used-challenge replay now returns 409 to match the already-existing race response; messages are more specific). |
+| `GET /api/me` | Optional session; `{session:null}` or session address/network/role/CSRF/ISO expiry; invalid session clears cookie as `Max-Age=0` | Same path and primary JSON shape; role is re-read from DB; `no-store`; clear cookie uses both `Max-Age=0` and epoch `Expires` | **Same** response behavior; cookie header has an additional browser-compatible expiry attribute. Cookie transport through hosted runtime is unconfirmed. |
 | `POST /api/auth/logout` | Optional session; checks CSRF only when session exists; deletes session; returns `{ok:true}` and clears cookie | Same response; Origin always required; marks active session revoked and audits it | **Intentionally changed** (Origin, revocation/history, audit). |
 | `POST /api/auth/logout-everywhere` | Any session; reads at most 100 rows, deletes wallet sessions; returns `{ok:true}` | Requires Origin + CSRF; revokes all active wallet sessions in SQL; returns same envelope | **Intentionally changed** (no 100-row limit; revocation instead of delete; stricter Origin/CSRF). |
 | `GET /api/transparency` | Public; returns `{records}` from a maximum of 100 stored rows, including beneficiary identifiers; sorted in memory | Same `records` key, with SQL filters, cursor page, `nextCursor`/`hasMore`, facets and pagination headers; pseudonymizes beneficiary by default and removes recipient wallet, tx hash, note and selected verification details unless consent is true | **Intentionally changed** (privacy projection, full-set pagination/filtering, added response keys/headers). |
@@ -33,7 +33,8 @@ The new API implements all 16 method/path pairs found in the reference backend. 
 
 | Concern | Reference evidence | Self-hosted behavior | Parity |
 |---|---|---|---|
-| Challenge signing | Existing `AidTrace wallet login` SEP-53 message binds address, network, nonce and expiry; there is no domain line | Message format retained as approved; Stellar SDK verifies the SEP-53 digest; nonce is one-use and five-minute | **Same** message format; **intentionally changed** verification library and DB atomicity. |
+| Challenge signing | Existing `AidTrace wallet login` SEP-53 message binds address, network, nonce and expiry; there is no domain or issued-at line | SEP-53 verification signs the exact UTF-8 message including `Domain` from `PUBLIC_APP_ORIGIN` and `Issued At`; expiry is five minutes after issuance | **Intentionally changed** message contents; preserves the SEP-53 digest and verification scheme. |
+| Session cookie clearing | Reference emits `COOKIE=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0` | Express emits the same security/path/max-age attributes plus `Expires=Thu, 01 Jan 1970 00:00:00 GMT` | Browser-equivalent header change; extra expiry attribute is intentional. |
 | Authorization | Role defaults to donor; protected route checks occur in the handler | Server-side role and owner checks remain; beneficiary access is wallet scoped; any authenticated role may trigger verification | **Same** at route-level policy for observed routes; persistence semantics differ. |
 | CSRF / Origin | Custom `originAllowed` permits no-Origin requests; route coverage is uneven; no explicit CORS middleware in the handler | Exact configured allowlist, credentialed CORS, explicit preflight; protected writes and auth POSTs require Origin; writes require session-bound CSRF | **Intentionally changed** (stricter policy). |
 | Rate limits | Challenge 8/15m per address, signature verify 12/min per address, record verify 30/min per wallet | Keeps those limits and adds 60 writes/min per wallet; rate keys are hashed and increments atomic in Postgres | **Intentionally changed**. General public read/per-IP limits are still absent. |
@@ -43,35 +44,60 @@ The new API implements all 16 method/path pairs found in the reference backend. 
 | Error mapping | Uses imported AppDeploy `error()` and `json()` helpers; helper serialization is external | Express returns `{error:string}`, explicit status codes, malformed JSON 400, oversized body 413, unknown route 404 | **Not matched / reference UNCONFIRMED** for exact hosted error body/header behavior. |
 | CORS, cookies, transport | Handler manually reads/sets cookie headers and has custom Origin checks; SDK hosting behavior is outside the repo | Cookie and credentialed CORS are explicit in Express; browser behavior still needs E2E proof | **Not matched / runtime UNCONFIRMED** until deployed browser tests run. |
 
+## Intentional differences for user decision
+
+These are implementation choices rather than proven equivalence. Items marked
+**Previously approved** reflect decisions already given; the remaining choices
+are surfaced for review before the AppDeploy-removal gate.
+
+| Decision | Current behavior | Reference evidence and decision state |
+|---|---|---|
+| SEP-53 message domain and issuance time | Signs `Domain: <PUBLIC_APP_ORIGIN origin>` and `Issued At: <UTC ISO time>` in addition to the prior fields. | `origin/main:backend/index.ts` message has no domain or issued-at line. **Previously requested/approved** as build-completion work. |
+| Used challenge status | A previously used challenge returns 409; a race that loses the atomic consume also returns 409. Expired and missing challenges return 401. | `origin/main:backend/index.ts` returns 401 for a used challenge found at initial lookup, but 409 when the conditional consume loses a race. **Decision requested:** keep consistent 409 for all replays, or restore 401 for an already-used challenge. |
+| Cleared-cookie header | Adds epoch `Expires` alongside `Max-Age=0`; cookie security attributes and path are preserved. | Reference `clearCookie()` emits `Max-Age=0` without `Expires`. **Decision requested:** accept the compatible extra attribute or reproduce the reference header exactly. |
+| Neon local environment loading | `server/db.ts` loads `.env.local` and `.env` via `server/environment.ts`; `.env.local` remains ignored. | AppDeploy has no local environment-file behavior to compare. **Previously requested/approved** for Neon local development. |
+| Data and database model | PostgreSQL, unique `(network,tx_hash)`, source-wallet check against the organization wallet, and pseudonymous public beneficiary data by default. | Reference stores through AppDeploy SDK and publishes beneficiary identifiers; repository does not establish platform DB internals. **Previously approved** design decisions. |
+| List APIs | Applies filtering in SQL and cursor pagination beyond the reference's 100-record bound; adds cursor metadata and facets. | Reference handlers read at most 100 records and return no cursor metadata. **Decision requested:** accept the additive response fields and complete result traversal. |
+| Origin, CSRF, caching and rate limits | Enforces exact allowlisted Origin on auth and writes, session-bound CSRF on writes, no-store API responses, atomic hashed rate limits, and 60 writes/minute per wallet. | Reference permits some missing-Origin requests, has uneven CSRF coverage, and does not specify these global cache/limit policies. **Decision requested:** accept the stricter security policy and added write limit. |
+| Verification | Requires the organization source wallet; a single operation must match all fields; follows operation pages within a bounded budget and stores verification history. | Reference does not bind source to the organization wallet and does not persist separate verification history. **Source-wallet check previously approved;** confirm the remaining multi-operation and history behavior. |
+| Session, audit and role safeguards | Stores hashed session/CSRF tokens, revokes sessions rather than deleting them, audits actions, and blocks self-demotion/removal of the active admin role. | Reference stores its session record through AppDeploy, deletes sessions on logout, and lacks those explicit audit/self-role protections. **Decision requested:** accept the added retained history and self-role guard. |
+| Error and cache headers | Uses explicit Express JSON errors/statuses and no-store handlers; missing, expired and reused challenges have distinct messages. | AppDeploy `error()`/`json()` serialization and hosted headers are outside repository code. **Decision requested:** accept the explicit local contract; exact hosted helper parity remains unconfirmed. |
+
 ## Test evidence and remaining work
 
-Executed during this implementation session:
+Executed against Neon during this implementation session:
 
+- `npm run db:migrate` on Neon `dev` — applied `001_initial_schema` and `002_unique_network_tx_hash`.
+- Migration ledger read-only check — `001` and `002` are applied on `dev`, `test`, and `production`.
+- Neon environment mapping — `DATABASE_URL` targets `dev`; `TEST_DATABASE_URL` targets `test`. The test setup also compares the test pooled and direct endpoints against a host-only production marker; an attempted production URL was refused before any DB connection.
 - `npm run typecheck` — passed.
-- `npm test` — 6 passed, 4 skipped. The skipped tests require `TEST_DATABASE_URL`; no local PostgreSQL service was available.
 - `npm run build` — passed (Vite frontend and TypeScript backend).
-- `npm audit` — reported 0 vulnerabilities.
-- `git diff --check` — passed for the cursor implementation before documentation updates; will be rerun for this report.
-- Mocked Horizon tests covered matching and mismatching source/payment fields, strict-send destination fields, not-found, operation pagination and pending on the page limit.
-- Supertest covered health, missing/untrusted Origin, protected-route 401, malformed JSON, CORS preflight and session/security behavior where DB is not required.
-- A Stellar keypair fixture confirmed valid SEP-53 signature acceptance and altered/invalid signature rejection.
+- `npm test` — 1 file passed; 11 tests passed, including the DB-backed tests against isolated `test`.
+- Duplicate migration preflight test — inserted two case-variant duplicate hashes in a temporary fixture, confirmed both duplicate rows are reported, and confirmed the unique constraint is not created.
+- Live local integration — Vite frontend returned HTTP 200; Express `GET /api/_healthcheck` returned HTTP 200 with `{"ok":true,"service":"aidtrace-wallet-api"}`; DB-backed `GET /api/transparency?limit=1` returned HTTP 200 with `records=0`, `hasMore=false`, and the expected pagination/facet response keys. The Neon `dev` database was empty for records.
+- Admin seed — **not run**: no `ADMIN_WALLET` is configured and the Neon `dev` branch currently has zero admin role rows. Do not invent an admin wallet; provide one before running `npm run db:seed-admin`.
+- Frontend and server started together. The server used a throwaway process-local `SESSION_SECRET`; no secret was written or printed.
+- Domain and Issued At assertions are present in the auth integration tests; the signed message's expiry is asserted to be exactly five minutes after issuance.
+- The manual browser/Freighter procedure is recorded in [docs/manual-test-checklist.md](./manual-test-checklist.md), but has not been executed.
+- Mocked Horizon tests cover matching/mismatching source and payment fields, strict-send destination fields, not-found, operation pagination and pending at the page limit. Supertest covers Origin, authorization, malformed JSON, CORS, sessions, record uniqueness, privacy, pagination and role flows.
 
 Not executed / parity not established:
 
-- PostgreSQL migrations, migration duplicate-preflight against actual duplicate rows, and four DB-backed HTTP integration tests.
-- Browser/Freighter sign-in, actual Secure cookie persistence, session restore/logout through a browser, SSE activity, responsive UI, filters/sorting, CSV export and empty/loading/error views.
+- Seed-admin execution; it requires the user's `ADMIN_WALLET`.
+- Browser/Freighter sign-in, actual Secure cookie persistence, session restore/logout through a browser, responsive UI, filters/sorting, CSV export and empty/loading/error views.
 - A deployed AppDeploy-vs-Express request comparison or verification against the AppDeploy hosted runtime.
 - AppDeploy database export/import, production backup/restore, or multi-instance deployment.
 
-`tests/tests.json` remains a manual/UI scenario catalog. `tests/backend.test.ts` covers signature verification, origin/authorization, CORS/JSON parsing, Horizon payment comparison/pagination, auth/session behavior, DB-backed record uniqueness and source verification, public filtering/redaction/pagination, ownership, voids, roles and logout-everywhere. The four DB-dependent test cases are skipped when the configured test DB is absent.
+`tests/tests.json` remains a manual/UI scenario catalog. `tests/backend.test.ts` covers signature verification, origin/authorization, CORS/JSON parsing, Horizon payment comparison/pagination, auth/session behavior, DB-backed record uniqueness and source verification, public filtering/redaction/pagination, ownership, voids, roles and logout-everywhere. DB-dependent cases are skipped when the configured test DB is absent.
 
 ## Removal gate
 
 Do not delete `backend/index.ts`, AppDeploy imports/declarations, package references, or README mentions until:
 
-1. The four skipped PostgreSQL integration tests and both migrations pass against a disposable configured PostgreSQL database, including a duplicate-preflight fixture.
-2. Browser-level Freighter/session-cookie and UI parity checks have been run or their differences explicitly approved.
-3. Every intentional behavior change in this report—especially default public redaction, source-wallet verification, strict CSRF/Origin, and new pagination envelopes—is accepted.
-4. The user approves proceeding with AppDeploy removal.
+1. Migrations 001 and 002 and all 11 tests pass against their intended Neon branches, including the duplicate-preflight fixture. **Met.**
+2. The seed-admin script has been run against `dev` using the user's chosen admin wallet. **Not met.**
+3. Browser-level Freighter/session-cookie and UI parity checks have been run or their differences explicitly approved. **Not met.**
+4. Every intentional behavior change in this report has been reviewed and accepted. **Pending user decisions above.**
+5. The user approves proceeding with AppDeploy removal.
 
 At this checkpoint, the gate is **not met**. AppDeploy references remain intentionally. No push has been made.
