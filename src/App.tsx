@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api';
 import { getNetwork, isConnected, requestAccess, signMessage } from '@stellar/freighter-api';
+import { networkPassphrase, signatureToBase64, throwFreighterError, waitForFreighter } from './freighter';
 import { Activity, ArrowDownToLine, ArrowUpRight, BadgeCheck, CheckCircle2, CircleAlert, Copy, ExternalLink, FileClock, HeartHandshake, LogOut, Plus, RefreshCw, Search, ShieldCheck, Wallet, X, Sun, Moon } from 'lucide-react';
 import './fullstack.css';
 
@@ -11,7 +12,7 @@ type Session = { address: string; network: Network; role: Role; expiresAt: strin
 type AidRecord = { id: string; recipient: string; recipientAddress: string; purpose: string; amount: string; asset: string; assetIssuer?: string; network: Network; txHash: string; date: string; note: string; status: Verification; organization: string; organizationName?: string; createdAt: string; createdBy: string; recipientConsent?: boolean; verification?: { status: Verification; checkedAt: string; differences: string[]; ledger?: number; createdAt?: string; destination?: string; amount?: string; asset?: string; assetIssuer?: string; link?: string; reason?: string }; voidReason?: string; voidedAt?: string };
 type ActivityItem = { id: string; hash: string; date: string; type: string; amount: string; asset: string; counterparty: string; status: string; network: Network; publishedRecord?: AidRecord };
 type AuditItem = { id: string; action: string; summary: string; address: string; recordId?: string; createdAt: string };
-const defaultNetwork: Network = import.meta.env.VITE_STELLAR_NETWORK === 'mainnet' ? 'mainnet' : 'testnet';
+const defaultNetwork: Network = 'testnet';
 const horizon: Record<Network, string> = { testnet: 'https://horizon-testnet.stellar.org', mainnet: 'https://horizon.stellar.org' };
 const explorer = (network: Network, hash: string) => (network === 'mainnet' ? 'https://stellar.expert/explorer/public/tx/' : 'https://stellar.expert/explorer/testnet/tx/') + encodeURIComponent(hash);
 const short = (value: string, left = 7, right = 5) => value && value.length > left + right + 1 ? value.slice(0, left) + '…' + value.slice(-right) : value || '—';
@@ -162,21 +163,23 @@ export default function App() {
   async function connectWallet() {
     setBusy(true); setError('');
     try {
-      const installed=await isConnected();
-      if(!installed.isConnected) throw new Error('Freighter is not installed or is disabled. Install the official Freighter wallet extension and try again.');
+      await waitForFreighter(isConnected);
       const access=await requestAccess();
-      if(access.error) throw new Error(/reject|cancel|declin/i.test(access.error.message||'')?'You rejected the wallet request. No transaction was sent.':access.error.message||'Wallet access was denied.');
+      throwFreighterError(access);
       const address=access.address;
       if(!address || !isAddress(address)) throw new Error('Freighter did not return a valid Stellar public address.');
       const walletNetwork=await getNetwork();
-      if(walletNetwork.error) throw new Error(walletNetwork.error.message||'Could not determine Freighter network.');
-      const walletNet=String(walletNetwork.network||'').toLowerCase().includes('test')?'testnet':'mainnet';
+      throwFreighterError(walletNetwork);
+      const currentNetwork=String(walletNetwork.network||'').toLowerCase();
+      const walletNet=currentNetwork.includes('test')?'testnet':currentNetwork==='public'||currentNetwork==='mainnet'?'mainnet':null;
+      if(!walletNet) throw new Error('Freighter returned an unsupported network: '+(walletNetwork.network||'unknown'));
       if(walletNet!==network) throw new Error('Wrong network: AidTrace is on '+network+' but Freighter is on '+walletNet+'. Switch one network and reconnect.');
       const challenge=await api.post<{message:string;challengeId:string}>('/api/auth/challenge',{address,network});
-      const signed=await signMessage(challenge.data.message,{address,networkPassphrase:walletNetwork.networkPassphrase});
-      if(signed.error) throw new Error(/reject|cancel|declin/i.test(signed.error.message||'')?'You rejected the signing request. No transaction was sent.':signed.error.message||'Message signing failed.');
-      if(!signed.signedMessage || signed.signerAddress!==address) throw new Error('The challenge signature was missing or signed by a different wallet.');
-      const verified=await api.post<{session:Session}>('/api/auth/verify',{challengeId:challenge.data.challengeId,address,network,signature:signed.signedMessage});
+      const signed=await signMessage(challenge.data.message,{address,networkPassphrase:networkPassphrase(network)});
+      throwFreighterError(signed);
+      if(signed.signerAddress!==address) throw new Error('The challenge was signed by a different wallet.');
+      const signature=signatureToBase64(signed.signedMessage);
+      const verified=await api.post<{session:Session}>('/api/auth/verify',{challengeId:challenge.data.challengeId,address,network,signature});
       setSession(verified.data.session); setNetwork(network); notify('Wallet ownership verified.'); await loadTransparency();
     } catch(e) { const msg=messageOf(e); setError(/expired or already used/i.test(msg)?'Challenge expired. Reconnect to request a fresh five-minute challenge.':msg); }
     finally { setBusy(false); }
