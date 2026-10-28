@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api } from '@appdeploy/client';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { api } from './api';
 import { getNetwork, isConnected, requestAccess, signMessage } from '@stellar/freighter-api';
 import { Activity, ArrowDownToLine, ArrowUpRight, BadgeCheck, CheckCircle2, CircleAlert, Copy, ExternalLink, FileClock, HeartHandshake, LogOut, Plus, RefreshCw, Search, ShieldCheck, Wallet, X, Sun, Moon } from 'lucide-react';
 import './fullstack.css';
@@ -8,7 +8,7 @@ type Network = 'testnet' | 'mainnet';
 type Role = 'donor' | 'organization' | 'beneficiary' | 'admin';
 type Verification = 'verified' | 'mismatch' | 'not-found' | 'unverified' | 'pending' | 'voided';
 type Session = { address: string; network: Network; role: Role; expiresAt: string; csrfToken: string };
-type AidRecord = { id: string; recipient: string; recipientAddress: string; purpose: string; amount: string; asset: string; assetIssuer?: string; network: Network; txHash: string; date: string; note: string; status: Verification; organization: string; organizationName?: string; createdAt: string; createdBy: string; verification?: { status: Verification; checkedAt: string; differences: string[]; ledger?: number; createdAt?: string; destination?: string; amount?: string; asset?: string; link?: string; reason?: string }; voidReason?: string; voidedAt?: string };
+type AidRecord = { id: string; recipient: string; recipientAddress: string; purpose: string; amount: string; asset: string; assetIssuer?: string; network: Network; txHash: string; date: string; note: string; status: Verification; organization: string; organizationName?: string; createdAt: string; createdBy: string; recipientConsent?: boolean; verification?: { status: Verification; checkedAt: string; differences: string[]; ledger?: number; createdAt?: string; destination?: string; amount?: string; asset?: string; assetIssuer?: string; link?: string; reason?: string }; voidReason?: string; voidedAt?: string };
 type ActivityItem = { id: string; hash: string; date: string; type: string; amount: string; asset: string; counterparty: string; status: string; network: Network; publishedRecord?: AidRecord };
 type AuditItem = { id: string; action: string; summary: string; address: string; recordId?: string; createdAt: string };
 const defaultNetwork: Network = import.meta.env.VITE_STELLAR_NETWORK === 'mainnet' ? 'mainnet' : 'testnet';
@@ -25,9 +25,12 @@ export default function App() {
   const [network, setNetwork] = useState<Network>(defaultNetwork);
   const [page, setPage] = useState<'transparency'|'activity'|'beneficiary'|'admin'>('transparency');
   const [records, setRecords] = useState<AidRecord[]>([]);
+  const [organizationOptions, setOrganizationOptions] = useState<string[]>([]);
+  const [assetOptions, setAssetOptions] = useState<string[]>([]);
   const [beneficiaryRecords, setBeneficiaryRecords] = useState<AidRecord[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [audit, setAudit] = useState<AuditItem[]>([]);
+  const [auditActionOptions, setAuditActionOptions] = useState<string[]>([]);
   const [roles, setRoles] = useState<{address:string;role:Role;updatedAt:string;updatedBy:string}[]>([]);
   const [balance, setBalance] = useState('0');
   const [loading, setLoading] = useState(true);
@@ -52,36 +55,65 @@ export default function App() {
   const [pageNumber, setPageNumber] = useState(1);
   const [selected, setSelected] = useState<AidRecord|null>(null);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({recipient:'',recipientAddress:'',purpose:'',amount:'',asset:'USDC',assetIssuer:'',network:defaultNetwork as Network,txHash:'',date:new Date().toISOString().slice(0,10),note:''});
+  const [form, setForm] = useState({recipient:'',recipientAddress:'',purpose:'',amount:'',asset:'USDC',assetIssuer:'',network:defaultNetwork as Network,txHash:'',date:new Date().toISOString().slice(0,10),note:'',recipientConsent:false});
   const [roleAddress, setRoleAddress] = useState('');
   const [roleValue, setRoleValue] = useState<Role>('organization');
   const [auditAction, setAuditAction] = useState('all');
   const [auditSearch, setAuditSearch] = useState('');
   const [voidReason, setVoidReason] = useState('');
   const pageSize = 10;
+  const transparencyRequestId = useRef(0);
 
   const notify = useCallback((text: string) => { setToast(text); window.setTimeout(() => setToast(''), 3600); }, []);
   const loadTransparency = useCallback(async () => {
-    try { const result = await api.get<{records?:AidRecord[]}>('/api/transparency'); setRecords(result.data.records || []); }
-    catch(e) { setError(messageOf(e)); }
-    finally { setLoading(false); }
-  }, []);
+    const requestId = ++transparencyRequestId.current;
+    const params = new URLSearchParams();
+    if(search.trim()) params.set('q',search.trim());
+    if(orgFilter!=='all') params.set('organization',orgFilter);
+    if(assetFilter!=='all') params.set('asset',assetFilter);
+    if(networkFilter!=='all') params.set('network',networkFilter);
+    if(statusFilter!=='all') params.set('status',statusFilter);
+    if(fromDate) params.set('from',fromDate);
+    if(toDate) params.set('to',toDate);
+    const query=params.toString();
+    setLoading(true);
+    try {
+      const result = await api.getAllPages<AidRecord>('/api/transparency'+(query?'?'+query:''),'records');
+      if(requestId===transparencyRequestId.current) {
+        setRecords(result.data.records||[]);
+        setOrganizationOptions(result.data.facets?.organizations||[]);
+        setAssetOptions(result.data.facets?.assets||[]);
+      }
+    } catch(e) {
+      if(requestId===transparencyRequestId.current) setError(messageOf(e));
+    } finally {
+      if(requestId===transparencyRequestId.current) setLoading(false);
+    }
+  }, [search,orgFilter,assetFilter,networkFilter,statusFilter,fromDate,toDate]);
   const loadBeneficiaryRecords = useCallback(async () => {
-    try { const result = await api.get<{records?:AidRecord[]}>('/api/beneficiary'); setBeneficiaryRecords(result.data.records || []); }
+    try { const result = await api.getAllPages<AidRecord>('/api/beneficiary','records'); setBeneficiaryRecords(result.data.records || []); }
     catch(e) { setError(messageOf(e)); }
   }, []);
   const loadAudit = useCallback(async () => {
     if (!session || session.role !== 'admin') return;
-    try { const r = await api.get<{entries?:AuditItem[]}>('/api/audit'); setAudit(r.data.entries || []); } catch(e) { setError(messageOf(e)); }
-  }, [session]);
+    const params=new URLSearchParams();
+    if(auditAction!=='all') params.set('action',auditAction);
+    if(auditSearch.trim()) params.set('q',auditSearch.trim());
+    const query=params.toString();
+    try { const r = await api.getAllPages<AuditItem>('/api/audit'+(query?'?'+query:''),'entries'); setAudit(r.data.entries || []); setAuditActionOptions(r.data.facets?.actions||[]); } catch(e) { setError(messageOf(e)); }
+  }, [session,auditAction,auditSearch]);
   const restoreSession = useCallback(async () => {
     try { const r = await api.get<{session:Session|null}>('/api/me'); const restored = r.data.session; setSession(restored); if (restored) setNetwork(restored.network); }
     catch(e) { setSession(null); setError(messageOf(e)); }
   }, []);
-  useEffect(() => { void restoreSession(); void loadTransparency(); }, [restoreSession, loadTransparency]);
+  useEffect(() => { void restoreSession(); }, [restoreSession]);
+  useEffect(() => {
+    const timer=window.setTimeout(()=>void loadTransparency(),200);
+    return ()=>window.clearTimeout(timer);
+  }, [loadTransparency]);
   useEffect(() => { if (session?.role === 'admin') { void loadAudit(); void loadRoles(); } }, [session, loadAudit]);
   useEffect(() => { if (page === 'beneficiary' && session) void loadBeneficiaryRecords(); }, [page, session, loadBeneficiaryRecords]);
-  async function loadRoles() { try { const r = await api.get<{roles?:{address:string;role:Role;updatedAt:string;updatedBy:string}[]}>('/api/admin/roles'); setRoles(r.data.roles || []); } catch(e) { setError(messageOf(e)); } }
+  async function loadRoles() { try { const r = await api.getAllPages<{address:string;role:Role;updatedAt:string;updatedBy:string}>('/api/admin/roles','roles'); setRoles(r.data.roles || []); } catch(e) { setError(messageOf(e)); } }
 
   const loadActivity = useCallback(async (address: string, selectedNetwork: Network) => {
     setActivityLoading(true);
@@ -150,7 +182,7 @@ export default function App() {
     finally { setBusy(false); }
   }
   async function disconnect(everywhere=false) {
-    try { await api.post(everywhere?'/api/auth/logout-everywhere':'/api/auth/logout',{csrfToken:session?.csrfToken}); setSession(null); setActivity([]); setPage('transparency'); notify(everywhere?'All sessions for this wallet were signed out.':'Wallet disconnected.'); }
+    try { await api.post(everywhere?'/api/auth/logout-everywhere':'/api/auth/logout',{csrfToken:session?.csrfToken}); setSession(null); setActivity([]); setSelected(null); setPage('transparency'); await loadTransparency(); notify(everywhere?'All sessions for this wallet were signed out.':'Wallet disconnected.'); }
     catch(e) { setError(messageOf(e)); }
   }
   async function copyAddress() { if(!session)return; try {await navigator.clipboard.writeText(session.address);notify('Public address copied.');} catch {setError('Clipboard is unavailable. Select the public address to copy it.');} }
@@ -163,7 +195,7 @@ export default function App() {
     setBusy(true);setError('');
     try {
       await api.post('/api/records',{...form,csrfToken:session.csrfToken,recipient:form.recipient.trim(),recipientAddress:form.recipientAddress.trim(),purpose:form.purpose.trim(),amount:String(form.amount),txHash:form.txHash.trim(),note:form.note.trim()});
-      setShowForm(false);setForm({...form,recipient:'',recipientAddress:'',purpose:'',amount:'',txHash:'',note:''});await loadTransparency();notify('Disbursement saved and audit-logged.');
+      setShowForm(false);setForm({...form,recipient:'',recipientAddress:'',purpose:'',amount:'',txHash:'',note:'',recipientConsent:false});await loadTransparency();notify('Disbursement saved and audit-logged.');
     } catch(e){setError(messageOf(e));} finally{setBusy(false);}
   }
   async function verifyRecord(record:AidRecord) {
@@ -178,7 +210,7 @@ export default function App() {
   }
   async function editRecord(event:React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if(!selected||!session)return;
-    try {const r=await api.put<{record:AidRecord}>('/api/records/'+encodeURIComponent(selected.id),{csrfToken:session.csrfToken,recipient:selected.recipient,recipientAddress:selected.recipientAddress,purpose:selected.purpose,amount:selected.amount,asset:selected.asset,assetIssuer:selected.assetIssuer||'',network:selected.network,txHash:selected.txHash,date:selected.date,note:selected.note});setSelected(r.data.record);await loadTransparency();notify('Record updated and audit-logged.');}
+    try {const r=await api.put<{record:AidRecord}>('/api/records/'+encodeURIComponent(selected.id),{csrfToken:session.csrfToken,recipient:selected.recipient,recipientAddress:selected.recipientAddress,purpose:selected.purpose,amount:selected.amount,asset:selected.asset,assetIssuer:selected.assetIssuer||'',network:selected.network,txHash:selected.txHash,date:selected.date,note:selected.note,recipientConsent:selected.recipientConsent===true});setSelected(r.data.record);await loadTransparency();notify('Record updated and audit-logged.');}
     catch(e){setError(messageOf(e));}
   }
   async function saveRole() {
@@ -193,15 +225,13 @@ export default function App() {
   }
 
   const filteredAid=useMemo(()=>{
-    const rows=records.filter(r=>[r.recipient,r.recipientAddress,r.purpose,r.txHash,r.organization,r.organizationName||'',r.asset].join(' ').toLowerCase().includes(search.toLowerCase())
+    const rows=records.filter(r=>[r.id,r.purpose,r.organization,r.organizationName||''].join(' ').toLowerCase().includes(search.trim().toLowerCase())
       &&(orgFilter==='all'||r.organization===orgFilter)&&(assetFilter==='all'||r.asset===assetFilter)&&(networkFilter==='all'||r.network===networkFilter)&&(statusFilter==='all'||r.status===statusFilter)
       &&(!fromDate||r.date>=fromDate)&&(!toDate||r.date<=toDate));
     return rows.sort((a,b)=>{let av='',bv='';if(sortBy==='amount'){av=a.amount;bv=b.amount;}else if(sortBy==='organization'){av=a.organizationName||a.organization;bv=b.organizationName||b.organization;}else{av=a[sortBy as 'date'|'recipient'|'purpose']||'';bv=b[sortBy as 'date'|'recipient'|'purpose']||'';}const cmp=sortBy==='amount'?Number(av)-Number(bv):String(av).localeCompare(String(bv));return sortDir==='asc'?cmp:-cmp;});
   },[records,search,orgFilter,assetFilter,networkFilter,statusFilter,fromDate,toDate,sortBy,sortDir]);
   const filteredActivity=useMemo(()=>activity.filter(a=>[a.hash,a.type,a.asset,a.counterparty].join(' ').toLowerCase().includes(search.toLowerCase())&&(activityType==='all'||a.type===activityType)&&(!activityFrom||a.date.slice(0,10)>=activityFrom)&&(!activityTo||a.date.slice(0,10)<=activityTo)),[activity,search,activityType,activityFrom,activityTo]);
   const filteredAudit=useMemo(()=>audit.filter(a=>(auditAction==='all'||a.action===auditAction)&&[a.summary,a.address,a.recordId||''].join(' ').toLowerCase().includes(auditSearch.toLowerCase())),[audit,auditAction,auditSearch]);
-  const organizations=useMemo(()=>Array.from(new Set(records.map(r=>r.organization).filter(Boolean))),[records]);
-  const assets=useMemo(()=>Array.from(new Set(records.map(r=>r.asset))),[records]);
   const verified=records.filter(r=>r.status==='verified'&&!r.voidedAt);
   const pageCount=Math.max(1,Math.ceil(filteredAid.length/pageSize));
   const visibleAid=filteredAid.slice((pageNumber-1)*pageSize,pageNumber*pageSize);
@@ -209,7 +239,7 @@ export default function App() {
   const canManageRecords=session?.role==='organization'||session?.role==='admin';
   const canVoidSelected=!!selected&&!!session&&(session.role==='admin'||(session.role==='organization'&&selected.organization===session.address));
   const selectedDifferences=selected?.verification?.differences||[];
-  useEffect(()=>{setPageNumber(1);},[orgFilter,assetFilter,networkFilter,statusFilter,fromDate,toDate]);
+  useEffect(()=>{setPageNumber(1);},[search,orgFilter,assetFilter,networkFilter,statusFilter,fromDate,toDate]);
 
   function sortRecords(field:string) {
     if(sortBy===field)setSortDir(current=>current==='asc'?'desc':'asc');
@@ -279,15 +309,15 @@ export default function App() {
             </div>
           </div>
           <div className="summary-grid">
-            <article><span>Published records</span><b>{records.length}</b><small>Newest 100 records available from the API</small></article>
+            <article><span>Published records</span><b>{records.length}</b><small>Records matching the active filters</small></article>
             <article><span>Verified on-chain</span><b>{verified.length}</b><small>Successful transaction and matching payment fields</small></article>
-            <article><span>Organizations</span><b>{organizations.length}</b><small>Wallets that published records</small></article>
+            <article><span>Organizations</span><b>{organizationOptions.length}</b><small>Wallets that published records</small></article>
             <article><span>Disbursed by asset</span><b>{Object.entries(totalsByAsset).map(([asset,total])=>`${total.toLocaleString(undefined,{maximumFractionDigits:7})} ${asset}`).join(' · ')||'—'}</b><small>Totals reflect published records, not independent impact verification</small></article>
           </div>
           <div className="toolbar filters">
-            <label className="search"><Search size={15}/><input aria-label="Search records" placeholder="Search recipient, wallet, purpose or transaction" value={search} onChange={event=>{setSearch(event.target.value);setPageNumber(1);}}/></label>
-            <select aria-label="Filter organization" value={orgFilter} onChange={event=>setOrgFilter(event.target.value)}><option value="all">All organizations</option>{organizations.map(org=><option key={org} value={org}>{short(org)}</option>)}</select>
-            <select aria-label="Filter asset" value={assetFilter} onChange={event=>setAssetFilter(event.target.value)}><option value="all">All assets</option>{assets.map(asset=><option key={asset}>{asset}</option>)}</select>
+            <label className="search"><Search size={15}/><input aria-label="Search records" placeholder="Search purpose, organization or record" value={search} onChange={event=>{setSearch(event.target.value);setPageNumber(1);}}/></label>
+            <select aria-label="Filter organization" value={orgFilter} onChange={event=>setOrgFilter(event.target.value)}><option value="all">All organizations</option>{organizationOptions.map(org=><option key={org} value={org}>{short(org)}</option>)}</select>
+            <select aria-label="Filter asset" value={assetFilter} onChange={event=>setAssetFilter(event.target.value)}><option value="all">All assets</option>{assetOptions.map(asset=><option key={asset}>{asset}</option>)}</select>
             <select aria-label="Filter network" value={networkFilter} onChange={event=>setNetworkFilter(event.target.value)}><option value="all">All networks</option><option value="testnet">Testnet</option><option value="mainnet">Mainnet</option></select>
             <select aria-label="Filter status" value={statusFilter} onChange={event=>setStatusFilter(event.target.value)}><option value="all">All statuses</option>{(['verified','mismatch','not-found','unverified','pending','voided'] as Verification[]).map(status=><option key={status} value={status}>{labelStatus(status)}</option>)}</select>
             <label className="date-filter">From<input aria-label="From date" type="date" value={fromDate} onChange={event=>setFromDate(event.target.value)}/></label>
@@ -333,7 +363,7 @@ export default function App() {
 
         {page==='admin'&&session?.role==='admin'&&<section className="panel admin-panel">
           <div className="section-head"><div><p className="eyebrow">ADMINISTRATION</p><h2>Roles and audit history</h2><p>Role changes and record actions are enforced and recorded by the backend.</p></div></div>
-          <div className="summary-grid"><article><span>Explicit role assignments</span><b>{roles.length}</b><small>First 100 assignments from the service</small></article><article><span>Recent audit events</span><b>{audit.length}</b><small>Latest events returned by the service</small></article><article><span>Connected as</span><b className="role-stat">Admin</b><small>{short(session.address)}</small></article><article><span>Security</span><b><ShieldCheck size={20}/></b><small>Administrative operations are server-authorized</small></article></div>
+          <div className="summary-grid"><article><span>Explicit role assignments</span><b>{roles.length}</b><small>Cursor-paginated assignments</small></article><article><span>Recent audit events</span><b>{audit.length}</b><small>Cursor-paginated audit history</small></article><article><span>Connected as</span><b className="role-stat">Admin</b><small>{short(session.address)}</small></article><article><span>Security</span><b><ShieldCheck size={20}/></b><small>Administrative operations are server-authorized</small></article></div>
           <form className="role-form" onSubmit={event=>{event.preventDefault();void saveRole();}}>
             <label>Wallet address<input value={roleAddress} onChange={event=>setRoleAddress(event.target.value)} placeholder="G…" required/></label>
             <label>Role<select value={roleValue} onChange={event=>setRoleValue(event.target.value as Role)}><option value="donor">Donor</option><option value="organization">Organization</option><option value="beneficiary">Beneficiary</option><option value="admin">Admin</option></select></label>
@@ -342,7 +372,7 @@ export default function App() {
           <div className="table-wrap"><table><thead><tr><th>WALLET</th><th>ROLE</th><th>UPDATED</th><th>UPDATED BY</th><th>ACTION</th></tr></thead><tbody>
             {roles.map(item=><tr key={item.address}><td>{short(item.address)}</td><td>{item.role}</td><td>{item.updatedAt?new Date(item.updatedAt).toLocaleString():'—'}</td><td>{short(item.updatedBy)}</td><td><button className="text-button danger-text" onClick={()=>void removeRole(item.address)}>Remove</button></td></tr>)}
           </tbody></table></div>
-          <div className="toolbar"><label className="search"><Search size={15}/><input aria-label="Search audit log" placeholder="Search audit events" value={auditSearch} onChange={event=>setAuditSearch(event.target.value)}/></label><select aria-label="Filter audit action" value={auditAction} onChange={event=>setAuditAction(event.target.value)}><option value="all">All actions</option>{Array.from(new Set(audit.map(item=>item.action))).map(action=><option key={action}>{action}</option>)}</select></div>
+          <div className="toolbar"><label className="search"><Search size={15}/><input aria-label="Search audit log" placeholder="Search audit events" value={auditSearch} onChange={event=>setAuditSearch(event.target.value)}/></label><select aria-label="Filter audit action" value={auditAction} onChange={event=>setAuditAction(event.target.value)}><option value="all">All actions</option>{auditActionOptions.map(action=><option key={action}>{action}</option>)}</select></div>
           <div className="table-wrap"><table><thead><tr><th>ACTION</th><th>SUMMARY</th><th>WALLET</th><th>RECORD</th><th>TIME</th></tr></thead><tbody>{filteredAudit.map(item=><tr key={item.id}><td>{item.action}</td><td>{item.summary}</td><td>{short(item.address)}</td><td>{item.recordId||'—'}</td><td>{new Date(item.createdAt).toLocaleString()}</td></tr>)}</tbody></table></div>
           {!filteredAudit.length&&<div className="empty-state"><FileClock size={22}/><b>No audit events found</b><p>Audit events will appear here as users interact with AidTrace.</p></div>}
         </section>}
@@ -356,7 +386,7 @@ export default function App() {
       <footer className="site-foot">AidTrace · Public Stellar payment evidence, not proof of impact.</footer>
 
       {showForm&&<div className="backdrop" role="presentation" onMouseDown={event=>{if(event.target===event.currentTarget)setShowForm(false);}}><form className="form modal-large" onSubmit={saveRecord}>
-        <div className="modal-head"><div><p className="eyebrow">PUBLISH AID RECORD</p><h2>New disbursement</h2><p className="muted">Personal details and wallet addresses are public in this record.</p></div><button className="icon-button" type="button" aria-label="Close form" onClick={()=>setShowForm(false)}><X size={17}/></button></div>
+        <div className="modal-head"><div><p className="eyebrow">PUBLISH AID RECORD</p><h2>New disbursement</h2><p className="muted">Beneficiary details, notes and transaction links are pseudonymous on the public ledger by default.</p></div><button className="icon-button" type="button" aria-label="Close form" onClick={()=>setShowForm(false)}><X size={17}/></button></div>
         <div className="form-grid">
           <label>Recipient name<input value={form.recipient} onChange={event=>setForm({...form,recipient:event.target.value})} required maxLength={160}/></label>
           <label>Beneficiary Stellar address<input value={form.recipientAddress} onChange={event=>setForm({...form,recipientAddress:event.target.value})} required maxLength={56} placeholder="G…"/></label>
@@ -369,14 +399,15 @@ export default function App() {
           <label>Disbursement date<input type="date" value={form.date} onChange={event=>setForm({...form,date:event.target.value})} required/></label>
           <label>Stellar transaction hash (optional)<input value={form.txHash} onChange={event=>setForm({...form,txHash:event.target.value})} maxLength={64} placeholder="64 hexadecimal characters"/></label>
           <label className="full">Note<textarea value={form.note} onChange={event=>setForm({...form,note:event.target.value})} maxLength={500} rows={3}/></label>
+          <label className="full"><input type="checkbox" checked={form.recipientConsent} onChange={event=>setForm({...form,recipientConsent:event.target.checked})}/> I have explicit consent to publish the beneficiary name, wallet address, note and transaction link.</label>
         </div>
-        <p className="form-hint">Only a successful payment with a matching destination, amount and asset can be verified on-chain.</p>
+        <p className="form-hint">Only a successful payment with a matching organization source, destination, amount and asset can be verified on-chain.</p>
         <div className="form-actions"><button className="button secondary" type="button" onClick={()=>setShowForm(false)}>Cancel</button><button className="button primary" disabled={busy} type="submit"><Plus size={14}/>{busy?'Saving…':'Publish record'}</button></div>
       </form></div>}
 
       {selected&&<div className="backdrop" role="presentation" onMouseDown={event=>{if(event.target===event.currentTarget)setSelected(null);}}><section className="form detail-modal modal-large" role="dialog" aria-modal="true" aria-labelledby="record-heading">
         <div className="modal-head"><div><p className="eyebrow">AID RECORD DETAILS</p><h2 id="record-heading">{selected.recipient}</h2><p className="muted">{selected.purpose}</p></div><button className="icon-button" aria-label="Close details" onClick={()=>setSelected(null)}><X size={17}/></button></div>
-        <div className="detail-list"><p><b>Amount</b><span>{selected.amount} {selected.asset}{selected.assetIssuer?` · issuer ${short(selected.assetIssuer)}`:''}</span></p><p><b>Beneficiary</b><span>{selected.recipientAddress}</span></p><p><b>Organization</b><span>{selected.organizationName||selected.organization}</span></p><p><b>Network and date</b><span>{selected.network} · {selected.date}</span></p><p><b>Transaction</b><span>{selected.txHash||'No transaction hash supplied'}</span></p><p><b>Created</b><span>{selected.createdAt?new Date(selected.createdAt).toLocaleString():'—'} by {short(selected.createdBy)}</span></p><p><b>Status</b><span className={`status ${selected.status}`}><i/>{labelStatus(selected.status)}</span></p>
+        <div className="detail-list"><p><b>Amount</b><span>{selected.amount} {selected.asset}{selected.assetIssuer?` · issuer ${short(selected.assetIssuer)}`:''}</span></p><p><b>Beneficiary</b><span>{selected.recipientAddress||'Pseudonymous by default'}</span></p><p><b>Organization</b><span>{selected.organizationName||selected.organization}</span></p><p><b>Network and date</b><span>{selected.network} · {selected.date}</span></p><p><b>Transaction</b><span>{selected.txHash||(!selected.recipientConsent&&selected.verification?'Hidden for beneficiary privacy':'No transaction hash supplied')}</span></p><p><b>Created</b><span>{selected.createdAt?new Date(selected.createdAt).toLocaleString():'—'} by {short(selected.createdBy)}</span></p><p><b>Status</b><span className={`status ${selected.status}`}><i/>{labelStatus(selected.status)}</span></p>
           {selected.verification?.reason&&<p><b>Verification note</b><span>{selected.verification.reason}</span></p>}{selectedDifferences.length>0&&<div className="diff-box">{selectedDifferences.map((difference,index)=><p key={index}>{difference}</p>)}</div>}{selected.voidReason&&<p><b>Void reason</b><span>{selected.voidReason}</span></p>}
         </div>
         <div className="detail-actions">
@@ -384,7 +415,7 @@ export default function App() {
           <button className="button secondary compact" onClick={()=>void verifyRecord(selected)} disabled={!session}><RefreshCw size={14}/>Verify</button>
         </div>
         {session&&canManageRecords&&(session.role==='admin'||selected.organization===session.address)&&!selected.voidedAt&&<form className="inline-edit" onSubmit={editRecord}>
-          <h3>Edit record</h3><label>Recipient<input value={selected.recipient} onChange={event=>setSelected({...selected,recipient:event.target.value})}/></label><label>Purpose<input value={selected.purpose} onChange={event=>setSelected({...selected,purpose:event.target.value})}/></label><label>Amount<input type="number" step="0.0000001" value={selected.amount} onChange={event=>setSelected({...selected,amount:event.target.value})}/></label><label>Transaction hash<input value={selected.txHash} onChange={event=>setSelected({...selected,txHash:event.target.value})}/></label><button className="button primary compact" type="submit">Save changes</button>
+          <h3>Edit record</h3><label>Recipient<input value={selected.recipient} onChange={event=>setSelected({...selected,recipient:event.target.value})}/></label><label>Purpose<input value={selected.purpose} onChange={event=>setSelected({...selected,purpose:event.target.value})}/></label><label>Amount<input type="number" step="0.0000001" value={selected.amount} onChange={event=>setSelected({...selected,amount:event.target.value})}/></label><label>Transaction hash<input value={selected.txHash} onChange={event=>setSelected({...selected,txHash:event.target.value})}/></label><label className="full"><input type="checkbox" checked={selected.recipientConsent===true} onChange={event=>setSelected({...selected,recipientConsent:event.target.checked})}/> I have explicit consent to publish beneficiary details and transaction link.</label><button className="button primary compact" type="submit">Save changes</button>
         </form>}
         {canVoidSelected&&!selected.voidedAt&&<form className="void-box" onSubmit={event=>{event.preventDefault();void voidRecord(selected);}}><label>Reason for voiding<textarea value={voidReason} onChange={event=>setVoidReason(event.target.value)} minLength={5} maxLength={500} rows={2}/></label><button className="button danger compact" type="submit">Confirm void</button></form>}
       </section></div>}

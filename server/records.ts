@@ -28,6 +28,7 @@ type AidRecord = {
   createdAt: string;
   status: RecordStatus;
   createdBy: string;
+  recipientConsent?: boolean;
   verification?: Verification;
   voidReason?: string;
   voidedAt?: string;
@@ -189,6 +190,7 @@ function mapRecord(row: RecordRow): AidRecord {
     createdAt: timestamp(row.created_at)!,
     status: row.status,
     createdBy: row.created_by,
+    recipientConsent: row.recipient_consent,
     updatedAt: timestamp(row.updated_at),
     voidReason: row.void_reason || undefined,
     voidedAt: timestamp(row.voided_at),
@@ -390,6 +392,7 @@ function sendPage<T>(
   hasMore: boolean,
   limit: number,
   cursorFor: (item: T) => Cursor,
+  extra: Record<string, unknown> = {},
 ) {
   const nextCursor = hasMore && items.length
     ? Buffer.from(JSON.stringify(cursorFor(items[items.length - 1]!))).toString('base64url')
@@ -402,7 +405,7 @@ function sendPage<T>(
     next.searchParams.set('cursor', nextCursor);
     response.set('Link', '<' + next.pathname + next.search + '>; rel="next"');
   }
-  response.json({ [key]: items, nextCursor, hasMore });
+  response.json({ ...extra, [key]: items, nextCursor, hasMore });
 }
 
 function optionalQuery(request: Request, name: string): string | undefined | null {
@@ -590,6 +593,7 @@ async function cachedVerification(id: string): Promise<boolean> {
 }
 
 router.get('/api/transparency', noStore, async (request, response) => {
+  const current = await getSession(request);
   const page = readPage(request, response);
   if (!page) return;
   const conditions = ['TRUE'];
@@ -603,11 +607,26 @@ router.get('/api/transparency', noStore, async (request, response) => {
     'r.id',
     page,
   );
-  const records = result.rows.map(row => publicRecord(mapRecord(row), row.recipient_consent));
+  const facets = await pool.query<{ organizations: string[]; assets: string[] }>(
+    `SELECT ARRAY(
+       SELECT DISTINCT organization_wallet FROM aid_records ORDER BY organization_wallet
+     ) AS organizations,
+     ARRAY(
+       SELECT DISTINCT asset_code FROM aid_records ORDER BY asset_code
+     ) AS assets`,
+  );
+  const records = result.rows.map(row => {
+    const record = mapRecord(row);
+    const mayViewPrivateData = current && (
+      current.session.role === 'admin' ||
+      (current.session.role === 'organization' && current.session.address === record.organization)
+    );
+    return mayViewPrivateData ? record : publicRecord(record, row.recipient_consent);
+  });
   sendPage(request, response, 'records', records, result.hasMore, page.limit, item => ({
     createdAt: item.createdAt,
     id: item.id,
-  }));
+  }), facets.rows[0] || { organizations: [], assets: [] });
 });
 
 router.get('/api/beneficiary', noStore, async (request, response) => {
@@ -1047,7 +1066,8 @@ router.get('/api/audit', noStore, async (request, response) => {
   const action = optionalQuery(request, 'action');
   const address = optionalQuery(request, 'address');
   const recordId = optionalQuery(request, 'recordId');
-  if (action === null || address === null || recordId === null) {
+  const search = optionalQuery(request, 'q');
+  if (action === null || address === null || recordId === null || search === null) {
     error(response, 400, 'Invalid audit list filter.');
     return;
   }
@@ -1065,6 +1085,19 @@ router.get('/api/audit', noStore, async (request, response) => {
       return;
     }
     addFilter(conditions, values, 'ae.record_id = ?', recordId);
+  }
+  if (typeof search === 'string') {
+    if (!search.trim()) {
+      error(response, 400, 'Search query cannot be empty.');
+      return;
+    }
+    const firstPlaceholder = values.length + 1;
+    values.push(search.trim(), search.trim(), search.trim());
+    conditions.push(
+      `(strpos(lower(ae.summary), lower($${firstPlaceholder})) > 0 OR ` +
+      `strpos(lower(COALESCE(ae.actor_wallet, '')), lower($${firstPlaceholder + 1})) > 0 OR ` +
+      `strpos(lower(COALESCE(ae.record_id, '')), lower($${firstPlaceholder + 2})) > 0)`,
+    );
   }
   if (!optionalDateFilter(request, response, 'from', 'ae.created_at >= ?', conditions, values) ||
       !optionalDateFilter(request, response, 'to', 'ae.created_at < (?::date + INTERVAL \'1 day\')', conditions, values)) {
@@ -1094,10 +1127,13 @@ router.get('/api/audit', noStore, async (request, response) => {
     recordId: row.record_id || undefined,
     createdAt: timestamp(row.created_at)!,
   }));
+  const facets = await pool.query<{ actions: string[] }>(
+    'SELECT ARRAY(SELECT DISTINCT action FROM audit_events ORDER BY action) AS actions',
+  );
   sendPage(request, response, 'entries', entries, result.hasMore, page.limit, item => ({
     createdAt: item.createdAt,
     id: item.id,
-  }));
+  }), { facets: { actions: facets.rows[0]?.actions || [] } });
 });
 
 export { router as recordsRouter, validateRecord, amountToStroops, stroopsToAmount };
