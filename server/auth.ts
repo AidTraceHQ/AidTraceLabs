@@ -63,6 +63,16 @@ function signatureBytes(value: string): Buffer | null {
     : null;
 }
 
+export function verifySep53Signature(address: string, message: string, signature: string): boolean {
+  const signatureBuffer = signatureBytes(signature);
+  if (!validAddress(address) || !signatureBuffer) return false;
+  const signedDigest = createHash('sha256')
+    .update('Stellar Signed Message:\n', 'utf8')
+    .update(message, 'utf8')
+    .digest();
+  return Keypair.fromPublicKey(address).verify(signedDigest, signatureBuffer);
+}
+
 function csrfMatches(candidate: unknown, expectedHash: string): boolean {
   if (typeof candidate !== 'string' || candidate.length > 200) return false;
   const candidateHash = Buffer.from(digest(candidate), 'hex');
@@ -214,16 +224,7 @@ router.post('/api/auth/verify', noStore, async (request, response) => {
     response.status(401).json({ error: 'Wallet or network does not match the challenge.' });
     return;
   }
-  const signatureBuffer = signatureBytes(signature);
-  let validSignature = false;
-  if (signatureBuffer) {
-    const signedDigest = createHash('sha256')
-      .update('Stellar Signed Message:\n', 'utf8')
-      .update(challenge.signed_message, 'utf8')
-      .digest();
-    validSignature = Keypair.fromPublicKey(address).verify(signedDigest, signatureBuffer);
-  }
-  if (!validSignature) {
+  if (!verifySep53Signature(address, challenge.signed_message, signature)) {
     response.status(401).json({ error: 'Signature verification failed. No session was created.' });
     return;
   }
