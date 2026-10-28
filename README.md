@@ -35,7 +35,7 @@ The backend enforces this matrix on every protected route. UI visibility is not 
 2. Install dependencies with `npm install`.
 3. Copy `.env.example` to `.env`; configure PostgreSQL in `DATABASE_URL`, set `SESSION_SECRET` to at least 32 random bytes, and set the allowed frontend origins. Do not commit `.env`.
 4. Apply schema migrations with `npm run db:migrate`. Set `ADMIN_WALLET` to a Stellar public G-address and run `npm run db:seed-admin` to bootstrap the first admin; there is no public admin-bootstrap endpoint.
-5. Start the API with `npm run dev:server` and the frontend with `npm run dev`. The default frontend API URL is `http://localhost:3001`; choose same-site HTTPS origins for deployment because the session cookie is Secure and SameSite=Lax.
+5. Start both the API and frontend with `npm run dev` (`npm run dev:server` plus `npm run dev:web`); the frontend runs at `http://localhost:5173` and proxies `/api` to the API on port `3001`. Leave `VITE_API_BASE_URL` empty for local development. Set it only when the frontend must call a separately hosted API. The HttpOnly session cookie uses Secure and SameSite=Lax; localhost is supported for local development, while deployment should use HTTPS and same-site origins.
 6. Install Freighter from https://freighter.app/. Select the same network in Freighter and AidTrace.
 7. Run `npm run build` for the frontend and server production builds; `npm test` runs Vitest/Supertest. `tests/tests.json` remains the user-flow scenario catalog, while executable backend tests are in `tests/backend.test.ts`.
 
