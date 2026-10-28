@@ -949,6 +949,7 @@ router.get('/api/admin/roles', noStore, async (request, response) => {
     page,
   );
   const roles = result.rows.map(row => ({
+    id: row.id,
     address: row.wallet_address,
     role: row.role,
     updatedAt: timestamp(row.updated_at)!,

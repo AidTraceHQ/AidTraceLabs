@@ -561,6 +561,11 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     await assignRole(adminSession, organization, 'organization');
     await assignRole(adminSession, otherOrganization, 'organization');
     await assignRole(adminSession, beneficiary, 'beneficiary');
+    const roles = await request(app)
+      .get('/api/admin/roles')
+      .set('Cookie', adminSession.cookie);
+    expect(roles.body.roles.some((role: { id: string; address: string }) =>
+      role.id === beneficiary.publicKey() && role.address === beneficiary.publicKey())).toBe(true);
     const ownerSession = await login(organization);
     const otherSession = await login(otherOrganization);
     const beneficiarySession = await login(beneficiary);
