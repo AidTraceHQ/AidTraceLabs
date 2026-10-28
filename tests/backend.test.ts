@@ -551,6 +551,10 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .query({ limit: '1', cursor: pageOne.body.nextCursor });
     expect(pageTwo.status).toBe(200);
     expect(pageTwo.body.records[0].id).not.toBe(pageOne.body.records[0].id);
+    const wrongFilterCursor = await request(app)
+      .get('/api/transparency')
+      .query({ limit: '1', network: 'testnet', cursor: pageOne.body.nextCursor });
+    expect(wrongFilterCursor.status).toBe(400);
   });
 
   it('enforces organization ownership, beneficiary scoping, void history, admin roles, and logout-everywhere', async () => {

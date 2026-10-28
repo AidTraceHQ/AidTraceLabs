@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import { StrKey } from '@stellar/stellar-sdk';
 import type { PoolClient, QueryResultRow } from 'pg';
@@ -333,9 +333,30 @@ function readPage(request: Request, response: Response): { limit: number; cursor
     return null;
   }
   try {
-    const parsed: unknown = JSON.parse(Buffer.from(rawCursor, 'base64url').toString('utf8'));
+    if (!/^[A-Za-z0-9_-]+$/.test(rawCursor)) throw new Error('Invalid cursor envelope.');
+    const envelope: unknown = JSON.parse(Buffer.from(rawCursor, 'base64url').toString('utf8'));
+    if (!isObject(envelope) || typeof envelope.payload !== 'string' ||
+        typeof envelope.signature !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(envelope.signature)) {
+      throw new Error('Invalid cursor envelope.');
+    }
+    const expectedSignature = createHmac('sha256', process.env.SESSION_SECRET || '')
+      .update(envelope.payload)
+      .digest();
+    const suppliedSignature = Buffer.from(envelope.signature, 'base64url');
+    if (suppliedSignature.length !== expectedSignature.length ||
+        !timingSafeEqual(suppliedSignature, expectedSignature)) {
+      throw new Error('Invalid cursor signature.');
+    }
+    const parsed: unknown = JSON.parse(Buffer.from(envelope.payload, 'base64url').toString('utf8'));
+    const filters = Object.entries(request.query)
+      .filter(([key]) => key !== 'cursor' && key !== 'limit')
+      .sort(([left], [right]) => left.localeCompare(right));
+    const filterDigest = createHmac('sha256', process.env.SESSION_SECRET || '')
+      .update(JSON.stringify(filters))
+      .digest('base64url');
     if (!isObject(parsed) || typeof parsed.createdAt !== 'string' ||
         typeof parsed.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(parsed.id) ||
+        parsed.version !== 1 || parsed.filters !== filterDigest ||
         Number.isNaN(Date.parse(parsed.createdAt))) {
       throw new Error('Invalid cursor.');
     }
@@ -394,8 +415,26 @@ function sendPage<T>(
   cursorFor: (item: T) => Cursor,
   extra: Record<string, unknown> = {},
 ) {
-  const nextCursor = hasMore && items.length
-    ? Buffer.from(JSON.stringify(cursorFor(items[items.length - 1]!))).toString('base64url')
+  const cursorData = hasMore && items.length ? cursorFor(items[items.length - 1]!) : null;
+  const filterValues = Object.entries(request.query)
+    .filter(([name]) => name !== 'cursor' && name !== 'limit')
+    .sort(([left], [right]) => left.localeCompare(right));
+  const cursorPayload = cursorData
+    ? Buffer.from(JSON.stringify({
+        version: 1,
+        ...cursorData,
+        filters: createHmac('sha256', process.env.SESSION_SECRET || '')
+          .update(JSON.stringify(filterValues))
+          .digest('base64url'),
+      })).toString('base64url')
+    : null;
+  const nextCursor = cursorPayload
+    ? Buffer.from(JSON.stringify({
+        payload: cursorPayload,
+        signature: createHmac('sha256', process.env.SESSION_SECRET || '')
+          .update(cursorPayload)
+          .digest('base64url'),
+      })).toString('base64url')
     : null;
   response.set('X-Has-More', String(hasMore));
   if (nextCursor) {
