@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import './environment.js';
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from 'pg';
 
 const connectionString = process.env.DATABASE_URL;

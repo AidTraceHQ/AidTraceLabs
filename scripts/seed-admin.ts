@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import '../server/environment.js';
 import { StrKey } from '@stellar/stellar-sdk';
 import { pool, withTransaction } from '../server/db.js';
 

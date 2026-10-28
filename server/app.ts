@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import './environment.js';
 import express, { type ErrorRequestHandler } from 'express';
 import { authRouter } from './auth.js';
 import { cors } from './http-security.js';
