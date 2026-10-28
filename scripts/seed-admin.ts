@@ -1,9 +1,10 @@
 import 'dotenv/config';
+import { StrKey } from '@stellar/stellar-sdk';
 import { pool, withTransaction } from '../server/db.js';
 
 const address = process.env.ADMIN_WALLET;
 
-if (!address || !/^G[A-Z2-7]{55}$/.test(address)) {
+if (!address || !StrKey.isValidEd25519PublicKey(address)) {
   throw new Error('ADMIN_WALLET must contain a Stellar public G-address.');
 }
 
