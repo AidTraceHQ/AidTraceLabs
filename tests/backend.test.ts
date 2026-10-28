@@ -10,7 +10,7 @@ import {
   it,
   vi,
 } from 'vitest';
-import { migrate } from '../scripts/migrate.js';
+import { applyUniqueNetworkTxHashMigration, migrate } from '../scripts/migrate.js';
 import { app } from '../server/app.js';
 import { verifySep53Signature } from '../server/auth.js';
 import { pool } from '../server/db.js';
@@ -23,9 +23,11 @@ describe('Freighter signed challenge creates a secure session', () => {
     const wallet = Keypair.random();
     const message = [
       'AidTrace wallet login',
+      'Domain: http://localhost:5173',
       'Address: ' + wallet.publicKey(),
       'Network: testnet',
       'Nonce: ' + 'a'.repeat(64),
+      'Issued At: 2026-10-28T09:55:00.000Z',
       'Expires: 2026-10-28T10:00:00.000Z',
       'Purpose: prove wallet ownership; no transaction will be sent.',
     ].join('\n');
@@ -265,8 +267,12 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(challenge.body.expiresAt).toBeGreaterThan(Date.now());
     expect(challenge.body.expiresAt).toBeLessThanOrEqual(Date.now() + 5 * 60 * 1000);
     expect(challenge.body.message).toContain('Nonce: ');
+    expect(challenge.body.message).toContain('Domain: http://localhost:5173');
+    expect(challenge.body.message).toContain('Issued At: ');
     expect(challenge.body.message).toContain('Expires: ');
     expect(challenge.body.message).toContain('Purpose: prove wallet ownership');
+    const issuedAt = Date.parse(challenge.body.message.match(/Issued At: ([^\n]+)/)?.[1] || '');
+    expect(challenge.body.expiresAt - issuedAt).toBe(5 * 60 * 1000);
 
     const digest = createHash('sha256')
       .update('Stellar Signed Message:\n')
@@ -373,6 +379,37 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       await pool.query('DELETE FROM users WHERE wallet_address = ANY($1::text[])', [addresses]);
     }
     await pool.end();
+  });
+
+  it('reports duplicate hashes and aborts migration 002 before creating the unique constraint', async () => {
+    const client = await pool.connect();
+    const hash = 'a'.repeat(64);
+    try {
+      await client.query('BEGIN');
+      await client.query('CREATE TEMP TABLE aid_records (id TEXT PRIMARY KEY, network TEXT NOT NULL, tx_hash TEXT)');
+      await client.query(
+        'INSERT INTO aid_records (id, network, tx_hash) VALUES ($1, $2, $3), ($4, $2, $5)',
+        ['duplicate-one', 'testnet', hash.toUpperCase(), 'duplicate-two', hash],
+      );
+
+      await expect(applyUniqueNetworkTxHashMigration(client)).rejects.toMatchObject({
+        name: 'DuplicateTransactionHashesError',
+        duplicates: [
+          { id: 'duplicate-one', network: 'testnet', duplicate_count: '2' },
+          { id: 'duplicate-two', network: 'testnet', duplicate_count: '2' },
+        ],
+      });
+
+      const constraint = await client.query(
+        `SELECT 1 FROM pg_constraint
+         WHERE conrelid = 'pg_temp.aid_records'::regclass
+           AND conname = 'aid_records_network_tx_hash_unique'`,
+      );
+      expect(constraint.rowCount).toBe(0);
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
   });
 
   it('creates a single-use wallet session, enforces CSRF, expires challenges, and logs out', async () => {

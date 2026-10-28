@@ -20,6 +20,7 @@ const cookieName = 'aidtrace_session';
 const challengeTtlMs = 5 * 60 * 1000;
 const sessionTtlMs = 7 * 24 * 60 * 60 * 1000;
 const sessionSecret = process.env.SESSION_SECRET;
+const publicAppOrigin = new URL(process.env.PUBLIC_APP_ORIGIN || 'http://localhost:5173').origin;
 
 if (!sessionSecret || Buffer.byteLength(sessionSecret) < 32) {
   throw new Error('SESSION_SECRET must contain at least 32 bytes.');
@@ -32,7 +33,9 @@ const validAddress = (value: unknown): value is string =>
 const makeCsrfToken = (token: string) =>
   createHmac('sha256', sessionSecret).update('aidtrace-csrf:').update(token).digest('base64url');
 const makeChallengeMessage = (address: string, network: Network, nonce: string, expiresAt: Date) =>
-  'AidTrace wallet login\nAddress: ' + address + '\nNetwork: ' + network + '\nNonce: ' + nonce +
+  'AidTrace wallet login\nDomain: ' + publicAppOrigin +
+  '\nAddress: ' + address + '\nNetwork: ' + network + '\nNonce: ' + nonce +
+  '\nIssued At: ' + new Date(expiresAt.getTime() - challengeTtlMs).toISOString() +
   '\nExpires: ' + expiresAt.toISOString() +
   '\nPurpose: prove wallet ownership; no transaction will be sent.';
 
@@ -121,12 +124,10 @@ function setSessionCookie(response: Response, token: string) {
 }
 
 function clearSessionCookie(response: Response) {
-  response.clearCookie(cookieName, {
-    httpOnly: true,
-    secure: true,
-    sameSite: 'lax',
-    path: '/',
-  });
+  response.setHeader(
+    'Set-Cookie',
+    `${cookieName}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0; Expires=${new Date(0).toUTCString()}`,
+  );
 }
 
 async function rateLimit(key: string, max: number, windowMs: number): Promise<boolean> {
@@ -216,8 +217,16 @@ router.post('/api/auth/verify', noStore, async (request, response) => {
     [challengeId],
   );
   const challenge = challengeResult.rows[0];
-  if (!challenge || challenge.used_at || challenge.expires_at.getTime() <= Date.now()) {
-    response.status(401).json({ error: 'Challenge expired or already used. Request a fresh challenge.' });
+  if (!challenge) {
+    response.status(401).json({ error: 'Challenge not found. Request a fresh challenge.' });
+    return;
+  }
+  if (challenge.expires_at.getTime() <= Date.now()) {
+    response.status(401).json({ error: 'Challenge expired. Request a fresh challenge.' });
+    return;
+  }
+  if (challenge.used_at) {
+    response.status(409).json({ error: 'Challenge was already used. Connect again for a new challenge.' });
     return;
   }
   if (challenge.wallet_address !== address || challenge.network !== network) {
@@ -235,44 +244,58 @@ router.post('/api/auth/verify', noStore, async (request, response) => {
   const csrfTokenHash = digest(csrfToken);
   const expiresAt = new Date(Date.now() + sessionTtlMs);
   let role: Role = 'donor';
-  try {
-    await withTransaction(async client => {
-      const consumed = await client.query(
-        `UPDATE challenges SET used_at = NOW()
-         WHERE challenge_id = $1 AND used_at IS NULL AND expires_at > NOW()
-         RETURNING challenge_id`,
+  const consumeOutcome = await withTransaction(async client => {
+    const updated = await client.query(
+      `UPDATE challenges SET used_at = NOW()
+       WHERE challenge_id = $1 AND used_at IS NULL AND expires_at > NOW()
+       RETURNING challenge_id`,
+      [challengeId],
+    );
+    if (updated.rowCount !== 1) {
+      const refreshed = await client.query<{ used_at: Date | null; expires_at: Date }>(
+        'SELECT used_at, expires_at FROM challenges WHERE challenge_id = $1',
         [challengeId],
       );
-      if (consumed.rowCount !== 1) throw new Error('CHALLENGE_ALREADY_CONSUMED');
-      await client.query(
-        `INSERT INTO users (wallet_address, last_authenticated_at)
-         VALUES ($1, NOW())
-         ON CONFLICT (wallet_address)
-         DO UPDATE SET last_authenticated_at = EXCLUDED.last_authenticated_at`,
-        [address],
-      );
-      const roleResult = await client.query<{ role: Role }>(
-        'SELECT role FROM wallet_roles WHERE wallet_address = $1',
-        [address],
-      );
-      role = roleResult.rows[0]?.role || 'donor';
-      await client.query(
-        `INSERT INTO sessions (session_hash, wallet_address, network, csrf_token_hash, expires_at)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [tokenHash, address, network, csrfTokenHash, expiresAt],
-      );
-      await client.query(
-        `INSERT INTO audit_events (id, action, actor_wallet, summary)
-         VALUES ($1, 'wallet_authenticated', $2, $3)`,
-        [randomBytes(16).toString('hex'), address, 'Wallet ownership verified on ' + network],
-      );
-    });
-  } catch (error) {
-    if (error instanceof Error && error.message === 'CHALLENGE_ALREADY_CONSUMED') {
-      response.status(409).json({ error: 'Challenge was already used. Connect again for a new challenge.' });
-      return;
+      const challengeState = refreshed.rows[0];
+      if (challengeState?.used_at) return 'used' as const;
+      if (challengeState && challengeState.expires_at.getTime() <= Date.now()) return 'expired' as const;
+      return 'invalid' as const;
     }
-    throw error;
+    await client.query(
+      `INSERT INTO users (wallet_address, last_authenticated_at)
+       VALUES ($1, NOW())
+       ON CONFLICT (wallet_address)
+       DO UPDATE SET last_authenticated_at = EXCLUDED.last_authenticated_at`,
+      [address],
+    );
+    const roleResult = await client.query<{ role: Role }>(
+      'SELECT role FROM wallet_roles WHERE wallet_address = $1',
+      [address],
+    );
+    role = roleResult.rows[0]?.role || 'donor';
+    await client.query(
+      `INSERT INTO sessions (session_hash, wallet_address, network, csrf_token_hash, expires_at)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [tokenHash, address, network, csrfTokenHash, expiresAt],
+    );
+    await client.query(
+      `INSERT INTO audit_events (id, action, actor_wallet, summary)
+       VALUES ($1, 'wallet_authenticated', $2, $3)`,
+      [randomBytes(16).toString('hex'), address, 'Wallet ownership verified on ' + network],
+    );
+    return 'consumed' as const;
+  });
+  if (consumeOutcome === 'used') {
+    response.status(409).json({ error: 'Challenge was already used. Connect again for a new challenge.' });
+    return;
+  }
+  if (consumeOutcome === 'expired') {
+    response.status(401).json({ error: 'Challenge expired. Request a fresh challenge.' });
+    return;
+  }
+  if (consumeOutcome === 'invalid') {
+    response.status(401).json({ error: 'Challenge expired or already used. Request a fresh challenge.' });
+    return;
   }
   setSessionCookie(response, token);
   response.status(200).json({
