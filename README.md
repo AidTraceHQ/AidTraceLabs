@@ -46,14 +46,17 @@ The backend enforces this matrix on every protected route. UI visibility is not 
 - Session cookie: HttpOnly, Secure, SameSite=Lax; seven-day expiry. Logout-everywhere revokes the sessions visible in the bounded session page.
 - CSRF token is bound to the server-side session and required on state-changing routes; requests with a foreign Origin are rejected.
 - Challenge, signature-verification and record-verification routes have per-key rate limits. All record fields and Stellar addresses/hashes are validated on the server.
+- Responses containing session/CSRF data, beneficiary records, roles, or audit events use `Cache-Control: no-store`.
 - Organizations may edit/void only their own records; admins manage role assignments. Never rely on frontend-only role checks.
 - Verification cache is refreshed after one hour; pending results are not cached as final and can be retried.
+- Verification does not currently require the payment source to equal the publishing organization's wallet. A verified status confirms only a successful transaction with matching destination, amount, and asset fields; it does not prove that the listed organization sent the payment.
 - Audit and role listing endpoints are admin-only. Public transparency includes only the record fields the app deliberately publishes.
 
 ## Known limitations
 
 - Horizon availability and SSE support depend on the public network endpoint. The UI falls back to periodic reads when SSE disconnects.
 - Current list endpoints are bounded to the first 100 records; the frontend paginates the returned set. Large deployments should add database cursor pagination and indexed server-side filtering.
+- Aid records do not yet enforce uniqueness for Stellar transaction hashes. Repeated publication of the same payment can therefore inflate displayed record totals; do not treat records or totals as deduplicated until a transaction-hash uniqueness index is migrated and enforced server-side.
 - Logout-everywhere processes up to 100 sessions in one bounded read; large account session counts need cursor pagination.
 - Verification handles payment-like Horizon operations in the transaction and compares the recorded payment fields; complex transactions with multiple outputs require careful review.
 - The first admin must be bootstrapped through a trusted platform-side process; the app intentionally does not expose a self-service privilege escalation.

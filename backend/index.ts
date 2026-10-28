@@ -21,7 +21,8 @@ function publicKeyBytes(address:string):Buffer{const alphabet='ABCDEFGHIJKLMNOPQ
 function signatureBytes(s:string){if(/^[0-9a-fA-F]{128}$/.test(s))return Buffer.from(s,'hex');return Buffer.from(s,'base64');}
 function verifySep53(address:string,message:string,encoded:string){const prefix=Buffer.from('302a300506032b6570032100','hex');const key=createPublicKey({key:Buffer.concat([prefix,publicKeyBytes(address)]),format:'der',type:'spki'});const digest=createHash('sha256').update('Stellar Signed Message:\n','utf8').update(message,'utf8').digest();const sig=signatureBytes(encoded);return sig.length===64&&verifySignature(null,digest,key,sig);}
 function cookieFrom(event:{headers?:Record<string,string|undefined>}){const raw=event.headers?.cookie||event.headers?.Cookie||'';const found=raw.split(';').map(x=>x.trim()).find(x=>x.startsWith(COOKIE+'='));try{return found?decodeURIComponent(found.slice(COOKIE.length+1)):'';}catch{return '';}}
-function responseCookie(data:unknown,cookie:string,status=200){const r=json(data,status);r.headers['Set-Cookie']=cookie;r.headers['Cache-Control']='no-store';return r;}
+function noStore(data:unknown,status=200){const r=json(data,status);r.headers['Cache-Control']='no-store';return r;}
+function responseCookie(data:unknown,cookie:string,status=200){const r=noStore(data,status);r.headers['Set-Cookie']=cookie;return r;}
 const clearCookie=()=>COOKIE+'=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0';
 function originAllowed(event:{headers?:Record<string,string|undefined>}){const origin=event.headers?.origin||event.headers?.Origin;if(!origin)return true;try{const u=new URL(origin);if(u.protocol!=='https:'&&u.hostname!=='localhost'&&u.hostname!=='127.0.0.1')return false;const trustedHosts=new Set(['aidtrace-stellar-aid-transparency-8t0vkt.v2.appdeploy.ai','localhost:5173','127.0.0.1:5173']);const host=event.headers?.host||event.headers?.Host;const forwarded=event.headers?.['x-forwarded-host']||event.headers?.['X-Forwarded-Host'];return trustedHosts.has(u.host)||u.host===host||u.host===forwarded;}catch{return false;}}
 async function rateLimit(key:string,max:number,windowMs:number){const now=Date.now(),bucket=Math.floor(now/windowMs),id=sha(key+':'+bucket);const [existing]=await db.get<{count:number;expiresAt:number}>(tables.limits,[id],{consistent:true});if(!existing){const [created]=await db.tx.add(tables.limits,[{id,count:1,expiresAt:(bucket+1)*windowMs}]);if(created)return true;const [retry]=await db.get<{count:number}>(tables.limits,[id],{consistent:true});return !!retry&&retry.count<=max;}if(existing.count>=max)return false;const [updated]=await db.tx.update(tables.limits,[{id,record:{count:existing.count+1,expiresAt:existing.expiresAt},if:{count:existing.count}}],{patch:true});return !!updated;}
@@ -33,8 +34,8 @@ function roleError(session:{role:Role}|null,roles:Role[]){return !session?error(
 async function log(action:string,summary:string,address:string,recordId=''){const id=randomBytes(12).toString('hex');await db.tx.add(tables.audit,[{id,action,summary:summary.slice(0,1000),address,recordId,createdAt:new Date().toISOString()}]);}
 async function listAll<T>(table:string,limit=100){const r=await db.list<T>(table,{limit});return r.items;}
 function cleanText(v:unknown,max:number){return typeof v==='string'?v.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g,'').trim().slice(0,max):'';}
-function validDate(v:unknown){return typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&!Number.isNaN(Date.parse(v+'T00:00:00Z'));}
-function canonicalAmount(value:unknown):string|null{const raw=String(value??'');if(!/^\d+(?:\.\d{1,7})?$/.test(raw))return null;const parts=raw.split('.');const whole=parts[0].replace(/^0+(?=\d)/,'');const fraction=(parts[1]||'').replace(/0+$/,'');return fraction?whole+'.'+fraction:whole;}
+function validDate(v:unknown){if(typeof v!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(v))return false;const parsed=new Date(v+'T00:00:00Z');return !Number.isNaN(parsed.valueOf())&&parsed.toISOString().slice(0,10)===v;}
+function canonicalAmount(value:unknown):string|null{const raw=String(value??'');if(!/^\d+(?:\.\d{1,7})?$/.test(raw))return null;const parts=raw.split('.');const whole=parts[0].replace(/^0+(?=\d)/,'');const fraction=(parts[1]||'').replace(/0+$/,'');if(whole.length>12||(whole.length===12&&(whole>'922337203685'||(whole==='922337203685'&&fraction.padEnd(7,'0')>'4775807'))))return null;return fraction?whole+'.'+fraction:whole;}
 function validateRecord(body:unknown):Omit<AidRecord,'id'|'organization'|'createdAt'|'createdBy'|'status'|'verification'|'voidReason'|'voidedAt'>|null{
  if(!body||typeof body!=='object')return null;const x=body as Partial<AidRecord>;
  const recipient=cleanText(x.recipient,160),purpose=cleanText(x.purpose,240),note=cleanText(x.note,500),asset=cleanText(x.asset,12).toUpperCase();
@@ -55,36 +56,40 @@ async function checkTransaction(record:AidRecord):Promise<Verification>{
  try{txResponse=await fetch(base+'/transactions/'+record.txHash,{headers:{Accept:'application/json'}});}catch{return {status:'pending',checkedAt,differences:[],reason:'Horizon is unavailable. Retry verification.'};}
  if(txResponse.status===404)return {status:'not-found',checkedAt,differences:[],reason:'Hash was not found on the selected network.'};
  if(!txResponse.ok)return {status:'pending',checkedAt,differences:[],reason:'Horizon returned HTTP '+txResponse.status+'. Retry later.'};
- const tx=await txResponse.json() as {successful?:boolean;ledger?:number;created_at?:string};
+ let tx:{successful?:boolean;ledger?:number;created_at?:string};
+ try{tx=await txResponse.json() as {successful?:boolean;ledger?:number;created_at?:string};}catch{return {status:'pending',checkedAt,differences:[],reason:'Horizon returned an unreadable transaction response. Retry later.'};}
  if(!tx.successful)return {status:'mismatch',checkedAt,differences:['Transaction is marked unsuccessful on Stellar.'],ledger:tx.ledger,createdAt:tx.created_at,link:(record.network==='mainnet'?'https://stellar.expert/explorer/public/tx/':'https://stellar.expert/explorer/testnet/tx/')+record.txHash};
  let opResponse:Response;try{opResponse=await fetch(base+'/transactions/'+record.txHash+'/operations?limit=200&order=asc',{headers:{Accept:'application/json'}});}catch{return {status:'pending',checkedAt,differences:[],reason:'Horizon operations endpoint is unavailable.'};}
  if(!opResponse.ok)return {status:'pending',checkedAt,differences:[],reason:'Could not read transaction operations from Horizon.'};
- const ops=await opResponse.json() as {_embedded?:{records?:Record<string,unknown>[]}};
+ let ops:{_embedded?:{records?:Record<string,unknown>[]}};
+ try{ops=await opResponse.json() as {_embedded?:{records?:Record<string,unknown>[]}};}catch{return {status:'pending',checkedAt,differences:[],reason:'Horizon returned unreadable transaction operations. Retry later.'};}
  const payments=(ops._embedded?.records||[]).filter(o=>['payment','create_account','path_payment_strict_receive','path_payment_strict_send','path_payment'].includes(String(o.type)));
  const differences:string[]=[];
  const destination=record.recipientAddress;
  const expectedAmount=Number(record.amount);
  const expectedAsset=record.asset.toUpperCase();
+ const operationDestination=(operation:Record<string,unknown>)=>String(operation.to||operation.destination||(operation.type==='create_account'?operation.account:'')||'');
+ const operationAsset=(operation:Record<string,unknown>)=>String(operation.asset_type==='native'||operation.type==='create_account'?'XLM':operation.asset_code||'').toUpperCase();
  const match=payments.find(o=>{
-   const dest=String(o.to||o.destination||'');const amount=String(o.amount||o.starting_balance||'');
-   const code=String(o.asset_type==='native'?'XLM':o.asset_code||'').toUpperCase();const issuer=String(o.asset_issuer||'');
+   const dest=operationDestination(o);const amount=String(o.amount||o.starting_balance||'');
+   const code=operationAsset(o);const issuer=String(o.asset_issuer||'');
    return dest===destination&&canonicalAmount(amount)===canonicalAmount(record.amount)&&code===expectedAsset&&(expectedAsset==='XLM'||issuer===record.assetIssuer);
  });
  if(!match){
-   const destMatches=payments.filter(o=>String(o.to||o.destination||'')===destination);
+   const destMatches=payments.filter(o=>operationDestination(o)===destination);
    if(!payments.length)differences.push('No payment operation was found in this transaction.');
    else if(!destMatches.length)differences.push('Destination differs: expected '+destination+'.');
    else {
      const amountMatch=destMatches.some(o=>Number(o.amount||o.starting_balance||'')===expectedAmount);
      if(!amountMatch)differences.push('Amount differs: expected '+record.amount+'.');
-     const codeMatch=destMatches.some(o=>String(o.asset_type==='native'?'XLM':o.asset_code||'').toUpperCase()===expectedAsset);
+     const codeMatch=destMatches.some(o=>operationAsset(o)===expectedAsset);
      if(!codeMatch)differences.push('Asset differs: expected '+expectedAsset+'.');
      if(codeMatch&&record.assetIssuer&&!destMatches.some(o=>String(o.asset_issuer||'')===record.assetIssuer))differences.push('Asset issuer differs.');
      if(amountMatch&&codeMatch&&!differences.length)differences.push('No single payment operation matches all recorded fields.');
    }
    return {status:'mismatch',checkedAt,differences,ledger:tx.ledger,createdAt:tx.created_at,link:(record.network==='mainnet'?'https://stellar.expert/explorer/public/tx/':'https://stellar.expert/explorer/testnet/tx/')+record.txHash};
  }
- return {status:'verified',checkedAt,differences:[],ledger:tx.ledger,createdAt:tx.created_at,destination:String(match.to||match.destination||''),amount:String(match.amount||match.starting_balance||''),asset:String(match.asset_type==='native'?'XLM':match.asset_code||''),link:(record.network==='mainnet'?'https://stellar.expert/explorer/public/tx/':'https://stellar.expert/explorer/testnet/tx/')+record.txHash};
+ return {status:'verified',checkedAt,differences:[],ledger:tx.ledger,createdAt:tx.created_at,destination:operationDestination(match),amount:String(match.amount||match.starting_balance||''),asset:operationAsset(match),link:(record.network==='mainnet'?'https://stellar.expert/explorer/public/tx/':'https://stellar.expert/explorer/testnet/tx/')+record.txHash};
 }
 export const handler=router({
  'GET /api/_healthcheck':[async()=>json({ok:true,service:'aidtrace-wallet-api'})],
@@ -118,11 +123,11 @@ export const handler=router({
    await log('wallet_authenticated','Wallet ownership verified on '+x.network,x.address);
    return responseCookie({session:{address:x.address,network:x.network,role,csrfToken,expiresAt:new Date(expiresAt).toISOString()}},COOKIE+'='+encodeURIComponent(token)+'; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age='+Math.floor(SESSION_TTL/1000));
  }],
- 'GET /api/me':[async({event})=>{const s=await currentSession(event);if(!s)return responseCookie({session:null},clearCookie());return json({session:{address:s.address,network:s.network,role:s.role,csrfToken:s.csrfToken,expiresAt:new Date(s.expiresAt).toISOString()}});}],
+ 'GET /api/me':[async({event})=>{const s=await currentSession(event);if(!s)return responseCookie({session:null},clearCookie());return noStore({session:{address:s.address,network:s.network,role:s.role,csrfToken:s.csrfToken,expiresAt:new Date(s.expiresAt).toISOString()}});}],
  'POST /api/auth/logout':[async({event,body})=>{const s=await currentSession(event);if(s&&!csrfOK(body,s))return error('CSRF check failed. Refresh the app and retry.',403);if(s)await db.delete(tables.sessions,[s.tokenHash]);return responseCookie({ok:true},clearCookie());}],
  'POST /api/auth/logout-everywhere':[async({event,body})=>{const s=await currentSession(event);if(!s)return error('Session expired. Reconnect Freighter.',401);if(!originAllowed(event)||!csrfOK(body,s))return error('CSRF check failed. Refresh the app and retry.',403);const sessions=await listAll<SessionRecord & {id:string}>(tables.sessions,100);const ids=sessions.filter(v=>v.address===s.address).map(v=>v.id);if(ids.length)await db.delete(tables.sessions,ids);await log('wallet_logout_everywhere','Revoked all active sessions for this wallet.',s.address);return responseCookie({ok:true},clearCookie());}],
  'GET /api/transparency':[async()=>{const rows=await listAll<AidRecord>(tables.records,100);return json({records:rows.sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)))})}],
- 'GET /api/beneficiary':[async({event})=>{const s=await requireSession(event);const denied=roleError(s,['beneficiary','admin']);if(denied)return denied;const rows=await listAll<AidRecord>(tables.records,100);return json({records:rows.filter(r=>r.recipientAddress===s!.address)})}],
+ 'GET /api/beneficiary':[async({event})=>{const s=await requireSession(event);const denied=roleError(s,['beneficiary','admin']);if(denied)return denied;const rows=await listAll<AidRecord>(tables.records,100);return noStore({records:rows.filter(r=>r.recipientAddress===s!.address)})}],
  'POST /api/records':[async({event,body})=>{
    const s=await requireSession(event);const denied=roleError(s,['organization','admin']);if(denied)return denied;if(!originAllowed(event)||!csrfOK(body,s!))return error('CSRF check failed. Refresh the app and retry.',403);
    const x=validateRecord(body);if(!x)return error('Invalid record. Check address, positive amount, asset, network, date and transaction hash.',400);
@@ -162,7 +167,7 @@ export const handler=router({
    const [ok]=await db.tx.update(tables.records,[{id:old.id,record:updated,if:{organization:old.organization,voidedAt:undefined}}],{patch:true});if(!ok)return error('Record changed or was already voided.',409);
    await log('record_voided','Voided record for '+old.recipient+'. Reason: '+reason,s!.address,old.id);return json({record:updated});
  }],
- 'GET /api/admin/roles':[async({event})=>{const s=await requireSession(event);const denied=roleError(s,['admin']);if(denied)return denied;return json({roles:await listAll<{address:string;role:Role;updatedAt:string;updatedBy:string} & {id:string}>(tables.roles,100)})}],
+ 'GET /api/admin/roles':[async({event})=>{const s=await requireSession(event);const denied=roleError(s,['admin']);if(denied)return denied;return noStore({roles:await listAll<{address:string;role:Role;updatedAt:string;updatedBy:string} & {id:string}>(tables.roles,100)})}],
  'POST /api/admin/roles':[async({event,body})=>{
    const s=await requireSession(event);const denied=roleError(s,['admin']);if(denied)return denied;if(!originAllowed(event)||!csrfOK(body,s!))return error('CSRF check failed. Refresh the app and retry.',403);
    const x=body as {address?:string;role?:Role};if(!validAddress(x.address)||!validRole(x.role))return error('Valid wallet address and role required.',400);
@@ -177,5 +182,5 @@ export const handler=router({
    const [old]=await db.get<{role:Role}>(tables.roles,[params.address],{consistent:true});if(!old)return error('Explicit role not found.',404);
    const [ok]=await db.delete(tables.roles,[params.address]);if(!ok)return error('Could not remove role.',503);await log('wallet_role_removed','Removed '+params.address+' role '+old.role+'; wallet now defaults to donor.',s!.address);return json({ok:true});
  }],
- 'GET /api/audit':[async({event})=>{const s=await requireSession(event);const denied=roleError(s,['admin']);if(denied)return denied;const rows=await listAll<Audit>(tables.audit,100);return json({entries:rows.sort((a,b)=>b.createdAt.localeCompare(a.createdAt))})}]
+ 'GET /api/audit':[async({event})=>{const s=await requireSession(event);const denied=roleError(s,['admin']);if(denied)return denied;const rows=await listAll<Audit>(tables.audit,100);return noStore({entries:rows.sort((a,b)=>b.createdAt.localeCompare(a.createdAt))})}]
 });

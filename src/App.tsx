@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '@appdeploy/client';
 import { getNetwork, isConnected, requestAccess, signMessage } from '@stellar/freighter-api';
-import { Activity, ArrowDownToLine, ArrowUpRight, BadgeCheck, CheckCircle2, CircleAlert, ExternalLink, FileClock, HeartHandshake, LogOut, Plus, RefreshCw, Search, ShieldCheck, Wallet, X, Sun, Moon } from 'lucide-react';
+import { Activity, ArrowDownToLine, ArrowUpRight, BadgeCheck, CheckCircle2, CircleAlert, Copy, ExternalLink, FileClock, HeartHandshake, LogOut, Plus, RefreshCw, Search, ShieldCheck, Wallet, X, Sun, Moon } from 'lucide-react';
 import './fullstack.css';
 
 type Network = 'testnet' | 'mainnet';
@@ -25,6 +25,7 @@ export default function App() {
   const [network, setNetwork] = useState<Network>(defaultNetwork);
   const [page, setPage] = useState<'transparency'|'activity'|'beneficiary'|'admin'>('transparency');
   const [records, setRecords] = useState<AidRecord[]>([]);
+  const [beneficiaryRecords, setBeneficiaryRecords] = useState<AidRecord[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [audit, setAudit] = useState<AuditItem[]>([]);
   const [roles, setRoles] = useState<{address:string;role:Role;updatedAt:string;updatedBy:string}[]>([]);
@@ -51,7 +52,6 @@ export default function App() {
   const [pageNumber, setPageNumber] = useState(1);
   const [selected, setSelected] = useState<AidRecord|null>(null);
   const [showForm, setShowForm] = useState(false);
-  const [showRoleForm, setShowRoleForm] = useState(false);
   const [form, setForm] = useState({recipient:'',recipientAddress:'',purpose:'',amount:'',asset:'USDC',assetIssuer:'',network:defaultNetwork as Network,txHash:'',date:new Date().toISOString().slice(0,10),note:''});
   const [roleAddress, setRoleAddress] = useState('');
   const [roleValue, setRoleValue] = useState<Role>('organization');
@@ -62,21 +62,26 @@ export default function App() {
 
   const notify = useCallback((text: string) => { setToast(text); window.setTimeout(() => setToast(''), 3600); }, []);
   const loadTransparency = useCallback(async () => {
-    try { const result = await api.get('/api/transparency'); setRecords(result.data.records || []); }
+    try { const result = await api.get<{records?:AidRecord[]}>('/api/transparency'); setRecords(result.data.records || []); }
     catch(e) { setError(messageOf(e)); }
     finally { setLoading(false); }
   }, []);
+  const loadBeneficiaryRecords = useCallback(async () => {
+    try { const result = await api.get<{records?:AidRecord[]}>('/api/beneficiary'); setBeneficiaryRecords(result.data.records || []); }
+    catch(e) { setError(messageOf(e)); }
+  }, []);
   const loadAudit = useCallback(async () => {
     if (!session || session.role !== 'admin') return;
-    try { const r = await api.get('/api/audit'); setAudit(r.data.entries || []); } catch(e) { setError(messageOf(e)); }
+    try { const r = await api.get<{entries?:AuditItem[]}>('/api/audit'); setAudit(r.data.entries || []); } catch(e) { setError(messageOf(e)); }
   }, [session]);
   const restoreSession = useCallback(async () => {
-    try { const r = await api.get('/api/me'); const restored = r.data.session as Session | null; setSession(restored); if (restored) setNetwork(restored.network); }
-    catch { setSession(null); }
+    try { const r = await api.get<{session:Session|null}>('/api/me'); const restored = r.data.session; setSession(restored); if (restored) setNetwork(restored.network); }
+    catch(e) { setSession(null); setError(messageOf(e)); }
   }, []);
   useEffect(() => { void restoreSession(); void loadTransparency(); }, [restoreSession, loadTransparency]);
   useEffect(() => { if (session?.role === 'admin') { void loadAudit(); void loadRoles(); } }, [session, loadAudit]);
-  async function loadRoles() { try { const r = await api.get('/api/admin/roles'); setRoles(r.data.roles || []); } catch(e) { setError(messageOf(e)); } }
+  useEffect(() => { if (page === 'beneficiary' && session) void loadBeneficiaryRecords(); }, [page, session, loadBeneficiaryRecords]);
+  async function loadRoles() { try { const r = await api.get<{roles?:{address:string;role:Role;updatedAt:string;updatedBy:string}[]}>('/api/admin/roles'); setRoles(r.data.roles || []); } catch(e) { setError(messageOf(e)); } }
 
   const loadActivity = useCallback(async (address: string, selectedNetwork: Network) => {
     setActivityLoading(true);
@@ -135,17 +140,17 @@ export default function App() {
       if(walletNetwork.error) throw new Error(walletNetwork.error.message||'Could not determine Freighter network.');
       const walletNet=String(walletNetwork.network||'').toLowerCase().includes('test')?'testnet':'mainnet';
       if(walletNet!==network) throw new Error('Wrong network: AidTrace is on '+network+' but Freighter is on '+walletNet+'. Switch one network and reconnect.');
-      const challenge=await api.post('/api/auth/challenge',{address,network});
+      const challenge=await api.post<{message:string;challengeId:string}>('/api/auth/challenge',{address,network});
       const signed=await signMessage(challenge.data.message,{address,networkPassphrase:walletNetwork.networkPassphrase});
       if(signed.error) throw new Error(/reject|cancel|declin/i.test(signed.error.message||'')?'You rejected the signing request. No transaction was sent.':signed.error.message||'Message signing failed.');
       if(!signed.signedMessage || signed.signerAddress!==address) throw new Error('The challenge signature was missing or signed by a different wallet.');
-      const verified=await api.post('/api/auth/verify',{challengeId:challenge.data.challengeId,address,network,signature:signed.signedMessage});
+      const verified=await api.post<{session:Session}>('/api/auth/verify',{challengeId:challenge.data.challengeId,address,network,signature:signed.signedMessage});
       setSession(verified.data.session); setNetwork(network); notify('Wallet ownership verified.'); await loadTransparency();
     } catch(e) { const msg=messageOf(e); setError(/expired or already used/i.test(msg)?'Challenge expired. Reconnect to request a fresh five-minute challenge.':msg); }
     finally { setBusy(false); }
   }
   async function disconnect(everywhere=false) {
-    try { await api.post(everywhere?'/api/auth/logout-everywhere':'/api/auth/logout',{csrfToken:session?.csrfToken}); setSession(null); setActivity([]); notify(everywhere?'All sessions for this wallet were signed out.':'Wallet disconnected.'); }
+    try { await api.post(everywhere?'/api/auth/logout-everywhere':'/api/auth/logout',{csrfToken:session?.csrfToken}); setSession(null); setActivity([]); setPage('transparency'); notify(everywhere?'All sessions for this wallet were signed out.':'Wallet disconnected.'); }
     catch(e) { setError(messageOf(e)); }
   }
   async function copyAddress() { if(!session)return; try {await navigator.clipboard.writeText(session.address);notify('Public address copied.');} catch {setError('Clipboard is unavailable. Select the public address to copy it.');} }
@@ -163,7 +168,7 @@ export default function App() {
   }
   async function verifyRecord(record:AidRecord) {
     setRecords(prev=>prev.map(r=>r.id===record.id?{...r,status:'pending'}:r));
-    try { const r=await api.post('/api/records/'+encodeURIComponent(record.id)+'/verify',{csrfToken:session?.csrfToken}); await loadTransparency(); setSelected(r.data.record); notify('Verification check completed: '+labelStatus(r.data.record.status)); }
+    try { const r=await api.post<{record:AidRecord}>('/api/records/'+encodeURIComponent(record.id)+'/verify',{csrfToken:session?.csrfToken}); await loadTransparency(); setSelected(r.data.record); notify('Verification check completed: '+labelStatus(r.data.record.status)); }
     catch(e){setError(messageOf(e));await loadTransparency();}
   }
   async function voidRecord(record:AidRecord) {
@@ -173,7 +178,7 @@ export default function App() {
   }
   async function editRecord(event:React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if(!selected||!session)return;
-    try {const r=await api.put('/api/records/'+encodeURIComponent(selected.id),{csrfToken:session.csrfToken,recipient:selected.recipient,recipientAddress:selected.recipientAddress,purpose:selected.purpose,amount:selected.amount,asset:selected.asset,assetIssuer:selected.assetIssuer||'',network:selected.network,txHash:selected.txHash,date:selected.date,note:selected.note});setSelected(r.data.record);await loadTransparency();notify('Record updated and audit-logged.');}
+    try {const r=await api.put<{record:AidRecord}>('/api/records/'+encodeURIComponent(selected.id),{csrfToken:session.csrfToken,recipient:selected.recipient,recipientAddress:selected.recipientAddress,purpose:selected.purpose,amount:selected.amount,asset:selected.asset,assetIssuer:selected.assetIssuer||'',network:selected.network,txHash:selected.txHash,date:selected.date,note:selected.note});setSelected(r.data.record);await loadTransparency();notify('Record updated and audit-logged.');}
     catch(e){setError(messageOf(e));}
   }
   async function saveRole() {
@@ -198,3 +203,191 @@ export default function App() {
   const organizations=useMemo(()=>Array.from(new Set(records.map(r=>r.organization).filter(Boolean))),[records]);
   const assets=useMemo(()=>Array.from(new Set(records.map(r=>r.asset))),[records]);
   const verified=records.filter(r=>r.status==='verified'&&!r.voidedAt);
+  const pageCount=Math.max(1,Math.ceil(filteredAid.length/pageSize));
+  const visibleAid=filteredAid.slice((pageNumber-1)*pageSize,pageNumber*pageSize);
+  const totalsByAsset=records.reduce<Record<string,number>>((totals,record)=>{totals[record.asset]=(totals[record.asset]||0)+Number(record.amount);return totals;},{});
+  const canManageRecords=session?.role==='organization'||session?.role==='admin';
+  const canVoidSelected=!!selected&&!!session&&(session.role==='admin'||(session.role==='organization'&&selected.organization===session.address));
+  const selectedDifferences=selected?.verification?.differences||[];
+  useEffect(()=>{setPageNumber(1);},[orgFilter,assetFilter,networkFilter,statusFilter,fromDate,toDate]);
+
+  function sortRecords(field:string) {
+    if(sortBy===field)setSortDir(current=>current==='asc'?'desc':'asc');
+    else {setSortBy(field);setSortDir('asc');}
+  }
+  function exportCsv() {
+    const columns=['recipient','recipientAddress','purpose','amount','asset','network','txHash','date','organization','status'];
+    const escape=(value:unknown)=>'"'+String(value??'').replace(/"/g,'""')+'"';
+    const csv=[columns.join(','),...filteredAid.map(record=>columns.map(column=>escape(record[column as keyof AidRecord])).join(','))].join('\r\n');
+    const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+    const link=document.createElement('a');link.href=url;link.download='aidtrace-records.csv';link.click();URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div className={`app${dark?' dark':''}`}>
+      <header className="topbar">
+        <a className="brand" href="#" onClick={event=>{event.preventDefault();setPage('transparency');}}>
+          <span className="mark"><HeartHandshake size={20}/></span>
+          <span><strong>AidTrace</strong><small>STELLAR AID TRANSPARENCY</small></span>
+        </a>
+        <div className="top-actions">
+          <label className="network-picker">Network
+            <select aria-label="Stellar network" value={network} onChange={event=>setNetwork(event.target.value as Network)}>
+              <option value="testnet">Testnet</option><option value="mainnet">Mainnet</option>
+            </select>
+          </label>
+          <button className="icon-button" aria-label={dark?'Use light theme':'Use dark theme'} onClick={()=>setDark(value=>!value)}>{dark?<Sun size={16}/>:<Moon size={16}/>}</button>
+          {session?<>
+            <span className="wallet-chip" title={session.address}><Wallet size={13}/>{short(session.address)}</span>
+            <button className="icon-button" aria-label="Copy wallet address" title="Copy wallet address" onClick={()=>void copyAddress()}><Copy size={14}/></button>
+            <span className="role-pill">{session.role}</span>
+            <button className="button secondary compact" onClick={()=>void disconnect()}><LogOut size={14}/>Sign out</button>
+            <button className="button secondary compact" onClick={()=>void disconnect(true)}>Sign out everywhere</button>
+          </>:<button className="button primary" disabled={busy} onClick={()=>void connectWallet()}><Wallet size={15}/>{busy?'Connecting…':'Connect Freighter'}</button>}
+        </div>
+      </header>
+
+      <main>
+        <section className="hero">
+          <p className="eyebrow"><ShieldCheck size={14}/> TRANSPARENT AID. PUBLIC EVIDENCE.</p>
+          <h1>Trust, backed by <em>verifiable records.</em></h1>
+          <p>Explore aid disbursements and compare published details with public Stellar payment evidence. A verified payment confirms the transaction fields—not the real-world use of funds.</p>
+          <div className="hero-actions">
+            <button className="button primary" onClick={()=>document.getElementById('public-ledger')?.scrollIntoView({behavior:'smooth'})}><ArrowDownToLine size={15}/>Explore public records</button>
+            {!session&&<button className="button secondary" disabled={busy} onClick={()=>void connectWallet()}><Wallet size={15}/>Connect a wallet</button>}
+          </div>
+          <div className="security-note"><ShieldCheck size={16}/><span><b>Wallet safety:</b> AidTrace only requests a signed login challenge. It never asks for a seed phrase or submits payments.</span></div>
+        </section>
+
+        {error&&<div className="alert error" role="alert"><CircleAlert size={16}/><span>{error}</span><button aria-label="Dismiss error" onClick={()=>setError('')}><X size={15}/></button></div>}
+        {toast&&<div className="toast" role="status">{toast}</div>}
+
+        <nav className="tabs" aria-label="AidTrace sections">
+          <button className={`tab${page==='transparency'?' active':''}`} onClick={()=>setPage('transparency')}>Public Transparency</button>
+          {session&&<button className={`tab${page==='activity'?' active':''}`} onClick={()=>setPage('activity')}>My Activity</button>}
+          {session&&(session.role==='beneficiary'||session.role==='admin')&&<button className={`tab${page==='beneficiary'?' active':''}`} onClick={()=>setPage('beneficiary')}>Beneficiary Records</button>}
+          {session?.role==='admin'&&<button className={`tab${page==='admin'?' active':''}`} onClick={()=>setPage('admin')}>Administration</button>}
+        </nav>
+
+        {page==='transparency'&&<section className="panel" id="public-ledger">
+          <div className="section-head">
+            <div><p className="eyebrow">PUBLIC LEDGER</p><h2>Published aid records</h2><p>Records are public. Verified means the payment fields matched a successful Stellar transaction.</p></div>
+            <div className="section-actions">
+              <button className="button secondary compact" onClick={()=>void loadTransparency()}><RefreshCw size={14}/>Refresh</button>
+              <button className="button secondary compact" onClick={exportCsv} disabled={!filteredAid.length}><ArrowDownToLine size={14}/>Export CSV</button>
+              {canManageRecords&&<button className="button primary compact" onClick={()=>setShowForm(true)}><Plus size={14}/>Add record</button>}
+            </div>
+          </div>
+          <div className="summary-grid">
+            <article><span>Published records</span><b>{records.length}</b><small>Newest 100 records available from the API</small></article>
+            <article><span>Verified on-chain</span><b>{verified.length}</b><small>Successful transaction and matching payment fields</small></article>
+            <article><span>Organizations</span><b>{organizations.length}</b><small>Wallets that published records</small></article>
+            <article><span>Disbursed by asset</span><b>{Object.entries(totalsByAsset).map(([asset,total])=>`${total.toLocaleString(undefined,{maximumFractionDigits:7})} ${asset}`).join(' · ')||'—'}</b><small>Totals reflect published records, not independent impact verification</small></article>
+          </div>
+          <div className="toolbar filters">
+            <label className="search"><Search size={15}/><input aria-label="Search records" placeholder="Search recipient, wallet, purpose or transaction" value={search} onChange={event=>{setSearch(event.target.value);setPageNumber(1);}}/></label>
+            <select aria-label="Filter organization" value={orgFilter} onChange={event=>setOrgFilter(event.target.value)}><option value="all">All organizations</option>{organizations.map(org=><option key={org} value={org}>{short(org)}</option>)}</select>
+            <select aria-label="Filter asset" value={assetFilter} onChange={event=>setAssetFilter(event.target.value)}><option value="all">All assets</option>{assets.map(asset=><option key={asset}>{asset}</option>)}</select>
+            <select aria-label="Filter network" value={networkFilter} onChange={event=>setNetworkFilter(event.target.value)}><option value="all">All networks</option><option value="testnet">Testnet</option><option value="mainnet">Mainnet</option></select>
+            <select aria-label="Filter status" value={statusFilter} onChange={event=>setStatusFilter(event.target.value)}><option value="all">All statuses</option>{(['verified','mismatch','not-found','unverified','pending','voided'] as Verification[]).map(status=><option key={status} value={status}>{labelStatus(status)}</option>)}</select>
+            <label className="date-filter">From<input aria-label="From date" type="date" value={fromDate} onChange={event=>setFromDate(event.target.value)}/></label>
+            <label className="date-filter">To<input aria-label="To date" type="date" value={toDate} onChange={event=>setToDate(event.target.value)}/></label>
+          </div>
+          <div className="table-wrap">
+            <table><thead><tr>
+              <th><button className="sort-button" onClick={()=>sortRecords('recipient')}>RECIPIENT</button></th>
+              <th><button className="sort-button" onClick={()=>sortRecords('purpose')}>PURPOSE</button></th>
+              <th><button className="sort-button" onClick={()=>sortRecords('amount')}>AMOUNT</button></th>
+              <th>NETWORK</th><th><button className="sort-button" onClick={()=>sortRecords('date')}>DATE</button></th><th>STATUS</th><th>DETAILS</th>
+            </tr></thead><tbody>
+              {loading?<SkeletonRows columns={7}/>:visibleAid.map(record=><tr key={record.id}>
+                <td><strong>{record.recipient}</strong><small className="subcell">{short(record.recipientAddress)}</small></td>
+                <td>{record.purpose}</td><td>{record.amount} {record.asset}</td><td>{record.network}</td><td>{record.date}</td>
+                <td><span className={`status ${record.status}`}><i/>{labelStatus(record.status)}</span></td>
+                <td><button className="text-button" onClick={()=>setSelected(record)}>View <ArrowUpRight size={13}/></button></td>
+              </tr>)}
+            </tbody></table>
+          </div>
+          {!loading&&!visibleAid.length&&<div className="empty-state"><Search size={22}/><b>No records match these filters</b><p>Try changing or clearing the search and filter values.</p></div>}
+          <div className="pagination"><span>{filteredAid.length?`Showing ${(pageNumber-1)*pageSize+1}–${Math.min(pageNumber*pageSize,filteredAid.length)} of ${filteredAid.length}`:'No records'}</span><div><button className="button secondary compact" disabled={pageNumber<=1} onClick={()=>setPageNumber(value=>Math.max(1,value-1))}>Previous</button><span>Page {pageNumber} of {pageCount}</span><button className="button secondary compact" disabled={pageNumber>=pageCount} onClick={()=>setPageNumber(value=>Math.min(pageCount,value+1))}>Next</button></div></div>
+          <p className="panel-foot">A transaction hash alone does not establish impact. Review the on-chain evidence and publish identifying information only with appropriate consent.</p>
+        </section>}
+
+        {page==='activity'&&session&&<section className="panel">
+          <div className="section-head"><div><p className="eyebrow">CONNECTED WALLET</p><h2>My Stellar activity</h2><p>Your activity is loaded from the selected public Horizon network.</p></div><div className={`stream-status ${activityStream}`}><span className="live-dot"/>{activityStream==='live'?'Live stream':activityStream==='polling'?'Polling fallback':activityStream==='connecting'?'Connecting':'Offline'}</div></div>
+          <div className="activity-stats"><span>Wallet <b>{short(session.address)}</b></span><span>Network <b>{network}</b></span><span>XLM balance <b>{balance} XLM</b></span></div>
+          <div className="toolbar"><label className="search"><Search size={15}/><input aria-label="Search activity" placeholder="Search activity" value={search} onChange={event=>setSearch(event.target.value)}/></label><select aria-label="Filter activity type" value={activityType} onChange={event=>setActivityType(event.target.value)}><option value="all">All activity</option><option value="sent">Sent</option><option value="received">Received</option><option value="transaction">Other transactions</option></select><label className="date-filter">From<input type="date" value={activityFrom} onChange={event=>setActivityFrom(event.target.value)}/></label><label className="date-filter">To<input type="date" value={activityTo} onChange={event=>setActivityTo(event.target.value)}/></label><button className="button secondary compact" onClick={()=>void loadActivity(session.address,network)}><RefreshCw size={14}/>Refresh</button></div>
+          <div className="table-wrap"><table><thead><tr><th>TYPE</th><th>AMOUNT</th><th>COUNTERPARTY</th><th>DATE</th><th>STATUS</th><th>AID RECORD</th><th>TRANSACTION</th></tr></thead><tbody>
+            {activityLoading&&!activity.length?<SkeletonRows columns={7}/>:filteredActivity.map(item=><tr key={item.id}><td>{item.type}</td><td>{item.amount} {item.asset}</td><td>{item.counterparty}</td><td>{item.date?new Date(item.date).toLocaleString():'—'}</td><td>{item.status}</td><td>{item.publishedRecord?<button className="text-button" onClick={()=>{setPage('transparency');setSelected(item.publishedRecord||null);}}>View record</button>:'—'}</td><td>{item.hash?<a className="explorer-link" href={explorer(item.network,item.hash)} target="_blank" rel="noreferrer">Open <ExternalLink size={12}/></a>:'—'}</td></tr>)}
+          </tbody></table></div>
+          {!activityLoading&&!filteredActivity.length&&<div className="empty-state"><Activity size={22}/><b>No activity found</b><p>There are no matching payments for this wallet and network.</p></div>}
+        </section>}
+
+        {page==='beneficiary'&&session&&(session.role==='beneficiary'||session.role==='admin')&&<section className="panel">
+          <div className="section-head"><div><p className="eyebrow">PRIVATE WALLET VIEW</p><h2>Records for your wallet</h2><p>Results are scoped by the server to your connected beneficiary address.</p></div><button className="button secondary compact" onClick={()=>void loadBeneficiaryRecords()}><RefreshCw size={14}/>Refresh</button></div>
+          <div className="table-wrap"><table><thead><tr><th>RECIPIENT</th><th>PURPOSE</th><th>AMOUNT</th><th>DATE</th><th>STATUS</th><th>DETAILS</th></tr></thead><tbody>
+            {beneficiaryRecords.map(record=><tr key={record.id}><td>{record.recipient}</td><td>{record.purpose}</td><td>{record.amount} {record.asset}</td><td>{record.date}</td><td><span className={`status ${record.status}`}><i/>{labelStatus(record.status)}</span></td><td><button className="text-button" onClick={()=>setSelected(record)}>View <ArrowUpRight size={13}/></button></td></tr>)}
+          </tbody></table></div>
+          {!beneficiaryRecords.length&&<div className="empty-state"><HeartHandshake size={22}/><b>No beneficiary records yet</b><p>Records addressed to this wallet will appear here.</p></div>}
+        </section>}
+
+        {page==='admin'&&session?.role==='admin'&&<section className="panel admin-panel">
+          <div className="section-head"><div><p className="eyebrow">ADMINISTRATION</p><h2>Roles and audit history</h2><p>Role changes and record actions are enforced and recorded by the backend.</p></div></div>
+          <div className="summary-grid"><article><span>Explicit role assignments</span><b>{roles.length}</b><small>First 100 assignments from the service</small></article><article><span>Recent audit events</span><b>{audit.length}</b><small>Latest events returned by the service</small></article><article><span>Connected as</span><b className="role-stat">Admin</b><small>{short(session.address)}</small></article><article><span>Security</span><b><ShieldCheck size={20}/></b><small>Administrative operations are server-authorized</small></article></div>
+          <form className="role-form" onSubmit={event=>{event.preventDefault();void saveRole();}}>
+            <label>Wallet address<input value={roleAddress} onChange={event=>setRoleAddress(event.target.value)} placeholder="G…" required/></label>
+            <label>Role<select value={roleValue} onChange={event=>setRoleValue(event.target.value as Role)}><option value="donor">Donor</option><option value="organization">Organization</option><option value="beneficiary">Beneficiary</option><option value="admin">Admin</option></select></label>
+            <button className="button primary" type="submit"><Plus size={14}/>Assign role</button>
+          </form>
+          <div className="table-wrap"><table><thead><tr><th>WALLET</th><th>ROLE</th><th>UPDATED</th><th>UPDATED BY</th><th>ACTION</th></tr></thead><tbody>
+            {roles.map(item=><tr key={item.address}><td>{short(item.address)}</td><td>{item.role}</td><td>{item.updatedAt?new Date(item.updatedAt).toLocaleString():'—'}</td><td>{short(item.updatedBy)}</td><td><button className="text-button danger-text" onClick={()=>void removeRole(item.address)}>Remove</button></td></tr>)}
+          </tbody></table></div>
+          <div className="toolbar"><label className="search"><Search size={15}/><input aria-label="Search audit log" placeholder="Search audit events" value={auditSearch} onChange={event=>setAuditSearch(event.target.value)}/></label><select aria-label="Filter audit action" value={auditAction} onChange={event=>setAuditAction(event.target.value)}><option value="all">All actions</option>{Array.from(new Set(audit.map(item=>item.action))).map(action=><option key={action}>{action}</option>)}</select></div>
+          <div className="table-wrap"><table><thead><tr><th>ACTION</th><th>SUMMARY</th><th>WALLET</th><th>RECORD</th><th>TIME</th></tr></thead><tbody>{filteredAudit.map(item=><tr key={item.id}><td>{item.action}</td><td>{item.summary}</td><td>{short(item.address)}</td><td>{item.recordId||'—'}</td><td>{new Date(item.createdAt).toLocaleString()}</td></tr>)}</tbody></table></div>
+          {!filteredAudit.length&&<div className="empty-state"><FileClock size={22}/><b>No audit events found</b><p>Audit events will appear here as users interact with AidTrace.</p></div>}
+        </section>}
+
+        <section className="how"><h2>How verification works</h2><div className="how-grid">
+          <article><span className="mark"><Wallet size={17}/></span><h3>1. Connect safely</h3><p>Sign a one-time challenge to prove wallet ownership. No transaction or secret key is requested.</p></article>
+          <article><span className="mark"><BadgeCheck size={17}/></span><h3>2. Compare evidence</h3><p>The backend checks a successful Stellar transaction and compares the recorded payment fields.</p></article>
+          <article><span className="mark"><CheckCircle2 size={17}/></span><h3>3. Review the limits</h3><p>On-chain matching confirms payment data only; it is not proof of identity or real-world impact.</p></article>
+        </div></section>
+      </main>
+      <footer className="site-foot">AidTrace · Public Stellar payment evidence, not proof of impact.</footer>
+
+      {showForm&&<div className="backdrop" role="presentation" onMouseDown={event=>{if(event.target===event.currentTarget)setShowForm(false);}}><form className="form modal-large" onSubmit={saveRecord}>
+        <div className="modal-head"><div><p className="eyebrow">PUBLISH AID RECORD</p><h2>New disbursement</h2><p className="muted">Personal details and wallet addresses are public in this record.</p></div><button className="icon-button" type="button" aria-label="Close form" onClick={()=>setShowForm(false)}><X size={17}/></button></div>
+        <div className="form-grid">
+          <label>Recipient name<input value={form.recipient} onChange={event=>setForm({...form,recipient:event.target.value})} required maxLength={160}/></label>
+          <label>Beneficiary Stellar address<input value={form.recipientAddress} onChange={event=>setForm({...form,recipientAddress:event.target.value})} required maxLength={56} placeholder="G…"/></label>
+          <label>Purpose<input value={form.purpose} onChange={event=>setForm({...form,purpose:event.target.value})} required maxLength={240}/></label>
+          <label>Amount<input type="number" min="0.0000001" step="0.0000001" value={form.amount} onChange={event=>setForm({...form,amount:event.target.value})} required/></label>
+          <label>Asset<select value={form.asset==='XLM'||form.asset==='USDC'?form.asset:'other'} onChange={event=>setForm({...form,asset:event.target.value==='other'?'':event.target.value,assetIssuer:event.target.value==='XLM'?'':form.assetIssuer})}><option value="XLM">XLM</option><option value="USDC">USDC</option><option value="other">Other (enter asset code)</option></select></label>
+          {form.asset!=='XLM'&&<label>Asset code<input value={form.asset==='USDC'?'USDC':form.asset} onChange={event=>setForm({...form,asset:event.target.value.toUpperCase()})} required maxLength={12}/></label>}
+          {form.asset!=='XLM'&&<label>Asset issuer<input value={form.assetIssuer} onChange={event=>setForm({...form,assetIssuer:event.target.value})} required placeholder="G…"/></label>}
+          <label>Network<select value={form.network} onChange={event=>setForm({...form,network:event.target.value as Network})}><option value="testnet">Testnet</option><option value="mainnet">Mainnet</option></select></label>
+          <label>Disbursement date<input type="date" value={form.date} onChange={event=>setForm({...form,date:event.target.value})} required/></label>
+          <label>Stellar transaction hash (optional)<input value={form.txHash} onChange={event=>setForm({...form,txHash:event.target.value})} maxLength={64} placeholder="64 hexadecimal characters"/></label>
+          <label className="full">Note<textarea value={form.note} onChange={event=>setForm({...form,note:event.target.value})} maxLength={500} rows={3}/></label>
+        </div>
+        <p className="form-hint">Only a successful payment with a matching destination, amount and asset can be verified on-chain.</p>
+        <div className="form-actions"><button className="button secondary" type="button" onClick={()=>setShowForm(false)}>Cancel</button><button className="button primary" disabled={busy} type="submit"><Plus size={14}/>{busy?'Saving…':'Publish record'}</button></div>
+      </form></div>}
+
+      {selected&&<div className="backdrop" role="presentation" onMouseDown={event=>{if(event.target===event.currentTarget)setSelected(null);}}><section className="form detail-modal modal-large" role="dialog" aria-modal="true" aria-labelledby="record-heading">
+        <div className="modal-head"><div><p className="eyebrow">AID RECORD DETAILS</p><h2 id="record-heading">{selected.recipient}</h2><p className="muted">{selected.purpose}</p></div><button className="icon-button" aria-label="Close details" onClick={()=>setSelected(null)}><X size={17}/></button></div>
+        <div className="detail-list"><p><b>Amount</b><span>{selected.amount} {selected.asset}{selected.assetIssuer?` · issuer ${short(selected.assetIssuer)}`:''}</span></p><p><b>Beneficiary</b><span>{selected.recipientAddress}</span></p><p><b>Organization</b><span>{selected.organizationName||selected.organization}</span></p><p><b>Network and date</b><span>{selected.network} · {selected.date}</span></p><p><b>Transaction</b><span>{selected.txHash||'No transaction hash supplied'}</span></p><p><b>Created</b><span>{selected.createdAt?new Date(selected.createdAt).toLocaleString():'—'} by {short(selected.createdBy)}</span></p><p><b>Status</b><span className={`status ${selected.status}`}><i/>{labelStatus(selected.status)}</span></p>
+          {selected.verification?.reason&&<p><b>Verification note</b><span>{selected.verification.reason}</span></p>}{selectedDifferences.length>0&&<div className="diff-box">{selectedDifferences.map((difference,index)=><p key={index}>{difference}</p>)}</div>}{selected.voidReason&&<p><b>Void reason</b><span>{selected.voidReason}</span></p>}
+        </div>
+        <div className="detail-actions">
+          {selected.txHash&&<a className="explorer-link" href={selected.verification?.link||explorer(selected.network,selected.txHash)} target="_blank" rel="noreferrer">View on Stellar Expert <ExternalLink size={13}/></a>}
+          <button className="button secondary compact" onClick={()=>void verifyRecord(selected)} disabled={!session}><RefreshCw size={14}/>Verify</button>
+        </div>
+        {session&&canManageRecords&&(session.role==='admin'||selected.organization===session.address)&&!selected.voidedAt&&<form className="inline-edit" onSubmit={editRecord}>
+          <h3>Edit record</h3><label>Recipient<input value={selected.recipient} onChange={event=>setSelected({...selected,recipient:event.target.value})}/></label><label>Purpose<input value={selected.purpose} onChange={event=>setSelected({...selected,purpose:event.target.value})}/></label><label>Amount<input type="number" step="0.0000001" value={selected.amount} onChange={event=>setSelected({...selected,amount:event.target.value})}/></label><label>Transaction hash<input value={selected.txHash} onChange={event=>setSelected({...selected,txHash:event.target.value})}/></label><button className="button primary compact" type="submit">Save changes</button>
+        </form>}
+        {canVoidSelected&&!selected.voidedAt&&<form className="void-box" onSubmit={event=>{event.preventDefault();void voidRecord(selected);}}><label>Reason for voiding<textarea value={voidReason} onChange={event=>setVoidReason(event.target.value)} minLength={5} maxLength={500} rows={2}/></label><button className="button danger compact" type="submit">Confirm void</button></form>}
+      </section></div>}
+    </div>
+  );
+}
