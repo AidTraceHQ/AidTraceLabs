@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api';
 import { getNetwork, isConnected, requestAccess, signMessage } from '@stellar/freighter-api';
 import { networkPassphrase, signatureToBase64, throwFreighterError, waitForFreighter } from './freighter';
+import { readNetworkPreference, writeNetworkPreference } from './network-preference';
 import { Activity, ArrowDownToLine, ArrowUpRight, BadgeCheck, CheckCircle2, CircleAlert, Copy, ExternalLink, FileClock, HeartHandshake, LogOut, Plus, RefreshCw, Search, ShieldCheck, Wallet, X, Sun, Moon } from 'lucide-react';
 import './fullstack.css';
 
@@ -12,7 +13,6 @@ type Session = { address: string; network: Network; role: Role; expiresAt: strin
 type AidRecord = { id: string; recipient: string; recipientAddress: string; purpose: string; amount: string; asset: string; assetIssuer?: string; network: Network; txHash: string; date: string; note: string; status: Verification; organization: string; organizationName?: string; createdAt: string; createdBy: string; recipientConsent?: boolean; verification?: { status: Verification; checkedAt: string; differences: string[]; ledger?: number; createdAt?: string; destination?: string; amount?: string; asset?: string; assetIssuer?: string; link?: string; reason?: string }; voidReason?: string; voidedAt?: string };
 type ActivityItem = { id: string; hash: string; date: string; type: string; amount: string; asset: string; counterparty: string; status: string; network: Network; publishedRecord?: AidRecord };
 type AuditItem = { id: string; action: string; summary: string; address: string; recordId?: string; createdAt: string };
-const defaultNetwork: Network = 'testnet';
 const horizon: Record<Network, string> = { testnet: 'https://horizon-testnet.stellar.org', mainnet: 'https://horizon.stellar.org' };
 const explorer = (network: Network, hash: string) => (network === 'mainnet' ? 'https://stellar.expert/explorer/public/tx/' : 'https://stellar.expert/explorer/testnet/tx/') + encodeURIComponent(hash);
 const short = (value: string, left = 7, right = 5) => value && value.length > left + right + 1 ? value.slice(0, left) + '…' + value.slice(-right) : value || '—';
@@ -23,7 +23,7 @@ const SkeletonRows = ({ columns = 6 }: { columns?: number }) => <>{[0,1,2,3,4].m
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
-  const [network, setNetwork] = useState<Network>(defaultNetwork);
+  const [network, setNetwork] = useState<Network>(readNetworkPreference);
   const [page, setPage] = useState<'transparency'|'activity'|'beneficiary'|'admin'>('transparency');
   const [records, setRecords] = useState<AidRecord[]>([]);
   const [organizationOptions, setOrganizationOptions] = useState<string[]>([]);
@@ -56,7 +56,7 @@ export default function App() {
   const [pageNumber, setPageNumber] = useState(1);
   const [selected, setSelected] = useState<AidRecord|null>(null);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({recipient:'',recipientAddress:'',purpose:'',amount:'',asset:'USDC',assetIssuer:'',network:defaultNetwork as Network,txHash:'',date:new Date().toISOString().slice(0,10),note:'',recipientConsent:false});
+  const [form, setForm] = useState({recipient:'',recipientAddress:'',purpose:'',amount:'',asset:'USDC',assetIssuer:'',network,txHash:'',date:new Date().toISOString().slice(0,10),note:'',recipientConsent:false});
   const [roleAddress, setRoleAddress] = useState('');
   const [roleValue, setRoleValue] = useState<Role>('organization');
   const [auditAction, setAuditAction] = useState('all');
@@ -95,6 +95,12 @@ export default function App() {
     try { const result = await api.getAllPages<AidRecord>('/api/beneficiary','records'); setBeneficiaryRecords(result.data.records || []); }
     catch(e) { setError(messageOf(e)); }
   }, []);
+
+  function chooseNetwork(value: string) {
+    if (value !== 'testnet' && value !== 'mainnet') return;
+    setNetwork(value);
+    writeNetworkPreference(value);
+  }
   const loadAudit = useCallback(async () => {
     if (!session || session.role !== 'admin') return;
     const params=new URLSearchParams();
@@ -104,7 +110,7 @@ export default function App() {
     try { const r = await api.getAllPages<AuditItem>('/api/audit'+(query?'?'+query:''),'entries'); setAudit(r.data.entries || []); setAuditActionOptions(r.data.facets?.actions||[]); } catch(e) { setError(messageOf(e)); }
   }, [session,auditAction,auditSearch]);
   const restoreSession = useCallback(async () => {
-    try { const r = await api.get<{session:Session|null}>('/api/me'); const restored = r.data.session; setSession(restored); if (restored) setNetwork(restored.network); }
+    try { const r = await api.get<{session:Session|null}>('/api/me'); const restored = r.data.session; setSession(restored); }
     catch(e) { setSession(null); setError(messageOf(e)); }
   }, []);
   useEffect(() => { void restoreSession(); }, [restoreSession]);
@@ -180,7 +186,7 @@ export default function App() {
       if(signed.signerAddress!==address) throw new Error('The challenge was signed by a different wallet.');
       const signature=signatureToBase64(signed.signedMessage);
       const verified=await api.post<{session:Session}>('/api/auth/verify',{challengeId:challenge.data.challengeId,address,network,signature});
-      setSession(verified.data.session); setNetwork(network); notify('Wallet ownership verified.'); await loadTransparency();
+      setSession(verified.data.session); notify('Wallet ownership verified.'); await loadTransparency();
     } catch(e) { const msg=messageOf(e); setError(/expired or already used/i.test(msg)?'Challenge expired. Reconnect to request a fresh five-minute challenge.':msg); }
     finally { setBusy(false); }
   }
@@ -265,7 +271,7 @@ export default function App() {
         </a>
         <div className="top-actions">
           <label className="network-picker">Network
-            <select aria-label="Stellar network" value={network} onChange={event=>setNetwork(event.target.value as Network)}>
+            <select aria-label="Stellar network" value={network} onChange={event=>chooseNetwork(event.target.value)}>
               <option value="testnet">Testnet</option><option value="mainnet">Mainnet</option>
             </select>
           </label>
