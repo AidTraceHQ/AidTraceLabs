@@ -9,11 +9,16 @@ type PageEnvelope = {
   facets?: { organizations?: string[]; assets?: string[]; actions?: string[] };
 };
 
-const configuredBase = import.meta.env.VITE_API_BASE_URL?.trim();
+const configuredBase = import.meta.env.VITE_API_BASE_URL?.trim() || '';
 
-function requestUrl(path: string): URL {
-  const base = configuredBase || window.location.origin;
-  return new URL(path, base.endsWith('/') ? base : base + '/');
+export function resolveApiUrl(
+  path: string,
+  base = configuredBase,
+  origin = window.location.origin,
+): string {
+  if (!base) return path;
+  const normalizedBase = base.endsWith('/') ? base : base + '/';
+  return new URL(path, normalizedBase || origin).toString();
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<ApiResponse<T>> {
@@ -28,21 +33,28 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     headers.set('Content-Type', 'application/json');
     init.body = JSON.stringify(body);
   }
-  const response = await fetch(requestUrl(path), init);
+  let response: Response;
+  try {
+    response = await fetch(resolveApiUrl(path), init);
+  } catch (error) {
+    const detail = error instanceof Error ? ': ' + error.message : '';
+    throw new Error(method + ' ' + path + ' failed' + detail);
+  }
+  const failurePrefix = method + ' ' + path + ' failed (' + response.status + ')';
   let data: unknown;
   try {
     data = await response.json();
   } catch {
     throw new Error(response.ok
-      ? 'The API returned an invalid response.'
-      : 'API request failed with status ' + response.status + '.');
+      ? method + ' ' + path + ' returned an invalid response.'
+      : failurePrefix + ': the API returned an invalid response.');
   }
   if (!response.ok) {
     const message = data !== null && typeof data === 'object' &&
       'error' in data && typeof data.error === 'string'
       ? data.error
-      : 'API request failed with status ' + response.status + '.';
-    throw new Error(message);
+      : 'request was rejected.';
+    throw new Error(failurePrefix + ': ' + message);
   }
   return { data: data as T };
 }
@@ -53,7 +65,7 @@ async function getAllPages<TItem>(
 ): Promise<ApiResponse<PageEnvelope & Partial<Record<CollectionKey, TItem[]>>>> {
   const combined: TItem[] = [];
   const seenCursors = new Set<string>();
-  const url = requestUrl(path);
+  const url = new URL(path, window.location.origin);
   url.searchParams.set('limit', '100');
   let cursor: string | null = null;
   let finalPage: (PageEnvelope & Partial<Record<CollectionKey, TItem[]>>) | null = null;

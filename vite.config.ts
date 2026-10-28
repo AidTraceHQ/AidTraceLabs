@@ -4,6 +4,14 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   base: './',
+  server: {
+    strictPort: true,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3001',
+      },
+    },
+  },
   build: {
     outDir: process.env.APPDEPLOY_VITE_OUT_DIR || 'dist',
     sourcemap:
