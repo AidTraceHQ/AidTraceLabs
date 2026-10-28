@@ -174,7 +174,7 @@ router.post('/api/auth/challenge', noStore, async (request, response) => {
       [challengeId, nonce, address, network, message, expiresAt],
     );
   });
-  response.status(200).json({ challengeId, message, expiresAt: expiresAt.toISOString() });
+  response.status(200).json({ challengeId, message, expiresAt: expiresAt.getTime() });
 });
 
 router.post('/api/auth/verify', noStore, async (request, response) => {
