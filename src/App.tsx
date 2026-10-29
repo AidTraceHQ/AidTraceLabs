@@ -9,6 +9,7 @@ import './fullstack.css';
 type Network = 'testnet' | 'mainnet';
 type Role = 'donor' | 'organization' | 'beneficiary' | 'admin';
 type Verification = 'verified' | 'mismatch' | 'not-found' | 'unverified' | 'pending' | 'voided';
+type LedgerTotal = { status: Verification; asset: string; amount: string };
 type Session = { address: string; network: Network; role: Role; expiresAt: string; csrfToken: string };
 type AidRecord = { id: string; recipient: string; recipientAddress: string; purpose: string; amount: string; asset: string; assetIssuer?: string; network: Network; txHash: string; date: string; note: string; status: Verification; organization: string; organizationName?: string; createdAt: string; createdBy: string; recipientConsent?: boolean; verification?: { status: Verification; checkedAt: string; differences: string[]; ledger?: number; createdAt?: string; destination?: string; amount?: string; asset?: string; assetIssuer?: string; link?: string; reason?: string }; voidReason?: string; voidedAt?: string };
 type ActivityItem = { id: string; hash: string; date: string; type: string; amount: string; asset: string; counterparty: string; status: string; network: Network; publishedRecord?: AidRecord };
@@ -16,6 +17,10 @@ type AuditItem = { id: string; action: string; summary: string; address: string;
 const horizon: Record<Network, string> = { testnet: 'https://horizon-testnet.stellar.org', mainnet: 'https://horizon.stellar.org' };
 const explorer = (network: Network, hash: string) => (network === 'mainnet' ? 'https://stellar.expert/explorer/public/tx/' : 'https://stellar.expert/explorer/testnet/tx/') + encodeURIComponent(hash);
 const short = (value: string, left = 7, right = 5) => value && value.length > left + right + 1 ? value.slice(0, left) + '…' + value.slice(-right) : value || '—';
+const formatAmount = (value: string) => {
+  const [whole, fraction = ''] = value.split('.');
+  return BigInt(whole || '0').toLocaleString() + (fraction ? '.' + fraction : '');
+};
 const messageOf = (e: unknown) => e instanceof Error ? e.message : 'Something went wrong. Please try again.';
 const labelStatus = (status: Verification) => ({ verified: 'Verified on-chain', mismatch: 'Mismatch', 'not-found': 'Not found', unverified: 'Unverified', pending: 'Checking…', voided: 'Voided' }[status] || 'Unverified');
 const isAddress = (value: string) => /^G[A-Z2-7]{55}$/.test(value);
@@ -28,6 +33,7 @@ export default function App() {
   const [records, setRecords] = useState<AidRecord[]>([]);
   const [organizationOptions, setOrganizationOptions] = useState<string[]>([]);
   const [assetOptions, setAssetOptions] = useState<string[]>([]);
+  const [ledgerTotals, setLedgerTotals] = useState<LedgerTotal[]>([]);
   const [beneficiaryRecords, setBeneficiaryRecords] = useState<AidRecord[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [audit, setAudit] = useState<AuditItem[]>([]);
@@ -84,6 +90,7 @@ export default function App() {
         setRecords(result.data.records||[]);
         setOrganizationOptions(result.data.facets?.organizations||[]);
         setAssetOptions(result.data.facets?.assets||[]);
+        setLedgerTotals(result.data.summary?.byStatus||[]);
       }
     } catch(e) {
       if(requestId===transparencyRequestId.current) setError(messageOf(e));
@@ -244,7 +251,9 @@ export default function App() {
   const verified=records.filter(r=>r.status==='verified'&&!r.voidedAt);
   const pageCount=Math.max(1,Math.ceil(filteredAid.length/pageSize));
   const visibleAid=filteredAid.slice((pageNumber-1)*pageSize,pageNumber*pageSize);
-  const totalsByAsset=records.reduce<Record<string,number>>((totals,record)=>{totals[record.asset]=(totals[record.asset]||0)+Number(record.amount);return totals;},{});
+  const verifiedTotals=ledgerTotals.filter(total=>total.status==='verified');
+  const otherStatusTotals=ledgerTotals.filter(total=>total.status!=='verified')
+    .map(total=>`${labelStatus(total.status)}: ${formatAmount(total.amount)} ${total.asset}`);
   const canManageRecords=session?.role==='organization'||session?.role==='admin';
   const canVoidSelected=!!selected&&!!session&&(session.role==='admin'||(session.role==='organization'&&selected.organization===session.address));
   const selectedDifferences=selected?.verification?.differences||[];
@@ -321,7 +330,7 @@ export default function App() {
             <article><span>Published records</span><b>{records.length}</b><small>Records matching the active filters</small></article>
             <article><span>Verified on-chain</span><b>{verified.length}</b><small>Successful transaction and matching payment fields</small></article>
             <article><span>Organizations</span><b>{organizationOptions.length}</b><small>Wallets that published records</small></article>
-            <article><span>Disbursed by asset</span><b>{Object.entries(totalsByAsset).map(([asset,total])=>`${total.toLocaleString(undefined,{maximumFractionDigits:7})} ${asset}`).join(' · ')||'—'}</b><small>Totals reflect published records, not independent impact verification</small></article>
+            <article><span>Disbursed by asset (verified only)</span><b>{verifiedTotals.map(total=>`${formatAmount(total.amount)} ${total.asset}`).join(' · ')||'—'}</b><small>Only verified records are included in this total.</small>{otherStatusTotals.length>0&&<small>Other statuses (excluded): {otherStatusTotals.join(' · ')}</small>}</article>
           </div>
           <div className="toolbar filters">
             <label className="search"><Search size={15}/><input aria-label="Search records" placeholder="Search purpose, organization or record" value={search} onChange={event=>{setSearch(event.target.value);setPageNumber(1);}}/></label>

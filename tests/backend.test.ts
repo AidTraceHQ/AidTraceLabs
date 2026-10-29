@@ -516,7 +516,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       amount: '1.25',
       asset_type: 'native',
     }]);
-    const verified = await createRecord(session, recipient, 'Verified record', { txHash: verifiedHash });
+    const verified = await createRecord(session, recipient, 'Summary test verified', { txHash: verifiedHash });
     expect(verified.status).toBe(201);
     expect(verified.body.record.status).toBe('verified');
     expect(verified.body.record.verification.sourceAccount).toBe(expectedSource);
@@ -542,9 +542,40 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       amount: '1.25',
       asset_type: 'native',
     }]);
-    const mismatch = await createRecord(session, recipient, 'Wrong source record', { txHash: wrongHash });
+    const mismatch = await createRecord(session, recipient, 'Summary test mismatch', { txHash: wrongHash });
     expect(mismatch.status).toBe(201);
     expect(mismatch.body.record.status).toBe('mismatch');
+
+    const adminHash = '4'.padStart(64, '0');
+    transactionBodies.set(adminHash, {
+      successful: true,
+      source_account: admin.publicKey(),
+      ledger: 9,
+      created_at: '2026-01-15T00:00:00Z',
+    });
+    operationBodies.set(adminHash, [{
+      type: 'payment',
+      from: admin.publicKey(),
+      to: recipient.publicKey(),
+      amount: '1.25',
+      asset_type: 'native',
+    }]);
+    const adminCreated = await createRecord(adminSession, recipient, 'Admin-created record', {
+      txHash: adminHash,
+    });
+    expect(adminCreated.status).toBe(201);
+    expect(adminCreated.body.record.organization).toBe(admin.publicKey());
+    expect(adminCreated.body.record.organizationName).toBe('Organization ' + admin.publicKey().slice(-4));
+    expect(adminCreated.body.record.verification.sourceAccount).toBe(admin.publicKey());
+
+    const summaryResponse = await request(app)
+      .get('/api/transparency')
+      .query({ q: 'Summary test' });
+    expect(summaryResponse.status).toBe(200);
+    expect(summaryResponse.body.summary.byStatus).toEqual([
+      { status: 'mismatch', asset: 'XLM', amount: '1.25' },
+      { status: 'verified', asset: 'XLM', amount: '1.25' },
+    ]);
 
     const duplicate = await createRecord(session, recipient, 'Duplicate record', { txHash: verifiedHash });
     expect(duplicate.status).toBe(409);
@@ -568,6 +599,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .query({ q: privacyTerm, network: 'testnet', limit: '1' });
     expect(publicResponse.status).toBe(200);
     expect(publicResponse.body.records).toHaveLength(1);
+    expect(publicResponse.body.facets.organizations).toContain(organization.publicKey());
     expect(publicResponse.body.records[0].recipient).toMatch(/^Beneficiary-/);
     expect(publicResponse.body.records[0].recipientAddress).toBe('');
     expect(publicResponse.body.records[0].txHash).toBe('');
@@ -580,6 +612,26 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(ownerResponse.body.records[0].recipient).toBe('Confidential beneficiary');
     expect(ownerResponse.body.records[0].recipientAddress).toBe(recipient.publicKey());
     expect(ownerResponse.body.records[0].txHash).toBe('3'.padStart(64, '0'));
+    expect(ownerResponse.body.records[0].note).toBe('Private contact note');
+
+    const adminResponse = await request(app)
+      .get('/api/transparency')
+      .query({ q: privacyTerm })
+      .set('Cookie', adminSession.cookie);
+    expect(adminResponse.body.records[0].recipient).toBe('Confidential beneficiary');
+    expect(adminResponse.body.records[0].recipientAddress).toBe(recipient.publicKey());
+    expect(adminResponse.body.records[0].note).toBe('Private contact note');
+
+    await assignRole(adminSession, recipient, 'beneficiary');
+    const beneficiarySession = await login(recipient);
+    const beneficiaryResponse = await request(app)
+      .get('/api/beneficiary')
+      .query({ q: privacyTerm })
+      .set('Cookie', beneficiarySession.cookie);
+    expect(beneficiaryResponse.body.records).toHaveLength(1);
+    expect(beneficiaryResponse.body.records[0].recipient).toBe('Confidential beneficiary');
+    expect(beneficiaryResponse.body.records[0].recipientAddress).toBe(recipient.publicKey());
+    expect(beneficiaryResponse.body.records[0].note).toBe('Private contact note');
 
     const pageOne = await request(app).get('/api/transparency').query({ limit: '1' });
     expect(pageOne.body.hasMore).toBe(true);

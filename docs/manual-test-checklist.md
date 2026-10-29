@@ -5,6 +5,29 @@ Do not use production credentials or submit a real payment. The automated test
 suite covers the API and database contracts; this checklist covers browser,
 Freighter and deployment wiring.
 
+## Results recorded so far (2026-10-29)
+
+- The initial dev check found that the asset headline included non-verified
+  records. It now includes only verified amounts; other statuses are listed
+  separately with their status labels and are excluded from that headline.
+- The Organizations stat was zero because the UI read `facets.organizations`
+  while the API sent the organization array outside `facets`. The response now
+  follows the documented `facets` shape, which the UI reads.
+- When an admin creates a record, the admin's connected wallet is saved as
+  both `organization_wallet` and `created_by`. If that wallet has no
+  organization row yet, its display name is generated as `Organization ` plus
+  the last four address characters (for example, `Organization AEI2`). Stellar
+  verification compares the payment's source account with that record's
+  `organization_wallet`—so an admin-created record is checked against the
+  admin wallet, not another organization's wallet.
+- With recipient consent disabled, the public projection uses a pseudonym such
+  as `Beneficiary-a1b2c3d4` and does not expose a recipient address, note,
+  transaction hash, or restricted verification details. The owning
+  organization, an admin, and the beneficiary through the beneficiary route
+  retain full record data under the permission matrix. Automated tests cover
+  these projections. The original dev records had consent enabled, so their
+  existing public recipient data remains visible.
+
 ## Setup
 
 - [ ] Confirm `neon checkout dev` reports `dev`; `DATABASE_URL` must target
@@ -47,6 +70,11 @@ Freighter and deployment wiring.
 - [ ] With recipient consent enabled, confirm the approved public projection
   is shown. Confirm voiding retains the record and records the reason, actor
   and time instead of deleting it.
+- [ ] Confirm the disbursed-by-asset headline includes verified records only;
+  mismatched, pending, unverified, not-found and voided amounts appear
+  separately by labeled status and do not inflate the headline.
+- [ ] Confirm Organizations counts the wallets in the transparency response's
+  facets and the organization filter lists those wallets.
 - [ ] Exercise list filters and cursor pagination, including navigating
   forward and changing a filter while using an old cursor.
 - [ ] As an admin, list roles and audit events, change a role, and confirm the

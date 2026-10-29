@@ -7,6 +7,13 @@ type PageEnvelope = {
   hasMore?: boolean;
   nextCursor?: string | null;
   facets?: { organizations?: string[]; assets?: string[]; actions?: string[] };
+  summary?: {
+    byStatus?: {
+      status: 'verified' | 'mismatch' | 'not-found' | 'unverified' | 'pending' | 'voided';
+      asset: string;
+      amount: string;
+    }[];
+  };
 };
 
 const configuredBase = import.meta.env.VITE_API_BASE_URL?.trim() || '';

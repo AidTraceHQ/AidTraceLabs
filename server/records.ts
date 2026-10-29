@@ -638,6 +638,19 @@ router.get('/api/transparency', noStore, async (request, response) => {
   const conditions = ['TRUE'];
   const values: unknown[] = [];
   if (!applyRecordFilters(request, response, conditions, values)) return;
+  const summaryResult = await pool.query<{
+    status: RecordStatus;
+    asset_code: string;
+    amount_stroops: string;
+  }>(
+    `SELECT r.status, r.asset_code, SUM(r.amount_stroops)::text AS amount_stroops
+     FROM aid_records r
+     JOIN organizations o ON o.wallet_address = r.organization_wallet
+     WHERE ${conditions.join(' AND ')}
+     GROUP BY r.status, r.asset_code
+     ORDER BY r.status, r.asset_code`,
+    values,
+  );
   const result = await listRows<RecordRow>(
     recordSelect,
     conditions,
@@ -662,10 +675,20 @@ router.get('/api/transparency', noStore, async (request, response) => {
     );
     return mayViewPrivateData ? record : publicRecord(record, row.recipient_consent);
   });
+  const summary = {
+    byStatus: summaryResult.rows.map(row => ({
+      status: row.status,
+      asset: row.asset_code,
+      amount: stroopsToAmount(row.amount_stroops),
+    })),
+  };
   sendPage(request, response, 'records', records, result.hasMore, page.limit, item => ({
     createdAt: item.createdAt,
     id: item.id,
-  }), facets.rows[0] || { organizations: [], assets: [] });
+  }), {
+    facets: facets.rows[0] || { organizations: [], assets: [] },
+    summary,
+  });
 });
 
 router.get('/api/beneficiary', noStore, async (request, response) => {
