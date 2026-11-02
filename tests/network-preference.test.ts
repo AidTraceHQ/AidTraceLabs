@@ -16,8 +16,12 @@ describe('stored Stellar network preference', () => {
 
   it('survives unavailable browser storage and persists a valid choice when possible', () => {
     const unavailable = {
-      getItem: () => { throw new Error('storage disabled'); },
-      setItem: () => { throw new Error('storage disabled'); },
+      getItem: () => {
+        throw new Error('storage disabled');
+      },
+      setItem: () => {
+        throw new Error('storage disabled');
+      },
     };
     expect(readNetworkPreference(unavailable)).toBe('testnet');
     expect(() => writeNetworkPreference('mainnet', unavailable)).not.toThrow();

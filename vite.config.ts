@@ -8,14 +8,13 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/api': {
-        target: 'http://localhost:3001',
+        target: process.env.API_PROXY_TARGET || 'http://localhost:3001',
       },
     },
   },
   build: {
     outDir: process.env.APPDEPLOY_VITE_OUT_DIR || 'dist',
-    sourcemap:
-      process.env.APPDEPLOY_VITE_SOURCEMAP === 'hidden' ? 'hidden' : false,
+    sourcemap: process.env.APPDEPLOY_VITE_SOURCEMAP === 'hidden' ? 'hidden' : false,
     rollupOptions: {
       maxParallelFileOps: 128,
     },

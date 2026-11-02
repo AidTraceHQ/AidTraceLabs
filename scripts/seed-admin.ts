@@ -18,7 +18,7 @@ const connectionTimeoutMs = 10_000;
 export async function seedAdmin(
   address: string,
   databaseUrl: string,
-  createPool: (config: PoolConfig) => SeedPool = config => new Pool(config),
+  createPool: (config: PoolConfig) => SeedPool = (config) => new Pool(config),
 ): Promise<string> {
   if (!address) {
     throw new Error('ADMIN_WALLET is required.');

@@ -4,7 +4,7 @@ const publicOrigin = process.env.PUBLIC_APP_ORIGIN || 'http://localhost:5173';
 const allowedOrigins = new Set(
   (process.env.CORS_ALLOWED_ORIGINS || publicOrigin)
     .split(',')
-    .map(origin => origin.trim())
+    .map((origin) => origin.trim())
     .filter(Boolean),
 );
 
@@ -14,7 +14,10 @@ export function isAllowedOrigin(origin: string | undefined): origin is string {
 
 export function requireAllowedOrigin(request: Request, response: Response): boolean {
   if (isAllowedOrigin(request.get('Origin'))) return true;
-  response.status(403).set('Cache-Control', 'no-store').json({ error: 'Cross-origin request rejected.' });
+  response
+    .status(403)
+    .set('Cache-Control', 'no-store')
+    .json({ error: 'Cross-origin request rejected.' });
   return false;
 }
 

@@ -25,7 +25,12 @@ const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => 
     response.status(400).json({ error: 'Malformed JSON request body.' });
     return;
   }
-  if (typeof error === 'object' && error !== null && 'type' in error && error.type === 'entity.too.large') {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'type' in error &&
+    error.type === 'entity.too.large'
+  ) {
     response.status(413).json({ error: 'Request body is too large.' });
     return;
   }

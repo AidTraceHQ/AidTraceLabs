@@ -13,7 +13,7 @@ const server = app.listen(port, () => {
 
 async function shutdown(signal: string) {
   console.log(`Received ${signal}; shutting down.`);
-  server.close(async error => {
+  server.close(async (error) => {
     try {
       await pool.end();
     } catch (poolError) {

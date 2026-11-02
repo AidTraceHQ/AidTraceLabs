@@ -40,12 +40,18 @@ const operationPageLimit = 20;
 const amountPattern = /^(\d+)(?:\.(\d{1,7}))?$/;
 
 function horizonUrl(network: Network): URL {
-  const configured = network === 'mainnet'
-    ? process.env.HORIZON_MAINNET_URL || 'https://horizon.stellar.org'
-    : process.env.HORIZON_TESTNET_URL || 'https://horizon-testnet.stellar.org';
+  const configured =
+    network === 'mainnet'
+      ? process.env.HORIZON_MAINNET_URL || 'https://horizon.stellar.org'
+      : process.env.HORIZON_TESTNET_URL || 'https://horizon-testnet.stellar.org';
   const url = new URL(configured);
-  if ((url.protocol !== 'https:' && url.hostname !== 'localhost' && url.hostname !== '127.0.0.1') ||
-      url.username || url.password || url.search || url.hash) {
+  if (
+    (url.protocol !== 'https:' && url.hostname !== 'localhost' && url.hostname !== '127.0.0.1') ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  ) {
     throw new Error('Configured Horizon URL must be a trusted HTTP(S) base URL.');
   }
   return new URL(url.toString().replace(/\/+$/, '') + '/');
@@ -56,7 +62,10 @@ function toStroops(value: unknown): string | null {
   const match = amountPattern.exec(value);
   if (!match) return null;
   try {
-    return (BigInt(match[1]) * 10_000_000n + BigInt((match[2] || '').padEnd(7, '0') || '0')).toString();
+    return (
+      BigInt(match[1]) * 10_000_000n +
+      BigInt((match[2] || '').padEnd(7, '0') || '0')
+    ).toString();
   } catch {
     return null;
   }
@@ -75,23 +84,29 @@ function text(value: unknown): string {
 
 function operationDestination(operation: HorizonOperation): string {
   const type = text(operation.type);
-  return text(operation.to) || text(operation.destination) ||
-    (type === 'create_account' ? text(operation.account) : '');
+  return (
+    text(operation.to) ||
+    text(operation.destination) ||
+    (type === 'create_account' ? text(operation.account) : '')
+  );
 }
 
 function operationAsset(operation: HorizonOperation): { code: string; issuer: string } {
   const type = text(operation.type);
-  const assetType = type === 'path_payment_strict_send'
-    ? text(operation.destination_asset_type)
-    : text(operation.asset_type);
+  const assetType =
+    type === 'path_payment_strict_send'
+      ? text(operation.destination_asset_type)
+      : text(operation.asset_type);
   if (assetType === 'native' || type === 'create_account') return { code: 'XLM', issuer: '' };
   return {
-    code: type === 'path_payment_strict_send'
-      ? text(operation.destination_asset_code).toUpperCase()
-      : text(operation.asset_code).toUpperCase(),
-    issuer: type === 'path_payment_strict_send'
-      ? text(operation.destination_asset_issuer)
-      : text(operation.asset_issuer),
+    code:
+      type === 'path_payment_strict_send'
+        ? text(operation.destination_asset_code).toUpperCase()
+        : text(operation.asset_code).toUpperCase(),
+    issuer:
+      type === 'path_payment_strict_send'
+        ? text(operation.destination_asset_issuer)
+        : text(operation.asset_issuer),
   };
 }
 
@@ -104,8 +119,12 @@ function operationAmount(operation: HorizonOperation): string {
 }
 
 function operationSource(operation: HorizonOperation, transaction: HorizonTransaction): string {
-  return text(operation.from) || text(operation.funder) || text(operation.source_account) ||
-    text(transaction.source_account);
+  return (
+    text(operation.from) ||
+    text(operation.funder) ||
+    text(operation.source_account) ||
+    text(transaction.source_account)
+  );
 }
 
 async function getJson<T>(url: URL): Promise<{ response: Response; data?: T }> {
@@ -115,28 +134,40 @@ async function getJson<T>(url: URL): Promise<{ response: Response; data?: T }> {
   });
   if (!response.ok) return { response };
   try {
-    return { response, data: await response.json() as T };
+    return { response, data: (await response.json()) as T };
   } catch {
     return { response };
   }
 }
 
 function explorerLink(network: Network, txHash: string): string {
-  return (network === 'mainnet'
-    ? 'https://stellar.expert/explorer/public/tx/'
-    : 'https://stellar.expert/explorer/testnet/tx/') + encodeURIComponent(txHash);
+  return (
+    (network === 'mainnet'
+      ? 'https://stellar.expert/explorer/public/tx/'
+      : 'https://stellar.expert/explorer/testnet/tx/') + encodeURIComponent(txHash)
+  );
 }
 
 export async function checkTransaction(record: AidPayment): Promise<Verification> {
   const checkedAt = new Date().toISOString();
   if (!record.txHash) {
-    return { status: 'unverified', checkedAt, differences: [], reason: 'No transaction hash was supplied.' };
+    return {
+      status: 'unverified',
+      checkedAt,
+      differences: [],
+      reason: 'No transaction hash was supplied.',
+    };
   }
   let base: URL;
   try {
     base = horizonUrl(record.network);
   } catch {
-    return { status: 'pending', checkedAt, differences: [], reason: 'Horizon is not configured correctly.' };
+    return {
+      status: 'pending',
+      checkedAt,
+      differences: [],
+      reason: 'Horizon is not configured correctly.',
+    };
   }
 
   const transactionUrl = new URL('transactions/' + encodeURIComponent(record.txHash), base);
@@ -147,10 +178,20 @@ export async function checkTransaction(record: AidPayment): Promise<Verification
     transactionResponse = result.response;
     transaction = result.data;
   } catch {
-    return { status: 'pending', checkedAt, differences: [], reason: 'Horizon is unavailable. Retry verification.' };
+    return {
+      status: 'pending',
+      checkedAt,
+      differences: [],
+      reason: 'Horizon is unavailable. Retry verification.',
+    };
   }
   if (transactionResponse.status === 404) {
-    return { status: 'not-found', checkedAt, differences: [], reason: 'Hash was not found on the selected network.' };
+    return {
+      status: 'not-found',
+      checkedAt,
+      differences: [],
+      reason: 'Hash was not found on the selected network.',
+    };
   }
   if (!transactionResponse.ok || !transaction) {
     return {
@@ -174,7 +215,12 @@ export async function checkTransaction(record: AidPayment): Promise<Verification
     };
   }
   if (transaction.successful !== true) {
-    return { status: 'pending', checkedAt, differences: [], reason: 'Horizon did not confirm transaction success.' };
+    return {
+      status: 'pending',
+      checkedAt,
+      differences: [],
+      reason: 'Horizon did not confirm transaction success.',
+    };
   }
 
   const operations: HorizonOperation[] = [];
@@ -195,16 +241,31 @@ export async function checkTransaction(record: AidPayment): Promise<Verification
       response = result.response;
       pageRecords = result.data?._embedded?.records;
     } catch {
-      return { status: 'pending', checkedAt, differences: [], reason: 'Horizon operations endpoint is unavailable.' };
+      return {
+        status: 'pending',
+        checkedAt,
+        differences: [],
+        reason: 'Horizon operations endpoint is unavailable.',
+      };
     }
     if (!response.ok || !pageRecords) {
-      return { status: 'pending', checkedAt, differences: [], reason: 'Could not read transaction operations from Horizon.' };
+      return {
+        status: 'pending',
+        checkedAt,
+        differences: [],
+        reason: 'Could not read transaction operations from Horizon.',
+      };
     }
     operations.push(...pageRecords);
     if (pageRecords.length < operationPageSize) break;
     cursor = pageRecords[pageRecords.length - 1]?.paging_token;
     if (!cursor) {
-      return { status: 'pending', checkedAt, differences: [], reason: 'Horizon operation pagination was incomplete.' };
+      return {
+        status: 'pending',
+        checkedAt,
+        differences: [],
+        reason: 'Horizon operation pagination was incomplete.',
+      };
     }
     if (page === operationPageLimit - 1) {
       return {
@@ -216,9 +277,13 @@ export async function checkTransaction(record: AidPayment): Promise<Verification
     }
   }
 
-  const payments = operations.filter(operation =>
-    ['payment', 'create_account', 'path_payment_strict_receive', 'path_payment_strict_send']
-      .includes(text(operation.type)),
+  const payments = operations.filter((operation) =>
+    [
+      'payment',
+      'create_account',
+      'path_payment_strict_receive',
+      'path_payment_strict_send',
+    ].includes(text(operation.type)),
   );
   const expectedAmount = record.amountStroops;
   const expectedAsset = record.assetCode.toUpperCase();
@@ -271,7 +336,8 @@ export async function checkTransaction(record: AidPayment): Promise<Verification
     if (!assetMatch) differences.push('Asset differs from the recorded asset.');
     else if (!issuerMatch) differences.push('Asset issuer differs from the recorded issuer.');
     if (!sourceMatch) differences.push('Payment source differs from the organization wallet.');
-    if (!differences.length) differences.push('No single payment operation matches all recorded fields.');
+    if (!differences.length)
+      differences.push('No single payment operation matches all recorded fields.');
   }
   if (!hasExpectedIssuer) differences.push('A non-native recorded asset requires an issuer.');
   return {

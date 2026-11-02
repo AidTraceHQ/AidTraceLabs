@@ -57,7 +57,9 @@ export async function applyUniqueNetworkTxHashMigration(
   if (duplicates.rowCount) {
     throw new DuplicateTransactionHashesError(duplicates.rows);
   }
-  await client.query(await readFile(join(migrationDirectory, '002_unique_network_tx_hash.sql'), 'utf8'));
+  await client.query(
+    await readFile(join(migrationDirectory, '002_unique_network_tx_hash.sql'), 'utf8'),
+  );
 }
 
 export async function migrate() {
@@ -70,7 +72,7 @@ export async function migrate() {
   `);
 
     const files = (await readdir(migrationDirectory))
-      .filter(file => /^\d{3}_[a-z0-9_]+\.sql$/.test(file))
+      .filter((file) => /^\d{3}_[a-z0-9_]+\.sql$/.test(file))
       .sort();
 
     for (const file of files) {
@@ -83,7 +85,7 @@ export async function migrate() {
 
       const sql = await readFile(join(migrationDirectory, file), 'utf8');
       try {
-        await withTransaction(async client => {
+        await withTransaction(async (client) => {
           if (version === '002_unique_network_tx_hash') {
             await applyUniqueNetworkTxHashMigration(client);
           } else {
@@ -93,7 +95,9 @@ export async function migrate() {
         });
       } catch (error) {
         if (error instanceof DuplicateTransactionHashesError) {
-          console.error('Migration 002 aborted: duplicate network/transaction hashes require resolution:');
+          console.error(
+            'Migration 002 aborted: duplicate network/transaction hashes require resolution:',
+          );
           console.error(JSON.stringify(error.duplicates, null, 2));
         }
         throw error;
@@ -106,9 +110,8 @@ export async function migrate() {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  migrate()
-    .catch(error => {
-      console.error('Database migration failed:', error);
-      process.exitCode = 1;
-    });
+  migrate().catch((error) => {
+    console.error('Database migration failed:', error);
+    process.exitCode = 1;
+  });
 }

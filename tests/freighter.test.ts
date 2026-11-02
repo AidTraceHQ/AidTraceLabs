@@ -10,7 +10,8 @@ import {
 
 describe('Freighter result handling', () => {
   it('retries disconnected responses until the extension content script is ready', async () => {
-    const check = vi.fn()
+    const check = vi
+      .fn()
       .mockResolvedValueOnce({ isConnected: false })
       .mockResolvedValueOnce({ isConnected: false })
       .mockResolvedValueOnce({ isConnected: true });
@@ -27,14 +28,17 @@ describe('Freighter result handling', () => {
       error: { code: 1, message: 'Freighter content script is unavailable.' },
     });
 
-    await expect(waitForFreighter(check, async () => undefined))
-      .rejects.toThrow('Freighter content script is unavailable.');
+    await expect(waitForFreighter(check, async () => undefined)).rejects.toThrow(
+      'Freighter content script is unavailable.',
+    );
   });
 
   it('surfaces errors from each Freighter API response unchanged', () => {
-    expect(() => throwFreighterError({
-      error: { message: 'User rejected the request.' },
-    })).toThrow('User rejected the request.');
+    expect(() =>
+      throwFreighterError({
+        error: { message: 'User rejected the request.' },
+      }),
+    ).toThrow('User rejected the request.');
   });
 
   it('normalizes Buffer and string signature responses to base64', () => {

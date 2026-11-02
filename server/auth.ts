@@ -27,28 +27,40 @@ if (!sessionSecret || Buffer.byteLength(sessionSecret) < 32) {
 }
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
-const validNetwork = (value: unknown): value is Network => value === 'testnet' || value === 'mainnet';
+const validNetwork = (value: unknown): value is Network =>
+  value === 'testnet' || value === 'mainnet';
 const validAddress = (value: unknown): value is string =>
   typeof value === 'string' && StrKey.isValidEd25519PublicKey(value);
 const makeCsrfToken = (token: string) =>
   createHmac('sha256', sessionSecret).update('aidtrace-csrf:').update(token).digest('base64url');
 const makeChallengeMessage = (address: string, network: Network, nonce: string, expiresAt: Date) =>
-  'AidTrace wallet login\nDomain: ' + publicAppOrigin +
-  '\nAddress: ' + address + '\nNetwork: ' + network + '\nNonce: ' + nonce +
-  '\nIssued At: ' + new Date(expiresAt.getTime() - challengeTtlMs).toISOString() +
-  '\nExpires: ' + expiresAt.toISOString() +
+  'AidTrace wallet login\nDomain: ' +
+  publicAppOrigin +
+  '\nAddress: ' +
+  address +
+  '\nNetwork: ' +
+  network +
+  '\nNonce: ' +
+  nonce +
+  '\nIssued At: ' +
+  new Date(expiresAt.getTime() - challengeTtlMs).toISOString() +
+  '\nExpires: ' +
+  expiresAt.toISOString() +
   '\nPurpose: prove wallet ownership; no transaction will be sent.';
 
 function requestObject(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : null;
 }
 
 function cookieToken(request: Request): string | null {
   const raw = request.get('Cookie');
   if (!raw) return null;
-  const pair = raw.split(';').map(part => part.trim()).find(part => part.startsWith(cookieName + '='));
+  const pair = raw
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(cookieName + '='));
   if (!pair) return null;
   try {
     return decodeURIComponent(pair.slice(cookieName.length + 1)) || null;
@@ -61,7 +73,8 @@ function signatureBytes(value: string): Buffer | null {
   if (/^[0-9a-fA-F]{128}$/.test(value)) return Buffer.from(value, 'hex');
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return null;
   const decoded = Buffer.from(value, 'base64');
-  return decoded.length === 64 && decoded.toString('base64').replace(/=+$/, '') === value.replace(/=+$/, '')
+  return decoded.length === 64 &&
+    decoded.toString('base64').replace(/=+$/, '') === value.replace(/=+$/, '')
     ? decoded
     : null;
 }
@@ -83,7 +96,9 @@ function csrfMatches(candidate: unknown, expectedHash: string): boolean {
   return candidateHash.length === expected.length && timingSafeEqual(candidateHash, expected);
 }
 
-async function getSession(request: Request): Promise<{ session: Session; token: string; csrfToken: string } | null> {
+async function getSession(
+  request: Request,
+): Promise<{ session: Session; token: string; csrfToken: string } | null> {
   const token = cookieToken(request);
   if (!token || token.length < 40) return null;
   const sessionHash = digest(token);
@@ -161,10 +176,12 @@ router.post('/api/auth/challenge', noStore, async (request, response) => {
   const address = body?.address;
   const network = body?.network;
   if (!validAddress(address) || !validNetwork(network)) {
-    response.status(400).json({ error: 'A valid Stellar public address and network are required.' });
+    response
+      .status(400)
+      .json({ error: 'A valid Stellar public address and network are required.' });
     return;
   }
-  if (!await rateLimit('challenge:' + address, 8, 15 * 60 * 1000)) {
+  if (!(await rateLimit('challenge:' + address, 8, 15 * 60 * 1000))) {
     response.status(429).json({ error: 'Too many challenges. Wait a few minutes and try again.' });
     return;
   }
@@ -173,7 +190,7 @@ router.post('/api/auth/challenge', noStore, async (request, response) => {
   const nonce = randomBytes(32).toString('hex');
   const expiresAt = new Date(Date.now() + challengeTtlMs);
   const message = makeChallengeMessage(address, network, nonce, expiresAt);
-  await withTransaction(async client => {
+  await withTransaction(async (client) => {
     await client.query(
       `INSERT INTO users (wallet_address) VALUES ($1)
        ON CONFLICT (wallet_address) DO NOTHING`,
@@ -195,13 +212,18 @@ router.post('/api/auth/verify', noStore, async (request, response) => {
   const address = body?.address;
   const network = body?.network;
   const signature = body?.signature;
-  if (typeof challengeId !== 'string' || !/^[a-f0-9]{48}$/.test(challengeId) ||
-      !validAddress(address) || !validNetwork(network) ||
-      typeof signature !== 'string' || signature.length > 1000) {
+  if (
+    typeof challengeId !== 'string' ||
+    !/^[a-f0-9]{48}$/.test(challengeId) ||
+    !validAddress(address) ||
+    !validNetwork(network) ||
+    typeof signature !== 'string' ||
+    signature.length > 1000
+  ) {
     response.status(400).json({ error: 'Invalid signature verification request.' });
     return;
   }
-  if (!await rateLimit('verify:' + address, 12, 60 * 1000)) {
+  if (!(await rateLimit('verify:' + address, 12, 60 * 1000))) {
     response.status(429).json({ error: 'Too many signature attempts. Wait a minute and retry.' });
     return;
   }
@@ -226,7 +248,9 @@ router.post('/api/auth/verify', noStore, async (request, response) => {
     return;
   }
   if (challenge.used_at) {
-    response.status(409).json({ error: 'Challenge was already used. Connect again for a new challenge.' });
+    response
+      .status(409)
+      .json({ error: 'Challenge was already used. Connect again for a new challenge.' });
     return;
   }
   if (challenge.wallet_address !== address || challenge.network !== network) {
@@ -244,7 +268,7 @@ router.post('/api/auth/verify', noStore, async (request, response) => {
   const csrfTokenHash = digest(csrfToken);
   const expiresAt = new Date(Date.now() + sessionTtlMs);
   let role: Role = 'donor';
-  const consumeOutcome = await withTransaction(async client => {
+  const consumeOutcome = await withTransaction(async (client) => {
     const updated = await client.query(
       `UPDATE challenges SET used_at = NOW()
        WHERE challenge_id = $1 AND used_at IS NULL AND expires_at > NOW()
@@ -258,7 +282,8 @@ router.post('/api/auth/verify', noStore, async (request, response) => {
       );
       const challengeState = refreshed.rows[0];
       if (challengeState?.used_at) return 'used' as const;
-      if (challengeState && challengeState.expires_at.getTime() <= Date.now()) return 'expired' as const;
+      if (challengeState && challengeState.expires_at.getTime() <= Date.now())
+        return 'expired' as const;
       return 'invalid' as const;
     }
     await client.query(
@@ -286,7 +311,9 @@ router.post('/api/auth/verify', noStore, async (request, response) => {
     return 'consumed' as const;
   });
   if (consumeOutcome === 'used') {
-    response.status(409).json({ error: 'Challenge was already used. Connect again for a new challenge.' });
+    response
+      .status(409)
+      .json({ error: 'Challenge was already used. Connect again for a new challenge.' });
     return;
   }
   if (consumeOutcome === 'expired') {
@@ -294,7 +321,9 @@ router.post('/api/auth/verify', noStore, async (request, response) => {
     return;
   }
   if (consumeOutcome === 'invalid') {
-    response.status(401).json({ error: 'Challenge expired or already used. Request a fresh challenge.' });
+    response
+      .status(401)
+      .json({ error: 'Challenge expired or already used. Request a fresh challenge.' });
     return;
   }
   setSessionCookie(response, token);
@@ -329,7 +358,7 @@ router.post('/api/auth/logout', noStore, async (request, response) => {
     return;
   }
   if (current) {
-    await withTransaction(async client => {
+    await withTransaction(async (client) => {
       await client.query(
         'UPDATE sessions SET revoked_at = NOW() WHERE session_hash = $1 AND revoked_at IS NULL',
         [current.session.sessionHash],
@@ -356,7 +385,7 @@ router.post('/api/auth/logout-everywhere', noStore, async (request, response) =>
     response.status(403).json({ error: 'CSRF check failed. Refresh the app and retry.' });
     return;
   }
-  await withTransaction(async client => {
+  await withTransaction(async (client) => {
     await client.query(
       `UPDATE sessions SET revoked_at = NOW()
        WHERE wallet_address = $1 AND revoked_at IS NULL`,

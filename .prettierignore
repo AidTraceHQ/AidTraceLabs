@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-server/
+coverage/
+package-lock.json
+.git/
+.neon/
+backend/
+src/appdeploy-client.d.ts

@@ -11,7 +11,7 @@ const connectionAttempts = 20;
 const connectionRetryDelayMs = 250;
 
 const delay = (milliseconds: number) =>
-  new Promise<void>(resolve => window.setTimeout(resolve, milliseconds));
+  new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
 
 export async function waitForFreighter(
   check: () => Promise<ConnectionResult>,
@@ -36,7 +36,8 @@ export function throwFreighterError(result: { error?: { message: string } }): vo
 
 export function signatureToBase64(signature: Buffer | string | null): string {
   if (Buffer.isBuffer(signature)) {
-    if (signature.length !== 64) throw new Error('Freighter returned a signature with an invalid length.');
+    if (signature.length !== 64)
+      throw new Error('Freighter returned a signature with an invalid length.');
     return signature.toString('base64');
   }
   if (typeof signature !== 'string' || signature.length === 0) {
