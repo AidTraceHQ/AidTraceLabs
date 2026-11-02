@@ -5,6 +5,7 @@ import type { PoolClient, QueryResultRow } from 'pg';
 import { csrfMatches, getSession, rateLimit } from './auth.js';
 import { pool, withTransaction } from './db.js';
 import { noStore, requireAllowedOrigin } from './http-security.js';
+import { resolvePseudonymSecret } from './pseudonym.js';
 import { checkTransaction, type Verification } from './stellar-verification.js';
 
 type Role = 'donor' | 'organization' | 'beneficiary' | 'admin';
@@ -71,11 +72,17 @@ type RecordRow = QueryResultRow & {
 };
 
 const recordStatuses = new Set<RecordStatus>([
-  'verified', 'mismatch', 'not-found', 'unverified', 'pending', 'voided',
+  'verified',
+  'mismatch',
+  'not-found',
+  'unverified',
+  'pending',
+  'voided',
 ]);
 const roleValues = new Set<Role>(['donor', 'organization', 'beneficiary', 'admin']);
 const amountPattern = /^(\d+)(?:\.(\d{1,7}))?$/;
 const router = Router();
+const pseudonymSecret = resolvePseudonymSecret();
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -83,7 +90,10 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function cleanText(value: unknown, maximum: number): string {
   return typeof value === 'string'
-    ? value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').trim().slice(0, maximum)
+    ? value
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+        .trim()
+        .slice(0, maximum)
     : '';
 }
 
@@ -131,18 +141,24 @@ function validateRecord(value: unknown) {
   const note = cleanText(value.note, 500);
   const asset = cleanText(value.asset, 12).toUpperCase();
   const amountStroops = amountToStroops(value.amount);
-  const assetIssuer = value.assetIssuer === '' || value.assetIssuer === undefined
-    ? null
-    : value.assetIssuer;
+  const assetIssuer =
+    value.assetIssuer === '' || value.assetIssuer === undefined ? null : value.assetIssuer;
 
-  if (!recipient || !purpose || !validAddress(value.recipientAddress) ||
-      !amountStroops || !/^[A-Z0-9]{1,12}$/.test(asset) || !validNetwork(value.network) ||
-      !validDate(value.date) || typeof value.txHash !== 'string' ||
-      (value.txHash !== '' && !validHash(value.txHash)) ||
-      (asset === 'XLM' && assetIssuer !== null) ||
-      (asset !== 'XLM' && !validAddress(assetIssuer)) ||
-      (assetIssuer !== null && !validAddress(assetIssuer)) ||
-      (value.recipientConsent !== undefined && typeof value.recipientConsent !== 'boolean')) {
+  if (
+    !recipient ||
+    !purpose ||
+    !validAddress(value.recipientAddress) ||
+    !amountStroops ||
+    !/^[A-Z0-9]{1,12}$/.test(asset) ||
+    !validNetwork(value.network) ||
+    !validDate(value.date) ||
+    typeof value.txHash !== 'string' ||
+    (value.txHash !== '' && !validHash(value.txHash)) ||
+    (asset === 'XLM' && assetIssuer !== null) ||
+    (asset !== 'XLM' && !validAddress(assetIssuer)) ||
+    (assetIssuer !== null && !validAddress(assetIssuer)) ||
+    (value.recipientConsent !== undefined && typeof value.recipientConsent !== 'boolean')
+  ) {
     return null;
   }
 
@@ -247,7 +263,13 @@ function publicRecord(record: AidRecord, consent: boolean): AidRecord {
   if (consent) return record;
   return {
     ...record,
-    recipient: 'Beneficiary-' + record.id.slice(0, 8),
+    recipient:
+      'Beneficiary-' +
+      createHmac('sha256', pseudonymSecret)
+        .update('aidtrace-beneficiary:')
+        .update(record.recipientAddress)
+        .digest('hex')
+        .slice(0, 12),
     recipientAddress: '',
     txHash: '',
     note: '',
@@ -274,7 +296,14 @@ async function writeAudit(
   await client.query(
     `INSERT INTO audit_events (id, action, actor_wallet, subject_wallet, record_id, summary)
      VALUES ($1, $2, $3, $4, $5, $6)`,
-    [randomBytes(16).toString('hex'), action, actor, subject || null, recordId || null, summary.slice(0, 1000)],
+    [
+      randomBytes(16).toString('hex'),
+      action,
+      actor,
+      subject || null,
+      recordId || null,
+      summary.slice(0, 1000),
+    ],
   );
 }
 
@@ -307,19 +336,26 @@ async function authorize(
     error(response, 403, 'Your wallet role is not permitted to perform this action.');
     return null;
   }
-  if (write && (!requireAllowedOrigin(request, response) ||
-      !csrfMatches(request.body?.csrfToken, current.session.csrfTokenHash))) {
-    if (!response.headersSent) error(response, 403, 'CSRF check failed. Refresh the app and retry.');
+  if (
+    write &&
+    (!requireAllowedOrigin(request, response) ||
+      !csrfMatches(request.body?.csrfToken, current.session.csrfTokenHash))
+  ) {
+    if (!response.headersSent)
+      error(response, 403, 'CSRF check failed. Refresh the app and retry.');
     return null;
   }
-  if (write && !await rateLimit('write:' + current.session.address, 60, 60 * 1000)) {
+  if (write && !(await rateLimit('write:' + current.session.address, 60, 60 * 1000))) {
     error(response, 429, 'Write rate limit reached. Retry in a minute.');
     return null;
   }
   return current;
 }
 
-function readPage(request: Request, response: Response): { limit: number; cursor: Cursor | null } | null {
+function readPage(
+  request: Request,
+  response: Response,
+): { limit: number; cursor: Cursor | null } | null {
   const rawLimit = request.query.limit;
   const limit = rawLimit === undefined ? 20 : typeof rawLimit === 'string' ? Number(rawLimit) : NaN;
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
@@ -335,16 +371,22 @@ function readPage(request: Request, response: Response): { limit: number; cursor
   try {
     if (!/^[A-Za-z0-9_-]+$/.test(rawCursor)) throw new Error('Invalid cursor envelope.');
     const envelope: unknown = JSON.parse(Buffer.from(rawCursor, 'base64url').toString('utf8'));
-    if (!isObject(envelope) || typeof envelope.payload !== 'string' ||
-        typeof envelope.signature !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(envelope.signature)) {
+    if (
+      !isObject(envelope) ||
+      typeof envelope.payload !== 'string' ||
+      typeof envelope.signature !== 'string' ||
+      !/^[A-Za-z0-9_-]{43}$/.test(envelope.signature)
+    ) {
       throw new Error('Invalid cursor envelope.');
     }
     const expectedSignature = createHmac('sha256', process.env.SESSION_SECRET || '')
       .update(envelope.payload)
       .digest();
     const suppliedSignature = Buffer.from(envelope.signature, 'base64url');
-    if (suppliedSignature.length !== expectedSignature.length ||
-        !timingSafeEqual(suppliedSignature, expectedSignature)) {
+    if (
+      suppliedSignature.length !== expectedSignature.length ||
+      !timingSafeEqual(suppliedSignature, expectedSignature)
+    ) {
       throw new Error('Invalid cursor signature.');
     }
     const parsed: unknown = JSON.parse(Buffer.from(envelope.payload, 'base64url').toString('utf8'));
@@ -354,13 +396,21 @@ function readPage(request: Request, response: Response): { limit: number; cursor
     const filterDigest = createHmac('sha256', process.env.SESSION_SECRET || '')
       .update(JSON.stringify(filters))
       .digest('base64url');
-    if (!isObject(parsed) || typeof parsed.createdAt !== 'string' ||
-        typeof parsed.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(parsed.id) ||
-        parsed.version !== 1 || parsed.filters !== filterDigest ||
-        Number.isNaN(Date.parse(parsed.createdAt))) {
+    if (
+      !isObject(parsed) ||
+      typeof parsed.createdAt !== 'string' ||
+      typeof parsed.id !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(parsed.id) ||
+      parsed.version !== 1 ||
+      parsed.filters !== filterDigest ||
+      Number.isNaN(Date.parse(parsed.createdAt))
+    ) {
       throw new Error('Invalid cursor.');
     }
-    return { limit, cursor: { createdAt: new Date(parsed.createdAt).toISOString(), id: parsed.id } };
+    return {
+      limit,
+      cursor: { createdAt: new Date(parsed.createdAt).toISOString(), id: parsed.id },
+    };
   } catch {
     error(response, 400, 'Invalid pagination cursor.');
     return null;
@@ -420,21 +470,25 @@ function sendPage<T>(
     .filter(([name]) => name !== 'cursor' && name !== 'limit')
     .sort(([left], [right]) => left.localeCompare(right));
   const cursorPayload = cursorData
-    ? Buffer.from(JSON.stringify({
-        version: 1,
-        ...cursorData,
-        filters: createHmac('sha256', process.env.SESSION_SECRET || '')
-          .update(JSON.stringify(filterValues))
-          .digest('base64url'),
-      })).toString('base64url')
+    ? Buffer.from(
+        JSON.stringify({
+          version: 1,
+          ...cursorData,
+          filters: createHmac('sha256', process.env.SESSION_SECRET || '')
+            .update(JSON.stringify(filterValues))
+            .digest('base64url'),
+        }),
+      ).toString('base64url')
     : null;
   const nextCursor = cursorPayload
-    ? Buffer.from(JSON.stringify({
-        payload: cursorPayload,
-        signature: createHmac('sha256', process.env.SESSION_SECRET || '')
-          .update(cursorPayload)
-          .digest('base64url'),
-      })).toString('base64url')
+    ? Buffer.from(
+        JSON.stringify({
+          payload: cursorPayload,
+          signature: createHmac('sha256', process.env.SESSION_SECRET || '')
+            .update(cursorPayload)
+            .digest('base64url'),
+        }),
+      ).toString('base64url')
     : null;
   response.set('X-Has-More', String(hasMore));
   if (nextCursor) {
@@ -466,7 +520,7 @@ function applyRecordFilters(
   const from = optionalQuery(request, 'from');
   const to = optionalQuery(request, 'to');
   const search = optionalQuery(request, 'q');
-  if ([network, status, organization, asset, from, to, search].some(value => value === null)) {
+  if ([network, status, organization, asset, from, to, search].some((value) => value === null)) {
     error(response, 400, 'Invalid list filter.');
     return false;
   }
@@ -521,8 +575,8 @@ function applyRecordFilters(
     values.push(search.trim(), search.trim(), search.trim());
     conditions.push(
       `(strpos(lower(r.purpose), lower($${firstPlaceholder})) > 0 OR ` +
-      `strpos(lower(o.display_name), lower($${firstPlaceholder + 1})) > 0 OR ` +
-      `strpos(lower(r.id), lower($${firstPlaceholder + 2})) > 0)`,
+        `strpos(lower(o.display_name), lower($${firstPlaceholder + 1})) > 0 OR ` +
+        `strpos(lower(r.id), lower($${firstPlaceholder + 2})) > 0)`,
     );
   }
   return true;
@@ -547,10 +601,7 @@ function optionalDateFilter(
 }
 
 async function getRecord(id: string): Promise<{ record: AidRecord; consent: boolean } | null> {
-  const result = await pool.query<RecordRow>(
-    `${recordSelect} WHERE r.id = $1`,
-    [id],
-  );
+  const result = await pool.query<RecordRow>(`${recordSelect} WHERE r.id = $1`, [id]);
   const row = result.rows[0];
   return row ? { record: mapRecord(row), consent: row.recipient_consent } : null;
 }
@@ -567,7 +618,12 @@ async function recordVerification(
   assetIssuer: string | null,
 ): Promise<Verification> {
   if (!record.txHash) {
-    return { status: 'unverified', checkedAt: new Date().toISOString(), differences: [], reason: 'No transaction hash was supplied.' };
+    return {
+      status: 'unverified',
+      checkedAt: new Date().toISOString(),
+      differences: [],
+      reason: 'No transaction hash was supplied.',
+    };
   }
   return checkTransaction({
     network: record.network,
@@ -667,28 +723,38 @@ router.get('/api/transparency', noStore, async (request, response) => {
        SELECT DISTINCT asset_code FROM aid_records ORDER BY asset_code
      ) AS assets`,
   );
-  const records = result.rows.map(row => {
+  const records = result.rows.map((row) => {
     const record = mapRecord(row);
-    const mayViewPrivateData = current && (
-      current.session.role === 'admin' ||
-      (current.session.role === 'organization' && current.session.address === record.organization)
-    );
+    const mayViewPrivateData =
+      current &&
+      (current.session.role === 'admin' ||
+        (current.session.role === 'organization' &&
+          current.session.address === record.organization));
     return mayViewPrivateData ? record : publicRecord(record, row.recipient_consent);
   });
   const summary = {
-    byStatus: summaryResult.rows.map(row => ({
+    byStatus: summaryResult.rows.map((row) => ({
       status: row.status,
       asset: row.asset_code,
       amount: stroopsToAmount(row.amount_stroops),
     })),
   };
-  sendPage(request, response, 'records', records, result.hasMore, page.limit, item => ({
-    createdAt: item.createdAt,
-    id: item.id,
-  }), {
-    facets: facets.rows[0] || { organizations: [], assets: [] },
-    summary,
-  });
+  sendPage(
+    request,
+    response,
+    'records',
+    records,
+    result.hasMore,
+    page.limit,
+    (item) => ({
+      createdAt: item.createdAt,
+      id: item.id,
+    }),
+    {
+      facets: facets.rows[0] || { organizations: [], assets: [] },
+      summary,
+    },
+  );
 });
 
 router.get('/api/beneficiary', noStore, async (request, response) => {
@@ -707,8 +773,8 @@ router.get('/api/beneficiary', noStore, async (request, response) => {
     'r.id',
     page,
   );
-  const records = result.rows.map(row => mapRecord(row));
-  sendPage(request, response, 'records', records, result.hasMore, page.limit, item => ({
+  const records = result.rows.map((row) => mapRecord(row));
+  sendPage(request, response, 'records', records, result.hasMore, page.limit, (item) => ({
     createdAt: item.createdAt,
     id: item.id,
   }));
@@ -719,13 +785,17 @@ router.post('/api/records', noStore, async (request, response) => {
   if (!current) return;
   const recordInput = validateRecord(request.body);
   if (!recordInput) {
-    error(response, 400, 'Invalid record. Check address, positive amount, asset, network, date and transaction hash.');
+    error(
+      response,
+      400,
+      'Invalid record. Check address, positive amount, asset, network, date and transaction hash.',
+    );
     return;
   }
   const id = randomBytes(16).toString('hex');
   const initialStatus: RecordStatus = recordInput.txHash ? 'pending' : 'unverified';
   try {
-    await withTransaction(async client => {
+    await withTransaction(async (client) => {
       await ensureOrganization(client, current.session.address);
       await client.query(
         `INSERT INTO aid_records
@@ -751,7 +821,13 @@ router.post('/api/records', noStore, async (request, response) => {
           current.session.address,
         ],
       );
-      await writeAudit(client, 'record_created', 'Created aid record ' + id + '.', current.session.address, id);
+      await writeAudit(
+        client,
+        'record_created',
+        'Created aid record ' + id + '.',
+        current.session.address,
+        id,
+      );
     });
   } catch (writeError) {
     if (uniqueViolation(writeError)) {
@@ -770,7 +846,7 @@ router.post('/api/records', noStore, async (request, response) => {
     recordInput.asset,
     recordInput.assetIssuer,
   );
-  await withTransaction(async client => {
+  await withTransaction(async (client) => {
     await storeVerification(
       client,
       id,
@@ -788,7 +864,7 @@ router.post('/api/records', noStore, async (request, response) => {
 router.post('/api/records/:id/verify', noStore, async (request, response) => {
   const current = await authorize(request, response, undefined, true);
   if (!current) return;
-  if (!await rateLimit('record-verify:' + current.session.address, 30, 60 * 1000)) {
+  if (!(await rateLimit('record-verify:' + current.session.address, 30, 60 * 1000))) {
     error(response, 429, 'Verification rate limit reached. Retry in a minute.');
     return;
   }
@@ -809,7 +885,7 @@ router.post('/api/records/:id/verify', noStore, async (request, response) => {
     existing.record.asset,
     existing.record.assetIssuer || null,
   );
-  await withTransaction(async client => {
+  await withTransaction(async (client) => {
     await storeVerification(
       client,
       existing.record.id,
@@ -840,7 +916,10 @@ router.put('/api/records/:id', noStore, async (request, response) => {
     error(response, 404, 'Record not found.');
     return;
   }
-  if (current.session.role !== 'admin' && existing.record.organization !== current.session.address) {
+  if (
+    current.session.role !== 'admin' &&
+    existing.record.organization !== current.session.address
+  ) {
     error(response, 403, 'Organizations can edit only their own records.');
     return;
   }
@@ -855,7 +934,7 @@ router.put('/api/records/:id', noStore, async (request, response) => {
   }
   const initialStatus: RecordStatus = recordInput.txHash ? 'pending' : 'unverified';
   try {
-    const result = await withTransaction(async client => {
+    const result = await withTransaction(async (client) => {
       const update = await client.query(
         `UPDATE aid_records
          SET recipient_name = $2, recipient_wallet = $3, purpose = $4, amount_stroops = $5,
@@ -890,10 +969,18 @@ router.put('/api/records/:id', noStore, async (request, response) => {
             randomBytes(16).toString('hex'),
             existing.record.id,
             recordInput.txHash ? 'pending' : 'unverified',
-            recordInput.txHash ? 'Record changed; verification is pending.' : 'No transaction hash was supplied.',
+            recordInput.txHash
+              ? 'Record changed; verification is pending.'
+              : 'No transaction hash was supplied.',
           ],
         );
-        await writeAudit(client, 'record_updated', 'Updated aid record ' + existing.record.id + '.', current.session.address, existing.record.id);
+        await writeAudit(
+          client,
+          'record_updated',
+          'Updated aid record ' + existing.record.id + '.',
+          current.session.address,
+          existing.record.id,
+        );
       }
       return update;
     });
@@ -918,7 +1005,7 @@ router.put('/api/records/:id', noStore, async (request, response) => {
     recordInput.asset,
     recordInput.assetIssuer,
   );
-  await withTransaction(async client => {
+  await withTransaction(async (client) => {
     await storeVerification(
       client,
       updated.record.id,
@@ -942,7 +1029,10 @@ router.post('/api/records/:id/void', noStore, async (request, response) => {
     error(response, 404, 'Record not found.');
     return;
   }
-  if (current.session.role !== 'admin' && existing.record.organization !== current.session.address) {
+  if (
+    current.session.role !== 'admin' &&
+    existing.record.organization !== current.session.address
+  ) {
     error(response, 403, 'Organizations can void only their own records.');
     return;
   }
@@ -956,7 +1046,7 @@ router.post('/api/records/:id/void', noStore, async (request, response) => {
     return;
   }
   const voidedAt = new Date();
-  const result = await withTransaction(async client => {
+  const result = await withTransaction(async (client) => {
     const update = await client.query(
       `UPDATE aid_records
        SET status = 'voided', void_reason = $2, voided_by = $3, voided_at = $4, updated_at = NOW()
@@ -964,7 +1054,13 @@ router.post('/api/records/:id/void', noStore, async (request, response) => {
       [existing.record.id, reason, current.session.address, voidedAt, existing.record.organization],
     );
     if (update.rowCount === 1) {
-      await writeAudit(client, 'record_voided', 'Voided aid record ' + existing.record.id + '.', current.session.address, existing.record.id);
+      await writeAudit(
+        client,
+        'record_voided',
+        'Voided aid record ' + existing.record.id + '.',
+        current.session.address,
+        existing.record.id,
+      );
     }
     return update;
   });
@@ -995,13 +1091,15 @@ router.get('/api/admin/roles', noStore, async (request, response) => {
     values.push('%' + search.toLowerCase() + '%');
     conditions.push('lower(wr.wallet_address) LIKE $' + values.length);
   }
-  const result = await listRows<QueryResultRow & {
-    id: string;
-    wallet_address: string;
-    role: Role;
-    updated_at: Date | string;
-    updated_by: string;
-  }>(
+  const result = await listRows<
+    QueryResultRow & {
+      id: string;
+      wallet_address: string;
+      role: Role;
+      updated_at: Date | string;
+      updated_by: string;
+    }
+  >(
     `SELECT wr.wallet_address AS id, wr.wallet_address, wr.role, wr.updated_at, wr.updated_by
      FROM wallet_roles wr`,
     conditions,
@@ -1010,14 +1108,14 @@ router.get('/api/admin/roles', noStore, async (request, response) => {
     'wr.wallet_address',
     page,
   );
-  const roles = result.rows.map(row => ({
+  const roles = result.rows.map((row) => ({
     id: row.id,
     address: row.wallet_address,
     role: row.role,
     updatedAt: timestamp(row.updated_at)!,
     updatedBy: row.updated_by,
   }));
-  sendPage(request, response, 'roles', roles, result.hasMore, page.limit, item => ({
+  sendPage(request, response, 'roles', roles, result.hasMore, page.limit, (item) => ({
     createdAt: item.updatedAt,
     id: item.address,
   }));
@@ -1077,7 +1175,9 @@ router.post('/api/admin/roles', noStore, async (request, response) => {
 router.delete('/api/admin/roles/:address', noStore, async (request, response) => {
   const current = await authorize(request, response, ['admin'], true);
   if (!current) return;
-  const address = Array.isArray(request.params.address) ? request.params.address[0] : request.params.address;
+  const address = Array.isArray(request.params.address)
+    ? request.params.address[0]
+    : request.params.address;
   if (!validAddress(address)) {
     error(response, 400, 'Invalid wallet address.');
     return;
@@ -1158,22 +1258,33 @@ router.get('/api/audit', noStore, async (request, response) => {
     values.push(search.trim(), search.trim(), search.trim());
     conditions.push(
       `(strpos(lower(ae.summary), lower($${firstPlaceholder})) > 0 OR ` +
-      `strpos(lower(COALESCE(ae.actor_wallet, '')), lower($${firstPlaceholder + 1})) > 0 OR ` +
-      `strpos(lower(COALESCE(ae.record_id, '')), lower($${firstPlaceholder + 2})) > 0)`,
+        `strpos(lower(COALESCE(ae.actor_wallet, '')), lower($${firstPlaceholder + 1})) > 0 OR ` +
+        `strpos(lower(COALESCE(ae.record_id, '')), lower($${firstPlaceholder + 2})) > 0)`,
     );
   }
-  if (!optionalDateFilter(request, response, 'from', 'ae.created_at >= ?', conditions, values) ||
-      !optionalDateFilter(request, response, 'to', 'ae.created_at < (?::date + INTERVAL \'1 day\')', conditions, values)) {
+  if (
+    !optionalDateFilter(request, response, 'from', 'ae.created_at >= ?', conditions, values) ||
+    !optionalDateFilter(
+      request,
+      response,
+      'to',
+      "ae.created_at < (?::date + INTERVAL '1 day')",
+      conditions,
+      values,
+    )
+  ) {
     return;
   }
-  const result = await listRows<QueryResultRow & {
-    id: string;
-    action: string;
-    summary: string;
-    actor_wallet: string | null;
-    record_id: string | null;
-    created_at: Date | string;
-  }>(
+  const result = await listRows<
+    QueryResultRow & {
+      id: string;
+      action: string;
+      summary: string;
+      actor_wallet: string | null;
+      record_id: string | null;
+      created_at: Date | string;
+    }
+  >(
     `SELECT ae.id, ae.action, ae.summary, ae.actor_wallet, ae.record_id, ae.created_at
      FROM audit_events ae`,
     conditions,
@@ -1182,7 +1293,7 @@ router.get('/api/audit', noStore, async (request, response) => {
     'ae.id',
     page,
   );
-  const entries = result.rows.map(row => ({
+  const entries = result.rows.map((row) => ({
     id: row.id,
     action: row.action,
     summary: row.summary,
@@ -1193,10 +1304,19 @@ router.get('/api/audit', noStore, async (request, response) => {
   const facets = await pool.query<{ actions: string[] }>(
     'SELECT ARRAY(SELECT DISTINCT action FROM audit_events ORDER BY action) AS actions',
   );
-  sendPage(request, response, 'entries', entries, result.hasMore, page.limit, item => ({
-    createdAt: item.createdAt,
-    id: item.id,
-  }), { facets: { actions: facets.rows[0]?.actions || [] } });
+  sendPage(
+    request,
+    response,
+    'entries',
+    entries,
+    result.hasMore,
+    page.limit,
+    (item) => ({
+      createdAt: item.createdAt,
+      id: item.id,
+    }),
+    { facets: { actions: facets.rows[0]?.actions || [] } },
+  );
 });
 
 export { router as recordsRouter, validateRecord, amountToStroops, stroopsToAmount };

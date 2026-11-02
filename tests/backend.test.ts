@@ -1,15 +1,7 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { Keypair } from '@stellar/stellar-sdk';
 import request from 'supertest';
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  describe,
-  expect,
-  it,
-  vi,
-} from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { applyUniqueNetworkTxHashMigration, migrate } from '../scripts/migrate.js';
 import { app } from '../server/app.js';
 import { verifySep53Signature } from '../server/auth.js';
@@ -62,10 +54,7 @@ describe('Freighter signed challenge creates a secure session', () => {
     expect(session.status).toBe(200);
     expect(session.body.session).toBeNull();
 
-    const protectedRequest = await request(app)
-      .post('/api/records')
-      .set('Origin', origin)
-      .send({});
+    const protectedRequest = await request(app).post('/api/records').set('Origin', origin).send({});
     expect(protectedRequest.status).toBe(401);
   });
 
@@ -103,13 +92,16 @@ describe('On-chain verification distinguishes matching and mismatching payments'
       created_at: '2026-01-01T00:00:00Z',
     };
     let operations: Record<string, unknown>[] = [];
-    vi.stubGlobal('fetch', vi.fn(async input => {
-      const url = new URL(String(input));
-      const body = url.pathname.endsWith('/operations')
-        ? { _embedded: { records: operations } }
-        : transaction;
-      return new Response(JSON.stringify(body), { status: 200 });
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = new URL(String(input));
+        const body = url.pathname.endsWith('/operations')
+          ? { _embedded: { records: operations } }
+          : transaction;
+        return new Response(JSON.stringify(body), { status: 200 });
+      }),
+    );
 
     const record = {
       network: 'testnet' as const,
@@ -120,22 +112,26 @@ describe('On-chain verification distinguishes matching and mismatching payments'
       assetCode: 'XLM',
       assetIssuer: null,
     };
-    operations = [{
-      type: 'payment',
-      from: organization,
-      to: recipient,
-      amount: '1.2345',
-      asset_type: 'native',
-    }];
+    operations = [
+      {
+        type: 'payment',
+        from: organization,
+        to: recipient,
+        amount: '1.2345',
+        asset_type: 'native',
+      },
+    ];
     expect((await checkTransaction(record)).status).toBe('verified');
 
-    operations = [{
-      type: 'payment',
-      from: other,
-      to: recipient,
-      amount: '1.2345',
-      asset_type: 'native',
-    }];
+    operations = [
+      {
+        type: 'payment',
+        from: other,
+        to: recipient,
+        amount: '1.2345',
+        asset_type: 'native',
+      },
+    ];
     const wrongSource = await checkTransaction(record);
     expect(wrongSource.status).toBe('mismatch');
     expect(wrongSource.differences.join(' ')).toContain('source');
@@ -171,27 +167,40 @@ describe('On-chain verification distinguishes matching and mismatching payments'
       assetCode: 'XLM',
       assetIssuer: null,
     };
-    vi.stubGlobal('fetch', vi.fn(async input => {
-      const url = new URL(String(input));
-      if (url.pathname.endsWith('/operations')) {
-        return new Response(JSON.stringify({
-          _embedded: {
-            records: [{
-              type: 'path_payment_strict_send',
-              from: organization,
-              to: recipient,
-              destination_amount: '1',
-              destination_asset_type: 'native',
-            }],
-          },
-        }), { status: 200 });
-      }
-      return new Response(JSON.stringify({ successful: true, source_account: organization }), { status: 200 });
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith('/operations')) {
+          return new Response(
+            JSON.stringify({
+              _embedded: {
+                records: [
+                  {
+                    type: 'path_payment_strict_send',
+                    from: organization,
+                    to: recipient,
+                    destination_amount: '1',
+                    destination_asset_type: 'native',
+                  },
+                ],
+              },
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify({ successful: true, source_account: organization }), {
+          status: 200,
+        });
+      }),
+    );
     expect((await checkTransaction(record)).status).toBe('verified');
     expect((await checkTransaction({ ...record, txHash: '' })).status).toBe('unverified');
 
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 404 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 404 })),
+    );
     expect((await checkTransaction(record)).status).toBe('not-found');
   });
 
@@ -217,14 +226,24 @@ describe('On-chain verification distinguishes matching and mismatching payments'
       paging_token: String(index + 1),
     }));
     let calls = 0;
-    const horizonFetch = vi.fn(async input => {
+    const horizonFetch = vi.fn(async (input) => {
       const url = new URL(String(input));
       if (!url.pathname.endsWith('/operations')) {
-        return new Response(JSON.stringify({ successful: true, source_account: organization }), { status: 200 });
+        return new Response(JSON.stringify({ successful: true, source_account: organization }), {
+          status: 200,
+        });
       }
       calls += 1;
       const records = url.searchParams.has('cursor')
-        ? [{ type: 'payment', from: organization, to: recipient, amount: '1', asset_type: 'native' }]
+        ? [
+            {
+              type: 'payment',
+              from: organization,
+              to: recipient,
+              amount: '1',
+              asset_type: 'native',
+            },
+          ]
         : firstPage;
       return new Response(JSON.stringify({ _embedded: { records } }), { status: 200 });
     });
@@ -233,10 +252,12 @@ describe('On-chain verification distinguishes matching and mismatching payments'
     expect(calls).toBe(2);
 
     calls = 0;
-    horizonFetch.mockImplementation(async input => {
+    horizonFetch.mockImplementation(async (input) => {
       const url = new URL(String(input));
       if (!url.pathname.endsWith('/operations')) {
-        return new Response(JSON.stringify({ successful: true, source_account: organization }), { status: 200 });
+        return new Response(JSON.stringify({ successful: true, source_account: organization }), {
+          status: 200,
+        });
       }
       calls += 1;
       return new Response(JSON.stringify({ _embedded: { records: firstPage } }), { status: 200 });
@@ -279,15 +300,12 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .update(challenge.body.message)
       .digest();
     const signature = Buffer.from(wallet.sign(digest)).toString('base64');
-    const verified = await request(app)
-      .post('/api/auth/verify')
-      .set('Origin', origin)
-      .send({
-        challengeId: challenge.body.challengeId,
-        address,
-        network: 'testnet',
-        signature,
-      });
+    const verified = await request(app).post('/api/auth/verify').set('Origin', origin).send({
+      challengeId: challenge.body.challengeId,
+      address,
+      network: 'testnet',
+      signature,
+    });
     expect(verified.status).toBe(200);
     const cookieHeader = verified.headers['set-cookie'];
     const cookieLine = Array.isArray(cookieHeader) ? cookieHeader[0] : cookieHeader;
@@ -297,7 +315,12 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(cookieLine).toContain('Max-Age=604800');
     const cookie = cookieLine?.split(';')[0];
     if (!cookie) throw new Error('Authentication response did not set a session cookie.');
-    return { address, cookie, csrfToken: verified.body.session.csrfToken, challengeId: challenge.body.challengeId };
+    return {
+      address,
+      cookie,
+      csrfToken: verified.body.session.csrfToken,
+      challengeId: challenge.body.challengeId,
+    };
   }
 
   async function assignRole(
@@ -346,10 +369,9 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     await migrate();
     admin = Keypair.random();
     wallets.add(admin.publicKey());
-    await pool.query(
-      'INSERT INTO users (wallet_address) VALUES ($1) ON CONFLICT DO NOTHING',
-      [admin.publicKey()],
-    );
+    await pool.query('INSERT INTO users (wallet_address) VALUES ($1) ON CONFLICT DO NOTHING', [
+      admin.publicKey(),
+    ]);
     await pool.query(
       `INSERT INTO wallet_roles (wallet_address, role, updated_by)
        VALUES ($1, 'admin', $1)
@@ -369,13 +391,21 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         [addresses, ids],
       );
       if (ids.length) {
-        await pool.query('DELETE FROM verification_results WHERE aid_record_id = ANY($1::text[])', [ids]);
+        await pool.query('DELETE FROM verification_results WHERE aid_record_id = ANY($1::text[])', [
+          ids,
+        ]);
         await pool.query('DELETE FROM aid_records WHERE id = ANY($1::text[])', [ids]);
       }
-      await pool.query('DELETE FROM organizations WHERE wallet_address = ANY($1::text[])', [addresses]);
-      await pool.query('DELETE FROM wallet_roles WHERE wallet_address = ANY($1::text[])', [addresses]);
+      await pool.query('DELETE FROM organizations WHERE wallet_address = ANY($1::text[])', [
+        addresses,
+      ]);
+      await pool.query('DELETE FROM wallet_roles WHERE wallet_address = ANY($1::text[])', [
+        addresses,
+      ]);
       await pool.query('DELETE FROM sessions WHERE wallet_address = ANY($1::text[])', [addresses]);
-      await pool.query('DELETE FROM challenges WHERE wallet_address = ANY($1::text[])', [addresses]);
+      await pool.query('DELETE FROM challenges WHERE wallet_address = ANY($1::text[])', [
+        addresses,
+      ]);
       await pool.query('DELETE FROM users WHERE wallet_address = ANY($1::text[])', [addresses]);
     }
     await pool.end();
@@ -386,7 +416,9 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     const hash = 'a'.repeat(64);
     try {
       await client.query('BEGIN');
-      await client.query('CREATE TEMP TABLE aid_records (id TEXT PRIMARY KEY, network TEXT NOT NULL, tx_hash TEXT)');
+      await client.query(
+        'CREATE TEMP TABLE aid_records (id TEXT PRIMARY KEY, network TEXT NOT NULL, tx_hash TEXT)',
+      );
       await client.query(
         'INSERT INTO aid_records (id, network, tx_hash) VALUES ($1, $2, $3), ($4, $2, $5)',
         ['duplicate-one', 'testnet', hash.toUpperCase(), 'duplicate-two', hash],
@@ -428,21 +460,22 @@ integration('Database-backed wallet, records, and authorization flows', () => {
 
     const replayDigest = createHash('sha256')
       .update('Stellar Signed Message:\n')
-      .update((await pool.query<{ signed_message: string }>(
-        'SELECT signed_message FROM challenges WHERE challenge_id = $1',
-        [session.challengeId],
-      )).rows[0]!.signed_message)
+      .update(
+        (
+          await pool.query<{ signed_message: string }>(
+            'SELECT signed_message FROM challenges WHERE challenge_id = $1',
+            [session.challengeId],
+          )
+        ).rows[0]!.signed_message,
+      )
       .digest();
     const replaySignature = Buffer.from(wallet.sign(replayDigest)).toString('base64');
-    const replay = await request(app)
-      .post('/api/auth/verify')
-      .set('Origin', origin)
-      .send({
-        challengeId: session.challengeId,
-        address: wallet.publicKey(),
-        network: 'testnet',
-        signature: replaySignature,
-      });
+    const replay = await request(app).post('/api/auth/verify').set('Origin', origin).send({
+      challengeId: session.challengeId,
+      address: wallet.publicKey(),
+      network: 'testnet',
+      signature: replaySignature,
+    });
     expect(replay.status).toBe(409);
 
     const expiredWallet = Keypair.random();
@@ -451,9 +484,10 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .set('Origin', origin)
       .send({ address: expiredWallet.publicKey(), network: 'testnet' });
     wallets.add(expiredWallet.publicKey());
-    await pool.query('UPDATE challenges SET expires_at = NOW() - INTERVAL \'1 second\' WHERE challenge_id = $1', [
-      expired.body.challengeId,
-    ]);
+    await pool.query(
+      "UPDATE challenges SET expires_at = NOW() - INTERVAL '1 second' WHERE challenge_id = $1",
+      [expired.body.challengeId],
+    );
     const expiredDigest = createHash('sha256')
       .update('Stellar Signed Message:\n')
       .update(expired.body.message)
@@ -476,7 +510,9 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .send({ csrfToken: session.csrfToken });
     expect(logout.status).toBe(200);
     expect(logout.headers['set-cookie']?.[0]).toContain('Max-Age=0');
-    expect((await request(app).get('/api/me').set('Cookie', session.cookie)).body.session).toBeNull();
+    expect(
+      (await request(app).get('/api/me').set('Cookie', session.cookie)).body.session,
+    ).toBeNull();
   });
 
   it('verifies the matching source, stores evidence, and rejects duplicate network hashes', async () => {
@@ -488,12 +524,15 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     const expectedSource = organization.publicKey();
     const transactionBodies = new Map<string, Record<string, unknown>>();
     const operationBodies = new Map<string, Record<string, unknown>[]>();
-    const horizonFetch = vi.fn(async input => {
+    const horizonFetch = vi.fn(async (input) => {
       const url = new URL(String(input));
       const pathSegments = url.pathname.split('/').filter(Boolean);
       const hash = pathSegments[pathSegments.indexOf('transactions') + 1] || '';
       if (url.pathname.endsWith('/operations')) {
-        return new Response(JSON.stringify({ _embedded: { records: operationBodies.get(hash) || [] } }), { status: 200 });
+        return new Response(
+          JSON.stringify({ _embedded: { records: operationBodies.get(hash) || [] } }),
+          { status: 200 },
+        );
       }
       const transaction = transactionBodies.get(hash);
       return transaction
@@ -509,14 +548,18 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       ledger: 7,
       created_at: '2026-01-15T00:00:00Z',
     });
-    operationBodies.set(verifiedHash, [{
-      type: 'payment',
-      from: expectedSource,
-      to: recipient.publicKey(),
-      amount: '1.25',
-      asset_type: 'native',
-    }]);
-    const verified = await createRecord(session, recipient, 'Summary test verified', { txHash: verifiedHash });
+    operationBodies.set(verifiedHash, [
+      {
+        type: 'payment',
+        from: expectedSource,
+        to: recipient.publicKey(),
+        amount: '1.25',
+        asset_type: 'native',
+      },
+    ]);
+    const verified = await createRecord(session, recipient, 'Summary test verified', {
+      txHash: verifiedHash,
+    });
     expect(verified.status).toBe(201);
     expect(verified.body.record.status).toBe('verified');
     expect(verified.body.record.verification.sourceAccount).toBe(expectedSource);
@@ -535,14 +578,18 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       ledger: 8,
       created_at: '2026-01-15T00:00:00Z',
     });
-    operationBodies.set(wrongHash, [{
-      type: 'payment',
-      from: Keypair.random().publicKey(),
-      to: recipient.publicKey(),
-      amount: '1.25',
-      asset_type: 'native',
-    }]);
-    const mismatch = await createRecord(session, recipient, 'Summary test mismatch', { txHash: wrongHash });
+    operationBodies.set(wrongHash, [
+      {
+        type: 'payment',
+        from: Keypair.random().publicKey(),
+        to: recipient.publicKey(),
+        amount: '1.25',
+        asset_type: 'native',
+      },
+    ]);
+    const mismatch = await createRecord(session, recipient, 'Summary test mismatch', {
+      txHash: wrongHash,
+    });
     expect(mismatch.status).toBe(201);
     expect(mismatch.body.record.status).toBe('mismatch');
 
@@ -553,19 +600,23 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       ledger: 9,
       created_at: '2026-01-15T00:00:00Z',
     });
-    operationBodies.set(adminHash, [{
-      type: 'payment',
-      from: admin.publicKey(),
-      to: recipient.publicKey(),
-      amount: '1.25',
-      asset_type: 'native',
-    }]);
+    operationBodies.set(adminHash, [
+      {
+        type: 'payment',
+        from: admin.publicKey(),
+        to: recipient.publicKey(),
+        amount: '1.25',
+        asset_type: 'native',
+      },
+    ]);
     const adminCreated = await createRecord(adminSession, recipient, 'Admin-created record', {
       txHash: adminHash,
     });
     expect(adminCreated.status).toBe(201);
     expect(adminCreated.body.record.organization).toBe(admin.publicKey());
-    expect(adminCreated.body.record.organizationName).toBe('Organization ' + admin.publicKey().slice(-4));
+    expect(adminCreated.body.record.organizationName).toBe(
+      'Organization ' + admin.publicKey().slice(-4),
+    );
     expect(adminCreated.body.record.verification.sourceAccount).toBe(admin.publicKey());
 
     const summaryResponse = await request(app)
@@ -577,7 +628,9 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       { status: 'verified', asset: 'XLM', amount: '1.25' },
     ]);
 
-    const duplicate = await createRecord(session, recipient, 'Duplicate record', { txHash: verifiedHash });
+    const duplicate = await createRecord(session, recipient, 'Duplicate record', {
+      txHash: verifiedHash,
+    });
     expect(duplicate.status).toBe(409);
   });
 
@@ -588,7 +641,10 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     const session = await login(organization);
     const recipient = Keypair.random();
     const privacyTerm = 'privacy-' + Keypair.random().publicKey().slice(-8);
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 404 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 404 })),
+    );
     const privateRecord = await createRecord(session, recipient, privacyTerm, {
       txHash: '3'.padStart(64, '0'),
     });
@@ -601,6 +657,25 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(publicResponse.body.records).toHaveLength(1);
     expect(publicResponse.body.facets.organizations).toContain(organization.publicKey());
     expect(publicResponse.body.records[0].recipient).toMatch(/^Beneficiary-/);
+    expect(publicResponse.body.records[0].recipient).toBe(
+      'Beneficiary-' +
+        createHmac('sha256', process.env.PSEUDONYM_SECRET || '')
+          .update('aidtrace-beneficiary:')
+          .update(recipient.publicKey())
+          .digest('hex')
+          .slice(0, 12),
+    );
+    expect(publicResponse.body.records[0].recipient).not.toBe(
+      'Beneficiary-' +
+        createHmac('sha256', process.env.SESSION_SECRET || '')
+          .update('aidtrace-beneficiary:')
+          .update(recipient.publicKey())
+          .digest('hex')
+          .slice(0, 12),
+    );
+    expect(publicResponse.body.records[0].recipient).not.toContain(
+      createHash('sha256').update(recipient.publicKey()).digest('hex').slice(0, 12),
+    );
     expect(publicResponse.body.records[0].recipientAddress).toBe('');
     expect(publicResponse.body.records[0].txHash).toBe('');
     expect(publicResponse.body.records[0].note).toBe('');
@@ -633,6 +708,20 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(beneficiaryResponse.body.records[0].recipientAddress).toBe(recipient.publicKey());
     expect(beneficiaryResponse.body.records[0].note).toBe('Private contact note');
 
+    const secondTerm = privacyTerm + ' repeat';
+    const secondPrivateRecord = await createRecord(session, recipient, secondTerm, {
+      txHash: createHash('sha256')
+        .update('second-' + recipient.publicKey())
+        .digest('hex'),
+    });
+    expect(secondPrivateRecord.status).toBe(201);
+    const secondPublicResponse = await request(app)
+      .get('/api/transparency')
+      .query({ q: secondTerm, network: 'testnet', limit: '1' });
+    expect(secondPublicResponse.body.records[0].recipient).toBe(
+      publicResponse.body.records[0].recipient,
+    );
+
     const pageOne = await request(app).get('/api/transparency').query({ limit: '1' });
     expect(pageOne.body.hasMore).toBe(true);
     const pageTwo = await request(app)
@@ -654,11 +743,13 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     await assignRole(adminSession, organization, 'organization');
     await assignRole(adminSession, otherOrganization, 'organization');
     await assignRole(adminSession, beneficiary, 'beneficiary');
-    const roles = await request(app)
-      .get('/api/admin/roles')
-      .set('Cookie', adminSession.cookie);
-    expect(roles.body.roles.some((role: { id: string; address: string }) =>
-      role.id === beneficiary.publicKey() && role.address === beneficiary.publicKey())).toBe(true);
+    const roles = await request(app).get('/api/admin/roles').set('Cookie', adminSession.cookie);
+    expect(
+      roles.body.roles.some(
+        (role: { id: string; address: string }) =>
+          role.id === beneficiary.publicKey() && role.address === beneficiary.publicKey(),
+      ),
+    ).toBe(true);
     const ownerSession = await login(organization);
     const otherSession = await login(otherOrganization);
     const beneficiarySession = await login(beneficiary);
@@ -698,8 +789,12 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .set('Cookie', beneficiarySession.cookie);
     expect(beneficiaryRecords.status).toBe(200);
     expect(beneficiaryRecords.body.records).toHaveLength(1);
-    expect(beneficiaryRecords.body.records.every((record: { recipientAddress: string }) =>
-      record.recipientAddress === beneficiary.publicKey())).toBe(true);
+    expect(
+      beneficiaryRecords.body.records.every(
+        (record: { recipientAddress: string }) =>
+          record.recipientAddress === beneficiary.publicKey(),
+      ),
+    ).toBe(true);
 
     const noCsrfVoid = await request(app)
       .post('/api/records/' + owned.body.record.id + '/void')
@@ -720,16 +815,20 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     const visibleVoid = await request(app)
       .get('/api/transparency')
       .query({ status: 'voided', q: 'Owner record' });
-    expect(visibleVoid.body.records.some((record: { id: string }) =>
-      record.id === owned.body.record.id)).toBe(true);
+    expect(
+      visibleVoid.body.records.some((record: { id: string }) => record.id === owned.body.record.id),
+    ).toBe(true);
 
     const audit = await request(app)
       .get('/api/audit')
       .query({ action: 'record_voided' })
       .set('Cookie', adminSession.cookie);
     expect(audit.status).toBe(200);
-    expect(audit.body.entries.some((event: { recordId?: string }) =>
-      event.recordId === owned.body.record.id)).toBe(true);
+    expect(
+      audit.body.entries.some(
+        (event: { recordId?: string }) => event.recordId === owned.body.record.id,
+      ),
+    ).toBe(true);
 
     const removable = Keypair.random();
     await assignRole(adminSession, removable, 'donor');
@@ -753,6 +852,8 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .set('Cookie', ownerSession.cookie)
       .send({ csrfToken: ownerSession.csrfToken });
     expect(logoutEverywhere.status).toBe(200);
-    expect((await request(app).get('/api/me').set('Cookie', ownerSession.cookie)).body.session).toBeNull();
+    expect(
+      (await request(app).get('/api/me').set('Cookie', ownerSession.cookie)).body.session,
+    ).toBeNull();
   });
 });
