@@ -17,6 +17,15 @@ describe('pseudonym secret configuration', () => {
     ).toThrow('PSEUDONYM_SECRET must contain at least 32 bytes.');
   });
 
+  it('rejects the example placeholder even though it meets the length requirement', () => {
+    expect(() =>
+      resolvePseudonymSecret({
+        NODE_ENV: 'production',
+        PSEUDONYM_SECRET: 'replace-with-a-different-random-secret-at-least-32-bytes',
+      } as NodeJS.ProcessEnv),
+    ).toThrow('PSEUDONYM_SECRET must contain at least 32 bytes.');
+  });
+
   it('uses the clearly development-only fallback only in development', () => {
     expect(resolvePseudonymSecret({ NODE_ENV: 'development' } as NodeJS.ProcessEnv)).toBe(
       'aidtrace-development-only-pseudonym-secret',
