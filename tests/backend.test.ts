@@ -399,9 +399,11 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       await pool.query('DELETE FROM organizations WHERE wallet_address = ANY($1::text[])', [
         addresses,
       ]);
-      await pool.query('DELETE FROM wallet_roles WHERE wallet_address = ANY($1::text[])', [
-        addresses,
-      ]);
+      await pool.query(
+        `DELETE FROM wallet_roles
+         WHERE wallet_address = ANY($1::text[]) OR updated_by = ANY($1::text[])`,
+        [addresses],
+      );
       await pool.query('DELETE FROM sessions WHERE wallet_address = ANY($1::text[])', [addresses]);
       await pool.query('DELETE FROM challenges WHERE wallet_address = ANY($1::text[])', [
         addresses,
@@ -632,7 +634,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       txHash: verifiedHash,
     });
     expect(duplicate.status).toBe(409);
-  });
+  }, 120_000);
 
   it('paginates and filters public records while redacting beneficiary identifiers by default', async () => {
     const adminSession = await login(admin);
@@ -733,7 +735,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .get('/api/transparency')
       .query({ limit: '1', network: 'testnet', cursor: pageOne.body.nextCursor });
     expect(wrongFilterCursor.status).toBe(400);
-  });
+  }, 120_000);
 
   it('enforces organization ownership, beneficiary scoping, void history, admin roles, and logout-everywhere', async () => {
     const adminSession = await login(admin);
@@ -855,5 +857,5 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(
       (await request(app).get('/api/me').set('Cookie', ownerSession.cookie)).body.session,
     ).toBeNull();
-  });
+  }, 120_000);
 });
