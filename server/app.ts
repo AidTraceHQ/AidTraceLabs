@@ -2,7 +2,7 @@ import { integerEnvironmentVariable } from './environment.js';
 import express, { type ErrorRequestHandler } from 'express';
 import { authRouter } from './auth.js';
 import { cors } from './http-security.js';
-import { apiIpRateLimit, authIpRateLimit } from './rate-limits.js';
+import { apiIpRateLimit, authIpRateLimit, publicReadIpRateLimit } from './rate-limits.js';
 import { recordsRouter } from './records.js';
 import { databaseUnavailableResponse } from './database-errors.js';
 
@@ -17,7 +17,7 @@ app.use(express.json({ limit: '32kb', strict: true }));
 app.use(authRouter);
 app.use(recordsRouter);
 
-app.get('/api/_healthcheck', (_request, response) => {
+app.get('/api/_healthcheck', publicReadIpRateLimit, (_request, response) => {
   response.set('Cache-Control', 'no-store').json({ ok: true, service: 'aidtrace-wallet-api' });
 });
 

@@ -55,6 +55,8 @@ export function validateEnvironment(environment: NodeJS.ProcessEnv = process.env
   if (port > 65535) {
     throw new Error('PORT must be an integer between 1 and 65535.');
   }
+  integerEnvironmentVariable('PUBLIC_READ_RATE_LIMIT_WINDOW_MS', 15 * 60 * 1000, 1, environment);
+  integerEnvironmentVariable('PUBLIC_READ_RATE_LIMIT_MAX', 600, 1, environment);
   integerEnvironmentVariable('API_RATE_LIMIT_WINDOW_MS', 15 * 60 * 1000, 1, environment);
   integerEnvironmentVariable('API_RATE_LIMIT_MAX', 120, 1, environment);
   integerEnvironmentVariable('AUTH_RATE_LIMIT_WINDOW_MS', 15 * 60 * 1000, 1, environment);

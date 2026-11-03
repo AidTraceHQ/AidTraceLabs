@@ -8,6 +8,7 @@ import { noStore, requireAllowedOrigin } from './http-security.js';
 import { resolvePseudonymSecret } from './pseudonym.js';
 import { checkTransaction, type Verification } from './stellar-verification.js';
 import { retryReadOnlyDatabase } from './database-errors.js';
+import { publicReadIpRateLimit } from './rate-limits.js';
 
 type Role = 'donor' | 'organization' | 'beneficiary' | 'admin';
 type Network = 'testnet' | 'mainnet';
@@ -758,7 +759,7 @@ async function transparencyHandler(request: Request, response: Response): Promis
   );
 }
 
-router.get('/api/transparency', noStore, (request, response) =>
+router.get('/api/transparency', noStore, publicReadIpRateLimit, (request, response) =>
   retryReadOnlyDatabase('/api/transparency', () => transparencyHandler(request, response)),
 );
 

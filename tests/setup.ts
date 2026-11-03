@@ -49,6 +49,7 @@ if (testDatabaseUrl) {
 
 process.env.SESSION_SECRET = 'vitest-session-secret-with-at-least-thirty-two-bytes';
 process.env.PSEUDONYM_SECRET = 'vitest-pseudonym-secret-with-at-least-thirty-two-bytes';
+process.env.PUBLIC_READ_RATE_LIMIT_MAX = '10000';
 process.env.API_RATE_LIMIT_MAX = '10000';
 process.env.AUTH_RATE_LIMIT_MAX = '10000';
 process.env.TRUST_PROXY_HOPS = '0';
