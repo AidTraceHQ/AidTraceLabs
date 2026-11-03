@@ -335,21 +335,21 @@ router.post('/api/auth/verify', noStore, async (request, response) => {
 
 router.get('/api/me', noStore, (request, response) =>
   retryReadOnlyDatabase('/api/me', async () => {
-  const current = await getSession(request);
-  if (!current) {
-    clearSessionCookie(response);
-    response.status(200).json({ session: null });
-    return;
-  }
-  response.status(200).json({
-    session: {
-      address: current.session.address,
-      network: current.session.network,
-      role: current.session.role,
-      csrfToken: current.csrfToken,
-      expiresAt: current.session.expiresAt.toISOString(),
-    },
-  });
+    const current = await getSession(request);
+    if (!current) {
+      clearSessionCookie(response);
+      response.status(200).json({ session: null });
+      return;
+    }
+    response.status(200).json({
+      session: {
+        address: current.session.address,
+        network: current.session.network,
+        role: current.session.role,
+        csrfToken: current.csrfToken,
+        expiresAt: current.session.expiresAt.toISOString(),
+      },
+    });
   }),
 );
 

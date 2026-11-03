@@ -14,11 +14,7 @@ function errorCause(error: unknown): unknown {
 export function isTransientDatabaseError(error: unknown): boolean {
   if (error instanceof DatabaseUnavailableError) return true;
   if (typeof error !== 'object' || error === null) return false;
-  if (
-    'code' in error &&
-    typeof error.code === 'string' &&
-    transientCodes.has(error.code)
-  ) {
+  if ('code' in error && typeof error.code === 'string' && transientCodes.has(error.code)) {
     return true;
   }
   if (

@@ -72,7 +72,6 @@ export function validateEnvironment(environment: NodeJS.ProcessEnv = process.env
   if (missing.length > 0) {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}.`);
   }
-
 }
 
 validateEnvironment();

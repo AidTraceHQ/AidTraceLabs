@@ -8,7 +8,9 @@ describe('runtime environment validation', () => {
         NODE_ENV: 'development',
         PORT: '3001',
       } as NodeJS.ProcessEnv),
-    ).toThrow('Missing required environment variables: DATABASE_URL, SESSION_SECRET, PUBLIC_APP_ORIGIN, CORS_ALLOWED_ORIGINS, DEFAULT_STELLAR_NETWORK, HORIZON_TESTNET_URL, HORIZON_MAINNET_URL.');
+    ).toThrow(
+      'Missing required environment variables: DATABASE_URL, SESSION_SECRET, PUBLIC_APP_ORIGIN, CORS_ALLOWED_ORIGINS, DEFAULT_STELLAR_NETWORK, HORIZON_TESTNET_URL, HORIZON_MAINNET_URL.',
+    );
   });
 
   it('accepts the development fallback for the pseudonym secret', () => {
@@ -26,5 +28,4 @@ describe('runtime environment validation', () => {
       } as NodeJS.ProcessEnv),
     ).not.toThrow();
   });
-
 });

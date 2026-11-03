@@ -14,4 +14,6 @@ if (existsSync(targetPath)) {
 
 const template = readFileSync(sourcePath, 'utf8');
 copyFileSync(sourcePath, targetPath);
-console.log(`Created .env.local from .env.example. Update the local values before starting the app.\n${template.split('\n').slice(0, 6).join('\n')}`);
+console.log(
+  `Created .env.local from .env.example. Update the local values before starting the app.\n${template.split('\n').slice(0, 6).join('\n')}`,
+);
