@@ -28,8 +28,15 @@ Run the Express API on a Node.js 20+ host/container/VM connected to PostgreSQL, 
 | `HORIZON_TESTNET_URL`        | Read-only testnet Horizon endpoint.                                                                |
 | `HORIZON_MAINNET_URL`        | Read-only mainnet Horizon endpoint.                                                                |
 | `VITE_API_BASE_URL`          | Optional frontend API base; leave empty for same-origin `/api`.                                    |
+| `API_RATE_LIMIT_WINDOW_MS`   | API-wide per-IP rate-limit window; defaults to `900000` (15 minutes).                              |
+| `API_RATE_LIMIT_MAX`         | API-wide requests per IP per window; defaults to `120`.                                            |
+| `AUTH_RATE_LIMIT_WINDOW_MS`  | `/api/auth/*` per-IP rate-limit window; defaults to `900000` (15 minutes).                         |
+| `AUTH_RATE_LIMIT_MAX`        | `/api/auth/*` requests per IP per window; defaults to `20`.                                        |
+| `TRUST_PROXY_HOPS`           | Number of trusted reverse-proxy hops; defaults to `0` (trust no forwarded client IP).              |
 
 Do not commit `.env` or paste connection strings into logs/issues. `.env.example` contains local placeholders. On Neon, point development to a dev branch and tests to a separate test branch; configure the production-host guard with the production hostname without exposing connection strings.
+
+The API limits use express-rate-limit's default in-memory store, which is per process/instance; multiple replicas do not share counters. Use a shared store if limits must apply across replicas. `TRUST_PROXY_HOPS` controls Express proxy trust and therefore which forwarded IP is used by the per-IP limits. Keep it at `0` when the API is directly exposed; behind a reverse proxy, set the exact trusted hop count for the deployment topology. Do not trust arbitrary forwarded headers or set broad proxy trust without a known trusted network path.
 
 ## Migrations and administrator seed
 

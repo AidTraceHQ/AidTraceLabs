@@ -49,6 +49,9 @@ if (testDatabaseUrl) {
 
 process.env.SESSION_SECRET = 'vitest-session-secret-with-at-least-thirty-two-bytes';
 process.env.PSEUDONYM_SECRET = 'vitest-pseudonym-secret-with-at-least-thirty-two-bytes';
+process.env.API_RATE_LIMIT_MAX = '10000';
+process.env.AUTH_RATE_LIMIT_MAX = '10000';
+process.env.TRUST_PROXY_HOPS = '0';
 process.env.PUBLIC_APP_ORIGIN = 'http://localhost:5173';
 process.env.CORS_ALLOWED_ORIGINS = 'http://localhost:5173';
 process.env.HORIZON_TESTNET_URL = 'https://horizon-testnet.stellar.org';

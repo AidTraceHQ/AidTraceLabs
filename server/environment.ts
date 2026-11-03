@@ -13,6 +13,20 @@ const requiredKeys = [
   'HORIZON_MAINNET_URL',
 ] as const;
 
+export function integerEnvironmentVariable(
+  name: string,
+  defaultValue: number,
+  minimum = 1,
+  environment: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = environment[name];
+  const value = raw === undefined || raw.trim() === '' ? defaultValue : Number(raw);
+  if (!Number.isSafeInteger(value) || value < minimum) {
+    throw new Error(`${name} must be an integer greater than or equal to ${minimum}.`);
+  }
+  return value;
+}
+
 export function validateEnvironment(environment: NodeJS.ProcessEnv = process.env): void {
   const missing: string[] = [];
 
@@ -37,10 +51,15 @@ export function validateEnvironment(environment: NodeJS.ProcessEnv = process.env
     missing.push('PSEUDONYM_SECRET');
   }
 
-  const port = Number(environment.PORT ?? '3001');
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  const port = integerEnvironmentVariable('PORT', 3001, 1, environment);
+  if (port > 65535) {
     throw new Error('PORT must be an integer between 1 and 65535.');
   }
+  integerEnvironmentVariable('API_RATE_LIMIT_WINDOW_MS', 15 * 60 * 1000, 1, environment);
+  integerEnvironmentVariable('API_RATE_LIMIT_MAX', 120, 1, environment);
+  integerEnvironmentVariable('AUTH_RATE_LIMIT_WINDOW_MS', 15 * 60 * 1000, 1, environment);
+  integerEnvironmentVariable('AUTH_RATE_LIMIT_MAX', 20, 1, environment);
+  integerEnvironmentVariable('TRUST_PROXY_HOPS', 0, 0, environment);
 
   const publicAppOrigin = environment.PUBLIC_APP_ORIGIN;
   if (publicAppOrigin) {
