@@ -5,11 +5,11 @@ Thanks for considering a contribution. Keep changes focused, tested, and honest 
 ## Local setup
 
 1. Use Node.js 20 or newer and npm.
-2. Install dependencies with `npm install`.
-3. Copy `.env.example` to `.env` and configure a local PostgreSQL database. Docker Compose is provided, but has not been verified on every platform. Neon is optional; use a development branch for `DATABASE_URL` and a separate test branch for `TEST_DATABASE_URL`.
+2. Install dependencies with `npm ci`. The first install can take several minutes on a fresh machine.
+3. Run `npm run setup:env` to create `.env.local` from `.env.example` when the file does not already exist. Keep the generated file local and do not commit it. Docker Compose is provided, but has not been verified on every platform. Neon is optional; use a development branch for `DATABASE_URL` and a separate test branch for `TEST_DATABASE_URL`.
 4. Set distinct random values of at least 32 bytes for `SESSION_SECRET` and `PSEUDONYM_SECRET`. The pseudonym key must not be the session key.
 5. Apply migrations with `npm run db:migrate`. Set `ADMIN_WALLET` to a Stellar public address before running `npm run db:seed-admin`.
-6. Start the API and frontend with `npm run dev`.
+6. Start the API and frontend with `npm run dev` and run `npm run smoke` against the local stack to verify the health and transparency routes return `200`.
 
 Do not commit `.env` files, database URLs, private keys, signed messages, cookies, or tokens. Never use a production database for tests. The test bootstrap rejects a test endpoint that matches the configured production host or runtime endpoint.
 

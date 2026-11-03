@@ -10,14 +10,16 @@
     "build": "vite build && npm run build:server",
     "build:server": "tsc -p tsconfig.server.json",
     "start:server": "node dist-server/server/index.js",
+    "setup:env": "tsx scripts/setup-env.ts",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:seed-admin": "tsx scripts/seed-admin.ts",
+    "smoke": "tsx scripts/smoke.ts",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.test.json",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run lint && npm test && npm run build",
+    "check": "npm run typecheck && npm run lint && npm test && npm run smoke && npm run build",
     "preview": "vite preview"
   },
   "dependencies": {

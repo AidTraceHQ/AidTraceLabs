@@ -57,13 +57,13 @@ Requirements: Node.js 20+, npm, and PostgreSQL. Local PostgreSQL can be run with
 1. Install packages and prepare environment:
 
    ```sh
-   npm install
-   cp .env.example .env
+   npm ci
+   npm run setup:env
    ```
 
-   On PowerShell, use `Copy-Item .env.example .env` instead of `cp`.
+   The setup command creates a local `.env.local` file from `.env.example` when one does not already exist. It never overwrites an existing file. On PowerShell, the same command still works with the repository script.
 
-2. Set `DATABASE_URL`, exact frontend origins, and distinct random secrets of at least 32 bytes for `SESSION_SECRET` and `PSEUDONYM_SECRET`. For remote PostgreSQL, use `sslmode=verify-full`. Never reuse the same value for both secrets.
+2. Update `.env.local` with your local `DATABASE_URL`, exact frontend origins, and distinct random secrets of at least 32 bytes for `SESSION_SECRET` and `PSEUDONYM_SECRET`. For remote PostgreSQL, use `sslmode=verify-full`. Never reuse the same value for both secrets. The first `npm ci` may take a few minutes on a fresh workstation.
 3. Apply migrations. To bootstrap an administrator, set `ADMIN_WALLET` to a Stellar public address and run the seed command:
 
    ```sh
