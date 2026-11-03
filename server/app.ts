@@ -3,6 +3,7 @@ import express, { type ErrorRequestHandler } from 'express';
 import { authRouter } from './auth.js';
 import { cors } from './http-security.js';
 import { recordsRouter } from './records.js';
+import { databaseUnavailableResponse } from './database-errors.js';
 
 const app = express();
 
@@ -34,8 +35,17 @@ const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => 
     response.status(413).json({ error: 'Request body is too large.' });
     return;
   }
+  const unavailable = databaseUnavailableResponse(error, _request.method, _request.path);
+  if (unavailable) {
+    response.status(unavailable.status).json(unavailable.body);
+    return;
+  }
   console.error('Unhandled API error:', error);
-  response.status(500).json({ error: 'Internal server error.' });
+  const isDevelopment = process.env.NODE_ENV !== 'production';
+  response.status(500).json({
+    error: 'Internal server error.',
+    ...(isDevelopment && error instanceof Error ? { details: error.message } : {}),
+  });
 };
 
 app.use(errorHandler);

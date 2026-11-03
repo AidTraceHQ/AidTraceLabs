@@ -3,6 +3,7 @@ import { Router, type Request, type Response } from 'express';
 import { Keypair, StrKey } from '@stellar/stellar-sdk';
 import { pool, withTransaction } from './db.js';
 import { noStore, requireAllowedOrigin } from './http-security.js';
+import { retryReadOnlyDatabase } from './database-errors.js';
 
 type Network = 'testnet' | 'mainnet';
 type Role = 'donor' | 'organization' | 'beneficiary' | 'admin';
@@ -332,7 +333,8 @@ router.post('/api/auth/verify', noStore, async (request, response) => {
   });
 });
 
-router.get('/api/me', noStore, async (request, response) => {
+router.get('/api/me', noStore, (request, response) =>
+  retryReadOnlyDatabase('/api/me', async () => {
   const current = await getSession(request);
   if (!current) {
     clearSessionCookie(response);
@@ -348,7 +350,8 @@ router.get('/api/me', noStore, async (request, response) => {
       expiresAt: current.session.expiresAt.toISOString(),
     },
   });
-});
+  }),
+);
 
 router.post('/api/auth/logout', noStore, async (request, response) => {
   if (!requireAllowedOrigin(request, response)) return;

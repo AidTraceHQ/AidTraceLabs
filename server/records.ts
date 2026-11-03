@@ -7,6 +7,7 @@ import { pool, withTransaction } from './db.js';
 import { noStore, requireAllowedOrigin } from './http-security.js';
 import { resolvePseudonymSecret } from './pseudonym.js';
 import { checkTransaction, type Verification } from './stellar-verification.js';
+import { retryReadOnlyDatabase } from './database-errors.js';
 
 type Role = 'donor' | 'organization' | 'beneficiary' | 'admin';
 type Network = 'testnet' | 'mainnet';
@@ -687,7 +688,7 @@ async function cachedVerification(id: string): Promise<boolean> {
   return result.rowCount === 1;
 }
 
-router.get('/api/transparency', noStore, async (request, response) => {
+async function transparencyHandler(request: Request, response: Response): Promise<void> {
   const current = await getSession(request);
   const page = readPage(request, response);
   if (!page) return;
@@ -755,7 +756,11 @@ router.get('/api/transparency', noStore, async (request, response) => {
       summary,
     },
   );
-});
+}
+
+router.get('/api/transparency', noStore, (request, response) =>
+  retryReadOnlyDatabase('/api/transparency', () => transparencyHandler(request, response)),
+);
 
 router.get('/api/beneficiary', noStore, async (request, response) => {
   const current = await authorize(request, response, ['beneficiary', 'admin']);
