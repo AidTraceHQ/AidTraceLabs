@@ -1,0 +1,28 @@
+# Normalize line endings: store LF in the repository and check out LF everywhere.
+* text=auto eol=lf
+
+# Treat binary assets as binary so they are never normalized or diffed as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.avif binary
+*.bmp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.mp3 binary
+*.wav binary
+*.mp4 binary
+*.webm binary
+*.mov binary
+*.xlsx binary
+*.docx binary
