@@ -1,0 +1,98 @@
+# AidTrace manual test checklist
+
+Run this checklist against the Neon `dev` branch and a Stellar testnet wallet.
+Do not use production credentials or submit a real payment. The automated test
+suite covers the API and database contracts; this checklist covers browser,
+Freighter and deployment wiring.
+
+## Results recorded so far (2026-10-29)
+
+- The initial dev check found that the asset headline included non-verified
+  records. It now includes only verified amounts; other statuses are listed
+  separately with their status labels and are excluded from that headline.
+- The Organizations stat was zero because the UI read `facets.organizations`
+  while the API sent the organization array outside `facets`. The response now
+  follows the documented `facets` shape, which the UI reads.
+- When an admin creates a record, the admin's connected wallet is saved as
+  both `organization_wallet` and `created_by`. If that wallet has no
+  organization row yet, its display name is generated as `Organization ` plus
+  the last four address characters (for example, `Organization AEI2`). Stellar
+  verification compares the payment's source account with that record's
+  `organization_wallet`—so an admin-created record is checked against the
+  admin wallet, not another organization's wallet.
+- With recipient consent disabled, the public projection uses a pseudonym such
+  as `Beneficiary-a1b2c3d4` and does not expose a recipient address, note,
+  transaction hash, or restricted verification details. The owning
+  organization, an admin, and the beneficiary through the beneficiary route
+  retain full record data under the permission matrix. Automated tests cover
+  these projections. The original dev records had consent enabled, so their
+  existing public recipient data remains visible.
+
+## Setup
+
+- [ ] Confirm `neon checkout dev` reports `dev`; `DATABASE_URL` must target
+      `dev`. Keep `TEST_DATABASE_URL` pointed at the isolated `test` branch.
+- [ ] Configure distinct random `SESSION_SECRET` and `PSEUDONYM_SECRET` values
+      of at least 32 bytes. Remote PostgreSQL URLs should use `sslmode=verify-full`.
+- [ ] Confirm migrations 001 and 002 are applied on `dev`.
+- [ ] Configure `ADMIN_WALLET` with the intended public Stellar admin address,
+      then run `npm run db:seed-admin`.
+- [ ] Start the Express API and Vite frontend using the documented development
+      commands. Confirm the API health check responds with
+      `{"ok":true,"service":"aidtrace-wallet-api"}`.
+
+## Wallet authentication and session security
+
+- [ ] Open the frontend over its configured origin and connect a testnet
+      wallet in Freighter.
+- [ ] Inspect the login challenge message. Confirm `Domain` matches the origin
+      from `PUBLIC_APP_ORIGIN`, and `Issued At` and `Expires` are five minutes
+      apart.
+- [ ] Sign with Freighter. Confirm the UI shows the connected address and
+      role, and the session cookie is Secure, HttpOnly, SameSite=Lax, and expires
+      after seven days.
+- [ ] Reload and confirm the session persists. Log out and confirm the session
+      is invalidated and the cookie is cleared.
+- [ ] Sign in to the same wallet in two browser sessions, use sign-out-everywhere
+      in one session, and confirm the other session is rejected on its next request.
+- [ ] Request a fresh challenge, then try to reuse its signature after a
+      successful login; the reused challenge must be rejected.
+- [ ] Confirm a request from an untrusted Origin and an authenticated
+      state-changing request without a valid CSRF token are rejected.
+
+## Records, verification, privacy and administration
+
+- [ ] As an organization wallet, create a testnet aid record with a pseudonymous
+      beneficiary. Confirm the public label is stable for the same wallet and is
+      HMAC-derived with the separate pseudonym secret. Confirm the record is visible
+      in the public transparency list
+      without beneficiary wallet, private note, transaction hash, or restricted
+      verification details when consent is false.
+- [ ] Create or edit a record with an existing `(network, tx_hash)` and confirm
+      the API rejects the duplicate without changing the existing record.
+- [ ] Verify a transaction whose source, destination, amount and asset match
+      the organization's configured wallet and record. Confirm the displayed
+      result is verified; try a mismatching source and confirm it is not verified.
+- [ ] With recipient consent enabled, confirm the approved public projection
+      is shown. Confirm voiding retains the record and records the reason, actor
+      and time instead of deleting it.
+- [ ] Confirm the disbursed-by-asset headline includes verified records only;
+      mismatched, pending, unverified, not-found and voided amounts appear
+      separately by labeled status and do not inflate the headline.
+- [ ] Confirm Organizations counts the wallets in the transparency response's
+      facets and the organization filter lists those wallets.
+- [ ] Exercise list filters and cursor pagination, including navigating
+      forward and changing a filter while using an old cursor.
+- [ ] Sign in with a beneficiary-role wallet and confirm the beneficiary view
+      contains only records addressed to that wallet; verify another
+      beneficiary's records are not returned.
+- [ ] As an admin, list roles and audit events, change a role, and confirm the
+      action is audited. Confirm a wallet cannot remove or demote its own active
+      admin role.
+
+## Shutdown and cleanup
+
+- [ ] Stop both development processes and confirm the API pool closes without
+      leaving an active local listener.
+- [ ] Confirm `.env.local` remains ignored and no connection strings,
+      signatures, session cookies, or private keys were added to Git.

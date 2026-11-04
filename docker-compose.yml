@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aidtrace}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-aidtrace}
+    ports:
+      - '5432:5432'
+    volumes:
+      - aidtrace-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-aidtrace} -d ${POSTGRES_DB:-aidtrace}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    env_file: .env
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://${POSTGRES_USER:-aidtrace}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-aidtrace}
+      PORT: 3001
+    command: ['sh', '-c', 'npm run db:migrate && npm run start:server']
+    ports:
+      - '3001:3001'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build: .
+    environment:
+      API_PROXY_TARGET: http://api:3001
+    command: ['npm', 'run', 'dev:web', '--', '--host', '0.0.0.0']
+    ports:
+      - '5173:5173'
+    depends_on:
+      - api
+
+volumes:
+  aidtrace-postgres:
