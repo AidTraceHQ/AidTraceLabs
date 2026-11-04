@@ -294,10 +294,21 @@ export async function checkTransaction(record: AidPayment): Promise<Verification
   let assetMatch = false;
   let issuerMatch = false;
   let sourceMatch = false;
+  let bestCandidate:
+    | {
+        score: number;
+        sourceAccount: string;
+        destination: string;
+        amount: string;
+        assetCode: string;
+        assetIssuer: string;
+      }
+    | undefined;
 
   for (const operation of payments) {
     const destination = operationDestination(operation);
-    const amount = toStroops(operationAmount(operation));
+    const rawAmount = operationAmount(operation);
+    const amount = toStroops(rawAmount);
     const asset = operationAsset(operation);
     const source = operationSource(operation, transaction);
     const matchesDestination = destination === record.recipientWallet;
@@ -311,6 +322,23 @@ export async function checkTransaction(record: AidPayment): Promise<Verification
     assetMatch ||= matchesAsset;
     issuerMatch ||= matchesIssuer;
     sourceMatch ||= matchesSource;
+
+    const score =
+      Number(matchesDestination) +
+      Number(matchesAmount) +
+      Number(matchesAsset) +
+      Number(matchesIssuer) +
+      Number(matchesSource);
+    if (!bestCandidate || score > bestCandidate.score) {
+      bestCandidate = {
+        score,
+        sourceAccount: source,
+        destination,
+        amount: amount ? amountFromStroops(amount) : rawAmount,
+        assetCode: asset.code,
+        assetIssuer: asset.issuer,
+      };
+    }
 
     if (matchesDestination && matchesAmount && matchesAsset && matchesIssuer && matchesSource) {
       return {
@@ -346,7 +374,11 @@ export async function checkTransaction(record: AidPayment): Promise<Verification
     differences,
     ledger: transaction.ledger,
     createdAt: transaction.created_at,
-    sourceAccount: transaction.source_account,
+    sourceAccount: bestCandidate?.sourceAccount || transaction.source_account,
+    destination: bestCandidate?.destination || undefined,
+    amount: bestCandidate?.amount || undefined,
+    asset: bestCandidate?.assetCode || undefined,
+    assetIssuer: bestCandidate?.assetIssuer || undefined,
     link,
   };
 }

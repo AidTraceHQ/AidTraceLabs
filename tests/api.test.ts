@@ -31,4 +31,21 @@ describe('API URL configuration', () => {
       'GET /api/transparency failed (404): Route not found.',
     );
   });
+
+  it('preserves the HTTP status for conflict handling', async () => {
+    vi.stubGlobal('window', { location: { origin: 'http://localhost:5173' } });
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ error: 'Record changed concurrently.' }), { status: 409 }),
+        ),
+    );
+
+    await expect(api.put('/api/records/record-id', {})).rejects.toMatchObject({
+      status: 409,
+      message: 'PUT /api/records/record-id failed (409): Record changed concurrently.',
+    });
+  });
 });
