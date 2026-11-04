@@ -41,7 +41,7 @@ jobs:
       HORIZON_TESTNET_URL: https://horizon-testnet.stellar.org
       HORIZON_MAINNET_URL: https://horizon.stellar.org
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 20
