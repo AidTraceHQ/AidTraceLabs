@@ -7,10 +7,16 @@ if (!connectionString) {
   throw new Error('DATABASE_URL is required.');
 }
 
+// Vercel Functions run on Fluid compute: many short-lived instances share the same database, so
+// each instance keeps a small pool and releases idle clients quickly instead of holding them open.
+const serverless = Boolean(process.env.VERCEL);
+
 export const pool = new Pool({
   connectionString,
+  max: serverless ? 3 : 10,
   connectionTimeoutMillis: 10_000,
-  idleTimeoutMillis: 30_000,
+  idleTimeoutMillis: serverless ? 5_000 : 30_000,
+  allowExitOnIdle: serverless,
   query_timeout: 20_000,
   statement_timeout: 15_000,
 });
