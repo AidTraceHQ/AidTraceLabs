@@ -572,6 +572,25 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .send({ csrfToken: session.csrfToken });
     expect(cached.status).toBe(200);
     expect(horizonFetch).toHaveBeenCalledTimes(2);
+    const editAfterVerify = await request(app)
+      .put('/api/records/' + verified.body.record.id)
+      .set('Origin', origin)
+      .set('Cookie', session.cookie)
+      .send({
+        csrfToken: session.csrfToken,
+        recipient: cached.body.record.recipient,
+        recipientAddress: cached.body.record.recipientAddress,
+        purpose: cached.body.record.purpose,
+        amount: cached.body.record.amount,
+        asset: cached.body.record.asset,
+        assetIssuer: cached.body.record.assetIssuer,
+        network: cached.body.record.network,
+        txHash: cached.body.record.txHash,
+        date: cached.body.record.date,
+        note: cached.body.record.note,
+        recipientConsent: cached.body.record.recipientConsent,
+      });
+    expect(editAfterVerify.status).toBe(200);
 
     const wrongHash = '2'.padStart(64, '0');
     transactionBodies.set(wrongHash, {
@@ -594,6 +613,12 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     });
     expect(mismatch.status).toBe(201);
     expect(mismatch.body.record.status).toBe('mismatch');
+    expect(mismatch.body.record.verification).toMatchObject({
+      sourceAccount: expect.not.stringMatching(expectedSource),
+      destination: recipient.publicKey(),
+      amount: '1.25',
+      asset: 'XLM',
+    });
 
     const adminHash = '4'.padStart(64, '0');
     transactionBodies.set(adminHash, {
@@ -625,6 +650,16 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .get('/api/transparency')
       .query({ q: 'Summary test' });
     expect(summaryResponse.status).toBe(200);
+    const publicMismatch = summaryResponse.body.records.find(
+      (record: { id: string }) => record.id === mismatch.body.record.id,
+    );
+    expect(publicMismatch.recipientAddress).toBe('');
+    expect(publicMismatch.verification.destination).toBeUndefined();
+    expect(publicMismatch.verification).toMatchObject({
+      sourceAccount: mismatch.body.record.verification.sourceAccount,
+      amount: '1.25',
+      asset: 'XLM',
+    });
     expect(summaryResponse.body.summary.byStatus).toEqual([
       { status: 'mismatch', asset: 'XLM', amount: '1.25' },
       { status: 'verified', asset: 'XLM', amount: '1.25' },

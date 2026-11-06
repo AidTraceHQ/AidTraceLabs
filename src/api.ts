@@ -2,6 +2,16 @@ export interface ApiResponse<T> {
   data: T;
 }
 
+export class ApiError extends Error {
+  constructor(method: string, path: string, status: number, message: string) {
+    super(method + ' ' + path + ' failed (' + status + '): ' + message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+
+  readonly status: number;
+}
+
 type CollectionKey = 'records' | 'roles' | 'entries';
 type PageEnvelope = {
   hasMore?: boolean;
@@ -65,7 +75,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       data !== null && typeof data === 'object' && 'error' in data && typeof data.error === 'string'
         ? data.error
         : 'request was rejected.';
-    throw new Error(failurePrefix + ': ' + message);
+    throw new ApiError(method, path, response.status, message);
   }
   return { data: data as T };
 }

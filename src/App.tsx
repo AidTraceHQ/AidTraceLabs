@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api } from './api';
+import { ApiError, api } from './api';
 import { getNetwork, isConnected, requestAccess, signMessage } from '@stellar/freighter-api';
 import {
   networkPassphrase,
@@ -66,6 +66,7 @@ type AidRecord = {
     differences: string[];
     ledger?: number;
     createdAt?: string;
+    sourceAccount?: string;
     destination?: string;
     amount?: string;
     asset?: string;
@@ -123,6 +124,55 @@ const labelStatus = (status: Verification) =>
     pending: 'Checking…',
     voided: 'Voided',
   })[status] || 'Unverified';
+
+function mismatchDetails(record: AidRecord) {
+  const verification = record.verification;
+  if (verification?.status !== 'mismatch') return [];
+
+  const details: { field: string; expected: string; found: string }[] = [];
+  const seen = new Set<string>();
+  const add = (field: string, expected: string, found: string) => {
+    if (seen.has(field)) return;
+    seen.add(field);
+    details.push({ field, expected, found });
+  };
+  const recipientHidden = !record.recipientAddress;
+
+  for (const difference of verification.differences) {
+    const normalized = difference.toLowerCase();
+    if (normalized.includes('amount')) {
+      add(
+        'Amount',
+        `${record.amount} ${record.asset}`,
+        verification.amount
+          ? `${verification.amount} ${verification.asset || record.asset}`
+          : 'Not available',
+      );
+    } else if (normalized.includes('asset')) {
+      add(
+        'Asset',
+        record.assetIssuer ? `${record.asset} · ${record.assetIssuer}` : record.asset,
+        verification.asset
+          ? verification.assetIssuer
+            ? `${verification.asset} · ${verification.assetIssuer}`
+            : verification.asset
+          : 'Not available',
+      );
+    } else if (normalized.includes('source')) {
+      add('Sender', record.organization, verification.sourceAccount || 'Not available');
+    } else if (normalized.includes('destination') || normalized.includes('beneficiary')) {
+      add(
+        'Recipient',
+        recipientHidden ? 'Withheld without consent' : record.recipientAddress || 'Not available',
+        recipientHidden ? 'Withheld without consent' : verification.destination || 'Not available',
+      );
+    } else if (normalized.includes('network')) {
+      add('Network', record.network, 'Not verified on this network');
+    }
+  }
+  return details;
+}
+
 const isAddress = (value: string) => /^G[A-Z2-7]{55}$/.test(value);
 const SkeletonRows = ({ columns = 6 }: { columns?: number }) => (
   <>
@@ -179,6 +229,7 @@ export default function App() {
   >('offline');
   const [pageNumber, setPageNumber] = useState(1);
   const [selected, setSelected] = useState<AidRecord | null>(null);
+  const [recordConflictId, setRecordConflictId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({
     recipient: '',
@@ -234,6 +285,39 @@ export default function App() {
       if (requestId === transparencyRequestId.current) setLoading(false);
     }
   }, [search, orgFilter, assetFilter, networkFilter, statusFilter, fromDate, toDate]);
+  async function getLatestRecord(recordId: string): Promise<AidRecord> {
+    const path = session?.role === 'beneficiary' ? '/api/beneficiary' : '/api/transparency';
+    const result = await api.getAllPages<AidRecord>(
+      path + '?q=' + encodeURIComponent(recordId),
+      'records',
+    );
+    const latest = result.data.records?.find((record) => record.id === recordId);
+    if (!latest) throw new Error('The latest record is no longer available.');
+    setRecords((previous) => previous.map((record) => (record.id === recordId ? latest : record)));
+    setBeneficiaryRecords((previous) =>
+      previous.map((record) => (record.id === recordId ? latest : record)),
+    );
+    return latest;
+  }
+  async function refreshRecordAfterAction(recordId: string, fallback: AidRecord) {
+    setSelected(fallback);
+    try {
+      setSelected(await getLatestRecord(recordId));
+    } catch (e) {
+      setError(
+        'The action succeeded, but the latest record could not be reloaded: ' + messageOf(e),
+      );
+    }
+  }
+  async function reloadConflictRecord(recordId: string) {
+    try {
+      setSelected(await getLatestRecord(recordId));
+      setRecordConflictId(null);
+      setError('');
+    } catch (e) {
+      setError(messageOf(e));
+    }
+  }
   const loadBeneficiaryRecords = useCallback(async () => {
     try {
       const result = await api.getAllPages<AidRecord>('/api/beneficiary', 'records');
@@ -532,6 +616,14 @@ export default function App() {
       setError('Clipboard is unavailable. Select the public address to copy it.');
     }
   }
+  async function copyTransactionHash(hash: string) {
+    try {
+      await navigator.clipboard.writeText(hash);
+      notify('Transaction hash copied.');
+    } catch {
+      setError('Clipboard is unavailable. Select the transaction hash to copy it.');
+    }
+  }
   async function saveRecord(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!session) {
@@ -595,7 +687,7 @@ export default function App() {
         { csrfToken: session?.csrfToken },
       );
       await loadTransparency();
-      setSelected(r.data.record);
+      await refreshRecordAfterAction(record.id, r.data.record);
       notify('Verification check completed: ' + labelStatus(r.data.record.status));
     } catch (e) {
       setError(messageOf(e));
@@ -608,12 +700,17 @@ export default function App() {
       return;
     }
     try {
-      await api.post('/api/records/' + encodeURIComponent(record.id) + '/void', {
-        csrfToken: session?.csrfToken,
-        reason: voidReason.trim(),
-      });
+      const result = await api.post<{ record: AidRecord }>(
+        '/api/records/' + encodeURIComponent(record.id) + '/void',
+        {
+          csrfToken: session?.csrfToken,
+          reason: voidReason.trim(),
+        },
+      );
+      await refreshRecordAfterAction(record.id, result.data.record);
       setVoidReason('');
       setSelected(null);
+      setRecordConflictId(null);
       await loadTransparency();
       notify('Record voided; it remains visible with an audit event.');
     } catch (e) {
@@ -623,6 +720,8 @@ export default function App() {
   async function editRecord(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selected || !session) return;
+    setRecordConflictId(null);
+    setError('');
     try {
       const r = await api.put<{ record: AidRecord }>(
         '/api/records/' + encodeURIComponent(selected.id),
@@ -641,10 +740,14 @@ export default function App() {
           recipientConsent: selected.recipientConsent === true,
         },
       );
-      setSelected(r.data.record);
+      await refreshRecordAfterAction(selected.id, r.data.record);
       await loadTransparency();
       notify('Record updated and audit-logged.');
     } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        setRecordConflictId(selected.id);
+        return;
+      }
       setError(messageOf(e));
     }
   }
@@ -767,6 +870,7 @@ export default function App() {
     (session.role === 'admin' ||
       (session.role === 'organization' && selected.organization === session.address));
   const selectedDifferences = selected?.verification?.differences || [];
+  const selectedMismatchDetails = selected ? mismatchDetails(selected) : [];
   useEffect(() => {
     setPageNumber(1);
   }, [search, orgFilter, assetFilter, networkFilter, statusFilter, fromDate, toDate]);
@@ -1796,7 +1900,10 @@ export default function App() {
           className="backdrop"
           role="presentation"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setSelected(null);
+            if (event.target === event.currentTarget) {
+              setSelected(null);
+              setRecordConflictId(null);
+            }
           }}
         >
           <section
@@ -1814,76 +1921,128 @@ export default function App() {
               <button
                 className="icon-button"
                 aria-label="Close details"
-                onClick={() => setSelected(null)}
+                onClick={() => {
+                  setSelected(null);
+                  setRecordConflictId(null);
+                }}
               >
                 <X size={17} />
               </button>
             </div>
-            <div className="detail-list">
-              <p>
-                <b>Amount</b>
+            {recordConflictId === selected.id && (
+              <div className="record-conflict" role="alert">
                 <span>
+                  This record was updated elsewhere. Reload the latest version and try again
+                </span>
+                <button
+                  className="button secondary compact"
+                  type="button"
+                  onClick={() => void reloadConflictRecord(selected.id)}
+                >
+                  <RefreshCw size={13} />
+                  Reload latest
+                </button>
+              </div>
+            )}
+            <dl className="detail-list">
+              <div>
+                <dt>Amount</dt>
+                <dd>
                   {selected.amount} {selected.asset}
                   {selected.assetIssuer ? ` · issuer ${short(selected.assetIssuer)}` : ''}
-                </span>
-              </p>
-              <p>
-                <b>Beneficiary</b>
-                <span>{selected.recipientAddress || 'Pseudonymous by default'}</span>
-              </p>
-              <p>
-                <b>Organization</b>
-                <span>{selected.organizationName || selected.organization}</span>
-              </p>
-              <p>
-                <b>Network and date</b>
-                <span>
+                </dd>
+              </div>
+              <div>
+                <dt>Beneficiary</dt>
+                <dd>{selected.recipientAddress || 'Pseudonymous by default'}</dd>
+              </div>
+              <div>
+                <dt>Organization</dt>
+                <dd>{selected.organizationName || selected.organization}</dd>
+              </div>
+              <div>
+                <dt>Network and date</dt>
+                <dd>
                   {selected.network} · {selected.date}
-                </span>
-              </p>
-              <p>
-                <b>Transaction</b>
-                <span>
-                  {selected.txHash ||
+                </dd>
+              </div>
+              <div className="transaction-detail">
+                <dt>Transaction</dt>
+                <dd className="transaction-value">
+                  {selected.txHash && (
+                    <span className="transaction-hash-row">
+                      <code className="transaction-hash">{selected.txHash}</code>
+                      <button
+                        className="icon-button copy-transaction"
+                        type="button"
+                        aria-label="Copy transaction hash"
+                        title="Copy transaction hash"
+                        onClick={() => void copyTransactionHash(selected.txHash)}
+                      >
+                        <Copy size={14} />
+                      </button>
+                    </span>
+                  )}
+                  {!selected.txHash &&
                     (!selected.recipientConsent && selected.verification
                       ? 'Hidden for beneficiary privacy'
                       : 'No transaction hash supplied')}
-                </span>
-              </p>
-              <p>
-                <b>Created</b>
-                <span>
+                </dd>
+              </div>
+              <div>
+                <dt>Created</dt>
+                <dd>
                   {selected.createdAt ? new Date(selected.createdAt).toLocaleString() : '—'} by{' '}
                   {short(selected.createdBy)}
-                </span>
-              </p>
-              <p>
-                <b>Status</b>
-                <span className={`status ${selected.status}`}>
+                </dd>
+              </div>
+              <div>
+                <dt>Status</dt>
+                <dd className={`status ${selected.status}`}>
                   <i />
                   {labelStatus(selected.status)}
-                </span>
-              </p>
+                </dd>
+              </div>
               {selected.verification?.reason && (
-                <p>
-                  <b>Verification note</b>
-                  <span>{selected.verification.reason}</span>
-                </p>
-              )}
-              {selectedDifferences.length > 0 && (
-                <div className="diff-box">
-                  {selectedDifferences.map((difference, index) => (
-                    <p key={index}>{difference}</p>
-                  ))}
+                <div>
+                  <dt>Verification note</dt>
+                  <dd>{selected.verification.reason}</dd>
                 </div>
               )}
               {selected.voidReason && (
-                <p>
-                  <b>Void reason</b>
-                  <span>{selected.voidReason}</span>
-                </p>
+                <div>
+                  <dt>Void reason</dt>
+                  <dd>{selected.voidReason}</dd>
+                </div>
               )}
-            </div>
+            </dl>
+            {selectedDifferences.length > 0 && (
+              <div className="diff-box">
+                <b>Mismatch details</b>
+                <ul>
+                  {selectedDifferences.map((difference, index) => (
+                    <li key={index}>{difference}</li>
+                  ))}
+                </ul>
+                {selectedMismatchDetails.length > 0 && (
+                  <div className="mismatch-comparisons">
+                    {selectedMismatchDetails.map((detail) => (
+                      <div className="mismatch-row" key={detail.field}>
+                        <b>{detail.field}</b>
+                        <span>
+                          <small>Expected</small>
+                          {detail.expected}
+                        </span>
+                        <span>
+                          <small>Found</small>
+                          {detail.found}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="detail-actions">
               {selected.txHash && (
                 <a

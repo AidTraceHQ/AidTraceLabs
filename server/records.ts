@@ -948,7 +948,7 @@ router.put('/api/records/:id', noStore, async (request, response) => {
              disbursement_date = $10, note = $11, recipient_consent = $12,
              status = $13, updated_at = NOW()
          WHERE id = $1 AND organization_wallet = $14 AND voided_at IS NULL
-           AND updated_at IS NOT DISTINCT FROM $15`,
+           AND date_trunc('milliseconds', updated_at) IS NOT DISTINCT FROM $15`,
         [
           existing.record.id,
           recordInput.recipient,
