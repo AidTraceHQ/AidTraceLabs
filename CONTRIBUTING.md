@@ -41,3 +41,7 @@ Database-backed tests need `TEST_DATABASE_URL` pointed at a dedicated disposable
 ## Scope and evidence
 
 AidTrace checks transaction data on the selected Stellar network. A matching result does not establish a beneficiary's identity, consent, intended use, or real-world impact. Contributions must not imply otherwise. Do not add a Soroban contract or claim deployed services unless separately implemented and verified.
+
+## AI assistance
+
+Parts of this project were written with AI coding assistants. Every change is reviewed, tested, and approved by a human maintainer before it is merged. Contributors must be able to explain any code they submit, whatever tools helped produce it. Untested or unexplained AI-generated contributions will be declined.
