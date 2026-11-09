@@ -20,6 +20,16 @@ Aid organizations and reviewers need a way to compare a published disbursement r
 
 **What it does not mean:** it does not prove a person's identity, beneficiary consent, the purpose or use of funds, or real-world impact. AidTrace does not submit payments and does not include a Soroban contract.
 
+## Screenshots
+
+| Public ledger                                   | Verified record                                     |
+| ----------------------------------------------- | --------------------------------------------------- |
+| ![Public ledger](docs/images/public-ledger.png) | ![Verified record](docs/images/verified-record.png) |
+
+| Mismatch record                                     | Admin page                                |
+| --------------------------------------------------- | ----------------------------------------- |
+| ![Mismatch record](docs/images/mismatch-record.png) | ![Admin page](docs/images/admin-page.png) |
+
 ## Architecture
 
 ```mermaid
@@ -121,7 +131,6 @@ docs/             Architecture, API, security, deployment, and backlog notes
 - Horizon availability affects checks; incomplete operation pagination or temporary failures remain pending.
 - Per-IP/public-read rate limiting, last-admin protection, complete security-event auditing, and explicit beneficiary-consent evidence are not implemented.
 - A successful payment comparison cannot establish identity, consent, intended use, or impact.
-- No screenshots are published yet. Before adding any, capture the public ledger, a verified record, a mismatch record, and the admin page using test data only.
 
 ## Roadmap
 
