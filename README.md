@@ -2,6 +2,8 @@
 
 AidTrace publishes aid disbursement records and compares their payment fields with public Stellar transaction data.
 
+**Live demo:** [AidTrace demo](https://aidtrace-demo.vercel.app) (`DEMO_URL=https://aidtrace-demo.vercel.app`).
+
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f6f57.svg)](LICENSE)
 ![Node.js 20](https://img.shields.io/badge/Node.js-20%2B-3c873a.svg)
 ![React](https://img.shields.io/badge/React-19-087ea4.svg)
