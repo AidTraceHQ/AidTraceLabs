@@ -23,20 +23,20 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@neon/config": "^1.10.0",
+    "@neon/config": "^1.13.0",
     "@neon/env": "^1.6.8",
     "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^17.4.0",
     "dotenv": "^18.0.9",
     "express": "^5.3.0",
     "express-rate-limit": "^8.7.3",
-    "lucide-react": "^1.67.0",
+    "lucide-react": "^1.70.0",
     "pg": "^8.23.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "optionalDependencies": {
-    "@rollup/rollup-linux-x64-gnu": "^4.67.4"
+    "@rollup/rollup-linux-x64-gnu": "^4.68.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -48,14 +48,14 @@
     "@types/supertest": "^7.2.1",
     "@vitejs/plugin-react": "^4.3.0",
     "autoprefixer": "^10.4.0",
-    "concurrently": "^10.0.6",
+    "concurrently": "^10.0.7",
     "eslint": "^10.14.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.14.0",
     "postcss": "^8.4.0",
     "prettier": "^3.9.10",
-    "supertest": "^7.3.1",
+    "supertest": "^7.3.2",
     "tailwindcss": "^3.4.0",
     "tsx": "^4.23.15",
     "typescript": "^5.7.0",
