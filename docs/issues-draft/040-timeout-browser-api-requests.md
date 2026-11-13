@@ -25,7 +25,7 @@ The shared browser API wrapper calls `fetch` without a deadline or abort signal 
 
 ## Dependencies
 
-- None. Prior draft #19 covers Horizon account-activity fetches, not the shared `/api` client.
+- None. Prior draft "Bound the Account Activity Request Lifecycle" covers Horizon account-activity fetches, not the shared `/api` client.
 
 ## Measurable acceptance criteria
 

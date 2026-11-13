@@ -1,39 +1,41 @@
 # Reconcile the Active Wallet Role
 
-**Publish:** Day 1
+**Complexity:** Intermediate (Medium, 150 pts)
 
-**Size:** Medium
+**Estimated effort:** 5 hours
+
+**Release day:** Day 1
 
 ## Problem statement
 
 The client restores its role at startup, while the API resolves role assignments dynamically. A role changed by another admin can leave the open UI showing controls for the previous role until reload.
 
-## Technical requirements
+## Technical implementation requirements
 
 - Reconcile the current session from `/api/me` at a bounded lifecycle point, such as tab focus, and after authorization failures.
 - Preserve server authorization as the authority; do not make client state an access-control check.
 
-## Files to touch
+## Files and areas to touch
 
 - `src/App.tsx`
 - `src/api.ts`
 - `tests/api.test.ts` or a focused session-state test
 
-## Dependencies on other issues
+## Dependencies
 
 - None.
 
-## Acceptance criteria
+## Measurable acceptance criteria
 
-- A changed role is reflected without requiring a full page reload after the chosen refresh event.
-- Stale client controls never grant server access; 401/403 responses still fail closed.
-- Refresh requests do not create an unbounded polling loop.
+- A test that changes the role returned by `/api/me` and fires the chosen refresh event (e.g. tab `focus`) asserts the UI reflects the new role from `/api/me` without a full page reload.
+- A test asserts that a `401` or `403` from a protected route fails closed (the privileged control is not rendered or used) even when the client state still reports the previous role.
+- A test fires the refresh event N times within a short window and asserts the number of `/api/me` calls stays within a fixed small bound, so there is no unbounded polling loop.
 
-## Deliverables
+## Expected deliverables
 
 - Client role reconciliation and focused state/API tests; no authentication protocol changes.
 
-## How to run tests
+## How to set up and run tests
 
 - `npx vitest run tests/api.test.ts`
 - `npm run typecheck`

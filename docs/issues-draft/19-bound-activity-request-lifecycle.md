@@ -1,40 +1,43 @@
 # Bound the Account Activity Request Lifecycle
 
-**Publish:** Day 3
+**Complexity:** Intermediate (Medium, 150 pts)
 
-**Size:** Medium
+**Estimated effort:** 5 hours
+
+**Release day:** Day 3
 
 ## Problem statement
 
 Activity loading starts three unbounded fetches. A request from a previous wallet/network can finish after a switch or logout and overwrite the newer screen state; polling can also overlap slow requests.
 
-## Technical requirements
+## Technical implementation requirements
 
 - Add request timeouts and cancellation for the account/payment/transaction fetch group.
 - Associate results with the wallet/network request generation and ignore stale completions.
 - Prevent unbounded overlapping poll/SSE-triggered refreshes and clear loading state safely.
 
-## Files to touch
+## Files and areas to touch
 
 - `src/App.tsx`
 - `src/activity.ts` (if extracting request orchestration)
 - `tests/activity.test.ts`
 
-## Dependencies on other issues
+## Dependencies
 
-- #18 if the configured browser Horizon URL is introduced first; otherwise retain current defaults.
+- "Use Configured Horizon Endpoints in Browser Activity" if the configured browser Horizon URL is introduced first; otherwise retain current defaults.
 
-## Acceptance criteria
+## Measurable acceptance criteria
 
-- Logging out or switching wallet/network cannot repopulate activity with stale results.
-- Timed-out requests settle loading state and show a recoverable error.
-- Repeated stream events do not create an unbounded request backlog.
+- A test logs out or switches wallet/network while activity fetches are in flight and asserts stale results do not repopulate the screen.
+- A test forces a request timeout and asserts loading state settles and a recoverable error is shown.
+- A test emits rapid stream events and asserts the count of concurrent activity requests stays under a fixed bound (no unbounded backlog).
+- `npx vitest run tests/activity.test.ts` passes.
 
-## Deliverables
+## Expected deliverables
 
 - Request lifecycle helper/component changes and focused cancellation/race tests.
 
-## How to run tests
+## How to set up and run tests
 
 - `npx vitest run tests/activity.test.ts`
 - `npm run typecheck`

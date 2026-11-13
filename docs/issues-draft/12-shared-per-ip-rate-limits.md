@@ -1,21 +1,23 @@
 # Share Per-IP Rate Limits Across Serverless Instances
 
-**Publish:** Day 1
+**Complexity:** Advanced (High, 200 pts)
 
-**Size:** High
+**Estimated effort:** 10 hours
+
+**Release day:** Day 1
 
 ## Problem statement
 
 The current per-IP API/auth/public-read counters use an in-memory store, so separate Vercel instances do not share limits.
 
-## Technical requirements
+## Technical implementation requirements
 
 - Select a durable/shared rate-limit store supported by the deployment architecture.
 - Keep the existing route-specific windows/limits configurable and preserve trusted-proxy IP handling.
 - Define bounded failure behavior if the shared store is unavailable.
 - Reconcile the stale statement in `docs/backend-design.md` with the implemented per-process limits and the new shared-store behavior.
 
-## Files to touch
+## Files and areas to touch
 
 - `server/rate-limits.ts`
 - `server/environment.ts`
@@ -23,21 +25,22 @@ The current per-IP API/auth/public-read counters use an in-memory store, so sepa
 - `tests/rate-limits.test.ts`
 - `docs/deployment.md`
 
-## Dependencies on other issues
+## Dependencies
 
-- None. #20 covers outbound alerts, not inbound abuse controls.
+- None. Existing GitHub issue #20 covers outbound alerts, not inbound abuse controls.
 
-## Acceptance criteria
+## Measurable acceptance criteria
 
-- Two independent app instances observe the same per-IP counter in an integration test.
-- Existing endpoint limits and trusted-proxy behavior remain covered.
-- Store outage behavior is explicit, bounded, and does not silently disable all limits.
+- An integration test starts two independent app instances sharing the configured store and asserts that after instance A exhausts the limit, instance B returns the rate-limit rejection (e.g. `429`) for the same IP.
+- Existing endpoint-limit and trusted-proxy tests in `tests/rate-limits.test.ts` still pass.
+- A test with the shared store unavailable asserts behavior is explicit and bounded and does not silently disable all limits.
+- `npm test -- tests/rate-limits.test.ts` passes.
 
-## Deliverables
+## Expected deliverables
 
 - Shared store adapter/configuration, integration tests, and deployment setup instructions.
 
-## How to run tests
+## How to set up and run tests
 
 - `npm test -- tests/rate-limits.test.ts`
 - `npm run typecheck`

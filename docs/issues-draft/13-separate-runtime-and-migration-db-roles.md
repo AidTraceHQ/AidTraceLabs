@@ -1,20 +1,22 @@
 # Separate Runtime and Migration Database Roles
 
-**Publish:** Day 1
+**Complexity:** Advanced (High, 200 pts)
 
-**Size:** High
+**Estimated effort:** 10 hours
+
+**Release day:** Day 1
 
 ## Problem statement
 
 The runtime pool uses `DATABASE_URL`; migrations use `DATABASE_URL_UNPOOLED` or fall back to the runtime URL. The repository does not implement a least-privilege role split.
 
-## Technical requirements
+## Technical implementation requirements
 
 - Define separate runtime, migration, and one-time bootstrap privileges appropriate to the schema.
 - Make migration execution require its dedicated URL in production-like environments rather than silently falling back.
 - Document safe local/test defaults and rotation.
 
-## Files to touch
+## Files and areas to touch
 
 - `server/environment.ts`
 - `server/db.ts`
@@ -23,22 +25,23 @@ The runtime pool uses `DATABASE_URL`; migrations use `DATABASE_URL_UNPOOLED` or 
 - `docs/deployment.md`
 - `tests/environment.test.ts`
 
-## Dependencies on other issues
+## Dependencies
 
-- #10 cleanup command permissions should use the resulting role model.
-- #24 append-only audit controls depend on separating the runtime writer from the table owner.
+- "Clean Up Expired Authentication and Rate-Limit Rows" cleanup command permissions should use the resulting role model.
+- "Enforce Append-Only Audit Access" append-only audit controls depend on separating the runtime writer from the table owner.
 
-## Acceptance criteria
+## Measurable acceptance criteria
 
-- Runtime credentials cannot run DDL or mutate audit rows outside the documented append path.
-- Migration credentials can apply migrations but are not used by request handlers.
-- Startup and migration failures name the missing variable, never its value.
+- A test or DDL check asserts the runtime credentials cannot run DDL (`CREATE TABLE` fails) and cannot update/delete audit rows outside the documented append path.
+- A test asserts `npm run db:migrate` in production-like mode fails when its dedicated migration URL is missing, without falling back to the runtime URL.
+- A test asserts a startup or migration failure message names the missing variable and never prints its value.
+- `npm test -- tests/environment.test.ts tests/seed-admin.test.ts` passes.
 
-## Deliverables
+## Expected deliverables
 
 - Role/privilege plan, environment validation, migration wiring, and tests/docs.
 
-## How to run tests
+## How to set up and run tests
 
 - `npm test -- tests/environment.test.ts tests/seed-admin.test.ts`
 - `npm run typecheck`

@@ -23,7 +23,7 @@ CI installs and tests only on Node 20 (`.github/workflows/ci.yml:27-31`), while 
 
 ## Dependencies
 
-- None. This is runtime compatibility coverage, not a TypeScript/Vite/Tailwind major upgrade (#25-27).
+- None. This is runtime compatibility coverage, not a TypeScript/Vite/Tailwind major upgrade (existing GitHub issues #25-27).
 
 ## Measurable acceptance criteria
 

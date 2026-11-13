@@ -8,7 +8,7 @@
 
 ## Problem statement
 
-`withTransaction` awaits `ROLLBACK` inside the catch block (`server/db.ts:31-44`). If rollback itself fails because the connection was lost, that second error replaces the original query/commit error, obscuring the event that caused the transaction to fail.
+`withTransaction` (`server/db.ts:31-44`) awaits `ROLLBACK` inside the catch block. If rollback itself fails because the connection was lost, that second error replaces the original query/commit error, obscuring the event that caused the transaction to fail.
 
 ## Technical implementation requirements
 
@@ -27,9 +27,10 @@
 
 ## Measurable acceptance criteria
 
-- A work callback failure followed by rollback failure rejects with the original error as primary.
-- A rollback failure after a successful callback/failed commit is surfaced without claiming success.
-- The client release callback runs exactly once in all cases.
+- Test `preserves the work error as the primary rejection` in `tests/database-errors.test.ts` asserts the rejected error is the callback's original error object.
+- Test `surfaces a rollback failure without claiming success` asserts the rejection is not a successful result and carries the rollback failure only as a non-secret `cause`.
+- Test `releases the client exactly once` asserts the mocked `release` spy is called exactly once in the callback-failure-plus-rollback-failure case.
+- `npx vitest run tests/database-errors.test.ts` passes.
 
 ## Expected deliverables
 

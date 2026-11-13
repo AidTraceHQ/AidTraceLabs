@@ -1,40 +1,42 @@
 # Reconcile General and Demo Deployment Status
 
-**Publish:** Private later backlog
+**Complexity:** Intermediate (Medium, 150 pts)
 
-**Size:** Medium
+**Estimated effort:** 4 hours
+
+**Release day:** Private later backlog
 
 ## Problem statement
 
 The general deployment guide says AidTrace has not been deployed, while the dedicated demo guide documents the live Vercel demo. Readers cannot tell whether “not deployed” means no production qualification or no hosted instance at all.
 
-## Technical requirements
+## Technical implementation requirements
 
 - Distinguish the live demo from production qualification and unverified operational controls.
 - Link the general deployment guide to the dedicated demo guide.
 - Keep statements tied to the latest verification date and avoid implying the demo is production-qualified.
 
-## Files to touch
+## Files and areas to touch
 
 - `docs/deployment.md`
 - `docs/demo-deployment.md`
 - `README.md` only if a link needs correction
 
-## Dependencies on other issues
+## Dependencies
 
 - None.
 
-## Acceptance criteria
+## Measurable acceptance criteria
 
-- The general guide accurately states that a hosted demo exists while distinguishing its limits from production qualification.
-- Links and service names agree across both guides.
-- No unverified uptime, compliance, backup, or security claims are introduced.
+- `docs/deployment.md` states that a hosted demo exists and distinguishes its limits from production qualification, with no sentence implying production qualification.
+- Service names and links agree across `docs/deployment.md` and `docs/demo-deployment.md`, and the general guide links to the demo guide.
+- `npx prettier --check docs/deployment.md docs/demo-deployment.md` passes and no new unverified uptime, compliance, backup, or security claim is added.
 
-## Deliverables
+## Expected deliverables
 
 - Corrected deployment status text and cross-links.
 
-## How to run tests
+## How to set up and run tests
 
 - `npx prettier --check docs/deployment.md docs/demo-deployment.md`
 - Verify every hosted-service claim against the current deployment before publishing.

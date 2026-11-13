@@ -1,38 +1,40 @@
 # Prevent Older Toast Timers Clearing Newer Messages
 
-**Publish:** Day 1
+**Complexity:** Beginner (Trivial, 100 pts)
 
-**Size:** Trivial
+**Estimated effort:** 3 hours
+
+**Release day:** Day 1
 
 ## Problem statement
 
 Each notification starts an independent timeout. A previous timeout can clear a newer toast before the newer message has been visible for its intended duration.
 
-## Technical requirements
+## Technical implementation requirements
 
 - Cancel or replace the previous timeout when a new toast is shown.
 - Clear the timer on component teardown.
 
-## Files to touch
+## Files and areas to touch
 
 - `src/App.tsx`
 - `src/toast.ts` (if extracting testable timer behavior)
 - `tests/toast.test.ts`
 
-## Dependencies on other issues
+## Dependencies
 
 - None.
 
-## Acceptance criteria
+## Measurable acceptance criteria
 
-- A second notification remains visible for its full configured duration.
-- No timer updates state after the component is unmounted.
+- `npx vitest run tests/toast.test.ts` uses fake timers to show two toasts and asserts the second message is still visible after advancing to `duration - 1` ms and is cleared at `duration` ms.
+- A test unmounts the component while a timer is pending and asserts no state update occurs after unmount.
 
-## Deliverables
+## Expected deliverables
 
 - Timer lifecycle fix and fake-timer tests.
 
-## How to run tests
+## How to set up and run tests
 
 - `npx vitest run tests/toast.test.ts`
 - `npm run typecheck`

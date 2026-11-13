@@ -8,7 +8,7 @@
 
 ## Problem statement
 
-The record form copies the top-level `network` state only when the component mounts (`src/App.tsx:241-255`). Changing the top-level selector later does not update `form.network`, so a new record can start with a different network than the selected app context.
+The record form's `form` `useState` initializer seeds its `network` field from top-level `network` state only when the component mounts (`src/App.tsx:241-255`). Changing the top-level selector later does not update `form.network`, so a new record can start with a different network than the selected app context.
 
 ## Technical implementation requirements
 
@@ -23,13 +23,14 @@ The record form copies the top-level `network` state only when the component mou
 
 ## Dependencies
 
-- None. This is not the testnet context banner in #11 or endpoint configuration in prior draft #18.
+- None. This is not the testnet context banner in existing GitHub issue #11 or endpoint configuration in prior draft "Use Configured Horizon Endpoints in Browser Activity".
 
 ## Measurable acceptance criteria
 
-- Opening a new record after changing the top-level network preselects that network.
-- Manual form-level network selection is not overwritten by unrelated rerenders.
-- A saved record still uses the explicit network value submitted in the form.
+- After switching the top-level selector to mainnet, opening the record form shows the Network field as mainnet (asserted by a focused form-state test if a harness exists, otherwise the step added to `docs/manual-test-checklist.md`).
+- Changing the form Network to testnet and then triggering an unrelated rerender leaves the field at testnet.
+- A saved record's `network` equals the value shown in the form at submit time.
+- `npm run typecheck` passes.
 
 ## Expected deliverables
 

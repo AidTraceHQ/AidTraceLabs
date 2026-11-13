@@ -1,40 +1,43 @@
 # Add a Database Readiness Probe
 
-**Publish:** Day 1
+**Complexity:** Intermediate (Medium, 150 pts)
 
-**Size:** Medium
+**Estimated effort:** 4 hours
+
+**Release day:** Day 1
 
 ## Problem statement
 
 `/api/_healthcheck` reports process liveness even when PostgreSQL is unavailable, so an orchestrator cannot distinguish a running process from a ready API.
 
-## Technical requirements
+## Technical implementation requirements
 
 - Preserve the existing liveness route and add a separate readiness check with a bounded `SELECT 1`.
 - Return a non-sensitive unavailable response and avoid leaking connection details.
 
-## Files to touch
+## Files and areas to touch
 
 - `server/app.ts`
 - `server/database-errors.ts`
 - `tests/backend.test.ts`
 - `docs/deployment.md`
 
-## Dependencies on other issues
+## Dependencies
 
 - None.
 
-## Acceptance criteria
+## Measurable acceptance criteria
 
-- Readiness returns success only when the database query succeeds within the timeout.
-- Database failure returns a non-200 response without credentials or host details.
-- Liveness remains independent of database readiness.
+- With a mocked successful `SELECT 1`, the readiness route returns `200`.
+- With a mocked failing or timing-out database, the readiness route returns a non-200 status (e.g. `503`) whose body contains no credentials, host, or connection string.
+- With the database check failing, `/api/_healthcheck` still returns success, proving liveness is independent of readiness.
+- `npm test -- tests/backend.test.ts tests/database-errors.test.ts` passes.
 
-## Deliverables
+## Expected deliverables
 
 - Readiness route, mocked DB success/failure tests, and deployment documentation.
 
-## How to run tests
+## How to set up and run tests
 
 - `npm test -- tests/backend.test.ts tests/database-errors.test.ts`
 - `npm run typecheck`

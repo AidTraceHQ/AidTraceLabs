@@ -25,7 +25,7 @@ The handler-export assertion imports `api/index.js` inside a test with a 30-seco
 
 ## Dependencies
 
-- None. This is a unit-suite stability issue, not the Playwright journey in #21.
+- None. This is a unit-suite stability issue, not the Playwright journey in existing GitHub issue #21.
 
 ## Measurable acceptance criteria
 

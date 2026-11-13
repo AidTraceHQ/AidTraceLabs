@@ -1,14 +1,14 @@
 # Detect Changes to Applied Migration Files
 
-**Complexity:** Advanced (High, 200 pts)
+**Complexity:** Intermediate (Medium, 150 pts)
 
-**Estimated effort:** 16 hours
+**Estimated effort:** 8 hours
 
 **Release day:** Day 2
 
 ## Problem statement
 
-`schema_migrations` records only a version and applied timestamp (`scripts/migrate.ts:65-78`). If an already-released SQL file is edited in place, a deployed database silently skips the changed content while a fresh database applies it.
+The `migrate()` function creates `schema_migrations` with only a version and applied timestamp (`scripts/migrate.ts:65-78`). If an already-released SQL file is edited in place, a deployed database silently skips the changed content while a fresh database applies it.
 
 ## Technical implementation requirements
 
@@ -26,14 +26,14 @@
 
 ## Dependencies
 
-- None. This is integrity detection, separate from #16's concurrent-run lock.
+- None. This is integrity detection, separate from "Serialize Concurrent Migration Runs"'s concurrent-run lock.
 
 ## Measurable acceptance criteria
 
-- A newly applied migration stores its checksum.
-- Editing an already-checksummed migration causes a clear no-secret failure before later migrations run.
-- Existing null-checksum rows require an explicit documented baseline action.
-- Re-running unchanged migrations remains a no-op.
+- Test `stores the SHA-256 checksum for a newly applied migration` asserts the `schema_migrations` row has a non-null checksum equal to the file's SHA-256.
+- Test `fails closed when an already-checksummed migration file changes` asserts a modified file throws before any later migration runs, and logs no file contents or secrets.
+- Test `is a no-op when migrations are unchanged` asserts a second run applies zero migrations.
+- `npx vitest run tests/migrate.test.ts` passes.
 
 ## Expected deliverables
 
@@ -51,4 +51,4 @@
 
 ## Suggested labels
 
-- `area: infrastructure`, `area: security`, `type: enhancement`, `difficulty: high`.
+- `area: infrastructure`, `area: security`, `type: enhancement`, `difficulty: medium`.

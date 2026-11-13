@@ -1,3 +1,5 @@
+<!-- OVERLAP: Partly overlaps with open issue #22 "Cursor Pagination UI" (server-side performance) and issue #16 "Dashboard Totals" (aggregate values). Narrowed to server-side per-page aggregate recompute only; does not add UI controls. -->
+
 # Avoid Recomputing Ledger Aggregates for Every Cursor Page
 
 **Complexity:** Advanced (High, 200 pts)
@@ -27,7 +29,7 @@ Every transparency request runs a grouped amount/status summary and global disti
 
 ## Dependencies
 
-- None. #22 is about progressive UI pagination; this is repeated server aggregate work.
+- None. Existing GitHub issue #22 is about progressive UI pagination; this is repeated server aggregate work.
 
 ## Measurable acceptance criteria
 

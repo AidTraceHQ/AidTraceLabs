@@ -1,14 +1,14 @@
 # Apply One Transient Retry to Remaining Safe Read Routes
 
-**Complexity:** Advanced (High, 200 pts)
+**Complexity:** Intermediate (Medium, 150 pts)
 
-**Estimated effort:** 12 hours
+**Estimated effort:** 4 hours
 
 **Release day:** Day 2
 
 ## Problem statement
 
-`retryReadOnlyDatabase` retries one transient failure for selected GET routes, but `/api/beneficiary`, `/api/admin/roles`, and `/api/audit` are not wrapped (`server/records.ts:763-766,1082,1228`). These reads return a 503 on a transient connection reset even though a read-only retry is safe.
+`retryReadOnlyDatabase` retries one transient failure for the wrapped `GET /api/transparency` handler (`server/records.ts:763-766`), but the `GET /api/beneficiary` handler (`server/records.ts:766`), `GET /api/admin/roles` (`server/records.ts:1082`), and `GET /api/audit` (`server/records.ts:1228`) are not wrapped. These reads return a 503 on a transient connection reset even though a read-only retry is safe.
 
 ## Technical implementation requirements
 
@@ -29,10 +29,10 @@
 
 ## Measurable acceptance criteria
 
-- Each targeted GET retries once for an approved transient database error and returns a sanitized 503 if the retry fails.
-- Non-transient errors are not retried.
-- Write routes are not retried.
-- Authorization and pagination behavior is unchanged.
+- For each of `GET /api/beneficiary`, `GET /api/admin/roles`, and `GET /api/audit`, a mocked test asserts exactly two database attempts (`pool.query` called twice) on a transient error and a `503` body `{ "error": "database_unavailable" }` when the retry also fails.
+- A mocked test asserts a non-transient error results in exactly one database attempt (no retry).
+- Write routes remain un-retried: the existing `POST /api/records` tests still pass unchanged.
+- `npm test -- tests/database-errors.test.ts tests/backend.test.ts` passes.
 
 ## Expected deliverables
 
@@ -49,4 +49,4 @@
 
 ## Suggested labels
 
-- `area: backend`, `type: enhancement`, `difficulty: high`.
+- `area: backend`, `type: enhancement`, `difficulty: medium`.

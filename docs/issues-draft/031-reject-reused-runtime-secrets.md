@@ -8,7 +8,7 @@
 
 ## Problem statement
 
-Security documentation requires distinct `SESSION_SECRET` and `PSEUDONYM_SECRET`, but startup checks only their lengths/placeholders (`server/environment.ts:40-49`; `docs/security.md:15-20`). Accidental copy/paste reuse currently passes validation.
+Security documentation requires distinct `SESSION_SECRET` and `PSEUDONYM_SECRET`, but the `validateEnvironment` secret checks only test their lengths/placeholders (`server/environment.ts:40-49`; the "Secret handling" section at `docs/security.md:15-20`). Accidental copy/paste reuse currently passes validation.
 
 ## Technical implementation requirements
 
@@ -28,9 +28,10 @@ Security documentation requires distinct `SESSION_SECRET` and `PSEUDONYM_SECRET`
 
 ## Measurable acceptance criteria
 
-- Equal explicit keys fail validation with a message naming the variables only.
-- Different valid keys pass.
-- Existing development fallback and missing-key behavior remains unchanged.
+- Test `rejects identical SESSION_SECRET and PSEUDONYM_SECRET` in `tests/environment.test.ts` asserts `validateEnvironment` throws a message naming both variables and containing neither value.
+- Test `accepts distinct secrets of at least 32 bytes` asserts no throw.
+- Existing development-fallback and missing-key tests in `tests/environment.test.ts` still pass.
+- `npm test -- tests/environment.test.ts` passes.
 
 ## Expected deliverables
 

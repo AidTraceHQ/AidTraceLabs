@@ -8,7 +8,7 @@
 
 ## Problem statement
 
-While `saveRecord` is awaiting the API, inputs and close controls remain enabled; only the submit button is disabled (`src/App.tsx:627-668,1731-1889`). The success handler resets from the submitted render's captured form object, so edits made during the request can be silently discarded.
+While the `saveRecord` handler awaits the API (`src/App.tsx:627-668`), inputs and close controls in the "New disbursement" modal form (`<form className="form modal-large">` at `src/App.tsx:1731-1889`) remain enabled; only the submit button is disabled. The success handler resets from the submitted render's captured form object, so edits made during the request can be silently discarded.
 
 ## Technical implementation requirements
 
@@ -28,9 +28,10 @@ While `saveRecord` is awaiting the API, inputs and close controls remain enabled
 
 ## Measurable acceptance criteria
 
-- A deferred API response cannot cause user-entered changes to disappear silently.
-- Failure re-enables editing and preserves entered values.
-- Success clears only the submitted form and cannot close/reopen into stale in-flight state.
+- With `/api/records` throttled to a delayed response, the form inputs and the Cancel/close controls cannot discard the pending submission (disabled or edits preserved); documented in `docs/manual-test-checklist.md`.
+- After a failed response the controls are re-enabled and the entered values remain editable.
+- On success only the submitted snapshot is cleared.
+- `npm run typecheck`, `npm run lint`, and `npm run build` pass.
 
 ## Expected deliverables
 

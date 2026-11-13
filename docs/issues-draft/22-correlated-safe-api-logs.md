@@ -1,41 +1,44 @@
 # Add Correlated, Redacted API Error Logs
 
-**Publish:** Day 3
+**Complexity:** Intermediate (Medium, 150 pts)
 
-**Size:** Medium
+**Estimated effort:** 5 hours
+
+**Release day:** Day 3
 
 ## Problem statement
 
 Unexpected API errors are logged without a request ID or structured safe fields, making hosted failures difficult to correlate while risking overly broad error serialization.
 
-## Technical requirements
+## Technical implementation requirements
 
 - Assign or validate a request ID, return it in a response header, and include it in structured error logs.
 - Log only method, route template, status, request ID, and a safe error category.
 - Never log request bodies, cookies, signatures, tokens, full URLs with query strings, or database connection details.
 
-## Files to touch
+## Files and areas to touch
 
 - `server/app.ts`
 - `server/http-security.ts` or a new request-context middleware
 - `tests/backend.test.ts`
 - `docs/security.md`
 
-## Dependencies on other issues
+## Dependencies
 
 - None.
 
-## Acceptance criteria
+## Measurable acceptance criteria
 
-- A failed request's response ID matches its log event.
-- Tests verify sensitive input is absent from emitted logs.
-- Existing generic client errors remain generic.
+- A test triggers a failed request and asserts the request ID in the response header equals the request ID in the emitted structured log event.
+- A test asserts emitted log output contains no request bodies, cookies, signatures, tokens, or query strings.
+- A test asserts existing generic client error responses remain unchanged.
+- `npm test -- tests/backend.test.ts` passes.
 
-## Deliverables
+## Expected deliverables
 
 - Correlation middleware/logger and focused redaction tests/documentation.
 
-## How to run tests
+## How to set up and run tests
 
 - `npm test -- tests/backend.test.ts`
 - `npm run typecheck`

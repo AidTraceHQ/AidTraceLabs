@@ -26,7 +26,7 @@ Wallet activity fetches only 50 payment rows and 50 transaction rows and retains
 
 ## Dependencies
 
-- None. Existing issue #22 concerns AidTrace ledger/admin pagination; this is the separate Horizon wallet-activity stream.
+- None. Existing GitHub issue #22 concerns AidTrace ledger/admin pagination; this is the separate Horizon wallet-activity stream.
 
 ## Measurable acceptance criteria
 

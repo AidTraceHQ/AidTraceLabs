@@ -8,7 +8,7 @@
 
 ## Problem statement
 
-`POST /api/records` commits the record and audit row before verification-result persistence and the final record reload (`server/records.ts:789-868`). If a later database operation fails, the client can receive an error even though the record exists; retrying a create without a transaction hash can create a second record. Organizations and admins cannot reliably distinguish “not saved” from “saved but response failed.”
+The `POST /api/records` route handler (`server/records.ts:789-868`, whose `withTransaction` block inserts the record and audit rows) commits before verification-result persistence and the final record reload. If a later database operation fails, the client can receive an error even though the record exists; retrying a create without a transaction hash can create a second record. Organizations and admins cannot reliably distinguish “not saved” from “saved but response failed.”
 
 ## Technical implementation requirements
 
@@ -32,10 +32,11 @@
 
 ## Measurable acceptance criteria
 
-- Repeating the same create request with the same key returns the same record ID and leaves one record/audit creation.
-- Reusing a key with a different payload returns `409` and does not mutate data.
-- A failure after the primary commit produces a response that makes the persisted `pending` record recoverable.
-- Requests without a transaction hash remain safe to retry.
+- Test `replays the same create request and returns the original record` asserts two identical `POST /api/records` calls with the same key return the same `201` `record.id`, and the `aid_records` and audit row counts each increase by exactly 1.
+- Test `rejects key reuse with a changed body` asserts HTTP `409` and unchanged record/audit row counts.
+- Test `keeps a post-commit persistence failure recoverable` forces the verification/reload write to throw and asserts a `2xx` response whose `record.status` is `pending` with a Verify path.
+- Test `treats an empty-hash create as retry-safe` asserts an empty `txHash` returns `201` and a repeat adds no second row.
+- `npm test -- tests/backend.test.ts` passes.
 
 ## Expected deliverables
 
@@ -49,7 +50,7 @@
 
 ## Out of scope
 
-- Retrying arbitrary writes, a generic job queue, scheduled reverification (#18), or changes to payment verification rules.
+- Retrying arbitrary writes, a generic job queue, scheduled reverification (existing GitHub issue #18), or changes to payment verification rules.
 
 ## Suggested labels
 

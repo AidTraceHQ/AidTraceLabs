@@ -2,13 +2,13 @@
 
 **Complexity:** Intermediate (Medium, 150 pts)
 
-**Estimated effort:** 8 hours
+**Estimated effort:** 6 hours
 
 **Release day:** Day 3
 
 ## Problem statement
 
-`checkTransaction` has distinct branches for thrown fetch errors, unreadable/non-2xx transaction responses, unknown transaction success, operation endpoint errors, malformed operation bodies, missing paging cursors, and explicitly unsuccessful transactions (`server/stellar-verification.ts:145-280`). Existing tests exercise success, mismatch, strict-send, not-found, and paging budget, but not the complete transport failure contract (`tests/backend.test.ts:80-286`).
+The `checkTransaction` function has distinct branches for thrown fetch errors, unreadable/non-2xx transaction responses, unknown transaction success, operation endpoint errors, malformed operation bodies, missing paging cursors, and explicitly unsuccessful transactions (`server/stellar-verification.ts:145-280`). Existing tests in the "On-chain verification distinguishes matching and mismatching payments" block exercise success, mismatch, strict-send, not-found, and paging budget, but not the complete transport failure contract (`tests/backend.test.ts:80-286`).
 
 ## Technical implementation requirements
 
@@ -24,13 +24,14 @@
 
 ## Dependencies
 
-- None. This is separate from #17's multi-operation transaction cases.
+- None. This is separate from existing GitHub issue #17's multi-operation transaction cases.
 
 ## Measurable acceptance criteria
 
-- Each listed Horizon failure shape has an assertion for status and user-safe reason.
-- No transport failure is reported as `verified`.
-- Tests do not call live Horizon or require a wallet/database credential.
+- `npm test -- tests/backend.test.ts` runs a new failure-contract suite that stubs `fetch` and calls no live Horizon and needs no wallet/database credential.
+- Each of the eight shapes (timeout/network error, malformed JSON, 429, 5xx, missing success flag, operation failure, missing cursor, unsuccessful transaction) has an assertion on `status` and `reason`.
+- A test asserts none of the failure shapes returns `status: 'verified'`.
+- The suite runs with `TEST_DATABASE_URL` and `TEST_DATABASE_URL_UNPOOLED` empty.
 
 ## Expected deliverables
 
@@ -43,7 +44,7 @@
 
 ## Out of scope
 
-- Multi-operation algorithm changes, scheduled reverification (#18), or new payment operation support.
+- Multi-operation algorithm changes, scheduled reverification (existing GitHub issue #18), or new payment operation support.
 
 ## Suggested labels
 

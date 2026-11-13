@@ -1,20 +1,22 @@
 # Use Configured Horizon Endpoints in Browser Activity
 
-**Publish:** Day 3
+**Complexity:** Intermediate (Medium, 150 pts)
 
-**Size:** Medium
+**Estimated effort:** 4 hours
+
+**Release day:** Day 3
 
 ## Problem statement
 
 The API accepts configured Horizon URLs, while browser account activity always uses hard-coded public Horizon hosts.
 
-## Technical requirements
+## Technical implementation requirements
 
 - Add explicit public Vite configuration with safe testnet/mainnet defaults.
 - Validate configured values as HTTPS base URLs and avoid exposing server-only settings/secrets.
 - Use one source for account, payment, transaction, and event-stream activity requests.
 
-## Files to touch
+## Files and areas to touch
 
 - `src/App.tsx`
 - `src/vite-env.d.ts`
@@ -22,21 +24,22 @@ The API accepts configured Horizon URLs, while browser account activity always u
 - `tests/` (Horizon configuration tests)
 - `docs/deployment.md`
 
-## Dependencies on other issues
+## Dependencies
 
 - None.
 
-## Acceptance criteria
+## Measurable acceptance criteria
 
-- Default builds still target the public Stellar testnet/mainnet Horizon endpoints.
-- A configured browser endpoint is used consistently for activity and event streaming.
-- Invalid or non-HTTPS production values fail safely and no secret is placed in `VITE_*`.
+- A default build (`npm run build` with no `VITE_*` set) asserts targets of the public Stellar testnet/mainnet Horizon endpoints.
+- A test with a configured browser endpoint asserts the same URL is used for account, payment, transaction, and event-stream activity requests (captured request URLs match).
+- A test asserts invalid or non-HTTPS production values fail validation and no `VITE_*` value contains a server-only secret.
+- `npm test -- tests/environment.test.ts` passes.
 
-## Deliverables
+## Expected deliverables
 
 - Public endpoint configuration, validation, tests, and setup documentation.
 
-## How to run tests
+## How to set up and run tests
 
 - `npm test -- tests/environment.test.ts`
 - `npm run typecheck`

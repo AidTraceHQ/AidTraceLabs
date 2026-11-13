@@ -1,40 +1,43 @@
 # Show the Last Verification Check Time
 
-**Publish:** Day 3
+**Complexity:** Intermediate (Medium, 150 pts)
 
-**Size:** Medium
+**Estimated effort:** 4 hours
+
+**Release day:** Day 3
 
 ## Problem statement
 
 Verification responses carry `checkedAt`, but the record detail view shows status/reason without telling the reviewer when that status was checked.
 
-## Technical requirements
+## Technical implementation requirements
 
 - Render the existing timestamp when present, with locale-aware display and a stable accessible label.
 - Preserve privacy projection behavior when verification details are withheld.
 - Clearly distinguish check time from transaction creation time and record creation time.
 
-## Files to touch
+## Files and areas to touch
 
 - `src/App.tsx`
 - `tests/` (focused verification-detail rendering test)
 - `docs/api.md` only if response semantics need clarification
 
-## Dependencies on other issues
+## Dependencies
 
-- None. #18 automates future reverification; this draft only displays existing metadata.
+- None. Existing GitHub issue #18 automates future reverification; this draft only displays existing metadata.
 
-## Acceptance criteria
+## Measurable acceptance criteria
 
-- Details show the last check time for verified, mismatch, not-found, and pending results when the API provides it.
-- Missing timestamps render a neutral fallback without throwing.
-- Consent-off public views do not reveal withheld fields.
+- A test renders verified, mismatch, not-found, and pending results and asserts the last check time is shown when the API provides `checkedAt`.
+- A test with a missing or undefined `checkedAt` asserts a neutral fallback renders without throwing.
+- A test asserts consent-off public views do not render withheld verification fields.
+- `npm test -- tests/api.test.ts` passes.
 
-## Deliverables
+## Expected deliverables
 
 - Detail-view timestamp and focused display/privacy tests.
 
-## How to run tests
+## How to set up and run tests
 
 - `npm test -- tests/api.test.ts`
 - `npm run typecheck`

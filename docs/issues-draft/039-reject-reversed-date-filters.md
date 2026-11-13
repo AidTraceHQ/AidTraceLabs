@@ -8,7 +8,7 @@
 
 ## Problem statement
 
-Record filters validate `from` and `to` separately but accept a `from` date later than `to` (`server/records.ts:522-564`). Users get an empty result without being told the range is invalid; the activity view also accepts independent dates (`src/App.tsx:1378-1387`).
+The `from`/`to` handling inside `applyRecordFilters` validates each date separately but accepts a `from` later than `to` (`server/records.ts:522-564`). Users get an empty result without being told the range is invalid; the activity view's From/To inputs (`activityFrom`/`activityTo`, `src/App.tsx:1378-1387`) also accept independent dates.
 
 ## Technical implementation requirements
 
@@ -25,13 +25,14 @@ Record filters validate `from` and `to` separately but accept a `from` date late
 
 ## Dependencies
 
-- None. This is filter validation, not URL persistence (#20).
+- None. This is filter validation, not URL persistence ("Restore Ledger Filters from the URL").
 
 ## Measurable acceptance criteria
 
-- Equal and ascending ranges remain valid.
-- Reversed ranges return a clear validation response and do not run the record query.
-- Empty start/end values continue to mean unbounded on that side.
+- Test asserts `GET /api/transparency?from=2026-02-01&to=2026-01-01` returns HTTP `400` with a field-specific message and performs no record list query.
+- Test asserts equal (`from == to`) and ascending ranges return HTTP `200`.
+- Client activity filtering shows an inline invalid-range message and filters nothing when `activityFrom > activityTo`.
+- `npm test -- tests/backend.test.ts` and `npm run typecheck` pass.
 
 ## Expected deliverables
 

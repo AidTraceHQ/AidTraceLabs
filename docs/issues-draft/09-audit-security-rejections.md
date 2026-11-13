@@ -1,20 +1,22 @@
 # Audit Security-Relevant Rejections
 
-**Publish:** Day 1
+**Complexity:** Intermediate (Medium, 150 pts)
 
-**Size:** Medium
+**Estimated effort:** 6 hours
+
+**Release day:** Day 1
 
 ## Problem statement
 
 Failed signatures, invalid/expired/replayed challenges, CSRF/origin denials, and rate-limit rejections are not comprehensively represented in audit events.
 
-## Technical requirements
+## Technical implementation requirements
 
 - Define a bounded event taxonomy and add audit entries for selected security-relevant rejection outcomes.
 - Never store signatures, cookies, CSRF tokens, raw request bodies, or database URLs.
 - Avoid turning hostile requests into an unbounded audit-storage denial of service.
 
-## Files to touch
+## Files and areas to touch
 
 - `server/auth.ts`
 - `server/records.ts`
@@ -22,21 +24,22 @@ Failed signatures, invalid/expired/replayed challenges, CSRF/origin denials, and
 - `tests/backend.test.ts`
 - `docs/security.md`
 
-## Dependencies on other issues
+## Dependencies
 
-- None. #15 concerns viewing/filtering audit records, not event capture.
+- None. Existing GitHub issue #15 concerns viewing/filtering audit records, not event capture.
 
-## Acceptance criteria
+## Measurable acceptance criteria
 
-- The documented event categories are emitted with safe, bounded metadata.
-- Tests prove sensitive request values are not persisted.
-- Rate-limit and database failure behavior remains bounded and non-recursive.
+- A test per documented category (failed signature, invalid/expired/replayed challenge, CSRF/origin denial, rate-limit rejection) asserts an audit event is emitted with the documented bounded fields only.
+- A test asserts no emitted audit event contains a signature, cookie, CSRF token, raw request body, or database URL.
+- A test asserts repeated hostile requests produce a bounded number of audit writes and that rate-limit/database failures do not recursively audit.
+- `npm test -- tests/backend.test.ts tests/rate-limits.test.ts` passes.
 
-## Deliverables
+## Expected deliverables
 
 - Selective rejection auditing, security-focused tests, and an updated event inventory.
 
-## How to run tests
+## How to set up and run tests
 
 - `npm test -- tests/backend.test.ts tests/rate-limits.test.ts`
 - `npm run typecheck`

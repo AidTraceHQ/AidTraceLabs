@@ -8,7 +8,7 @@
 
 ## Problem statement
 
-The public ledger and wallet activity search inputs both bind to the same `search` state (`src/App.tsx:214-226,1144,1360-1361`). Searching activity therefore also changes the ledger query and leaves the public ledger filtered when the user switches views.
+The public-ledger search input (the "Search records" `search` field at `src/App.tsx:1144`) and the wallet activity search input (aria-label "Search activity" at `src/App.tsx:1360-1361`) both bind to the same `search` state declared at `src/App.tsx:214-226`. Searching activity therefore also changes the ledger query and leaves the public ledger filtered when the user switches views.
 
 ## Technical implementation requirements
 
@@ -24,13 +24,14 @@ The public ledger and wallet activity search inputs both bind to the same `searc
 
 ## Dependencies
 
-- None. This is separate from prior draft #20, which persists ledger filters in the URL.
+- None. This is separate from prior draft "Restore Ledger Filters from the URL", which persists ledger filters in the URL.
 
 ## Measurable acceptance criteria
 
-- Typing in activity search does not change the ledger search input or API query.
-- Typing in ledger search does not change activity search results.
-- Switching tabs preserves each view's own search state.
+- Test `typing in activity search does not change the ledger search or query` in `tests/activity-filters.test.ts` asserts the ledger query string is unchanged.
+- Test `typing in ledger search does not change activity results` asserts the activity result list is unchanged.
+- Test `switching views preserves each view's own search` asserts the ledger and activity search values remain independent.
+- `npx vitest run tests/activity-filters.test.ts` and `npm run typecheck` pass.
 
 ## Expected deliverables
 
@@ -43,7 +44,7 @@ The public ledger and wallet activity search inputs both bind to the same `searc
 
 ## Out of scope
 
-- Cursor pagination (#22), search ranking, or changing server filter semantics.
+- Cursor pagination (existing GitHub issue #22), search ranking, or changing server filter semantics.
 
 ## Suggested labels
 

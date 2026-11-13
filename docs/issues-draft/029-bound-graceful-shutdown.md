@@ -1,14 +1,14 @@
 # Bound the Local Server Graceful Shutdown
 
-**Complexity:** Advanced (High, 200 pts)
+**Complexity:** Intermediate (Medium, 150 pts)
 
-**Estimated effort:** 12 hours
+**Estimated effort:** 6 hours
 
 **Release day:** Day 2
 
 ## Problem statement
 
-The SIGINT/SIGTERM handler waits for `server.close` and then `pool.end` without a grace deadline (`server/index.ts:14-28`). A long-lived or stuck request can keep a local/container process alive indefinitely during shutdown.
+The SIGINT/SIGTERM `shutdown(signal)` handler waits for `server.close` and then `pool.end` without a grace deadline (`server/index.ts:14-28`). A long-lived or stuck request can keep a local/container process alive indefinitely during shutdown.
 
 ## Technical implementation requirements
 
@@ -30,10 +30,11 @@ The SIGINT/SIGTERM handler waits for `server.close` and then `pool.end` without 
 
 ## Measurable acceptance criteria
 
-- A request that finishes before the deadline drains cleanly and the pool closes once.
-- A request that outlives the deadline does not hang shutdown past the configured bound.
-- Repeated SIGTERM/SIGINT events do not start concurrent pool shutdowns.
-- Invalid timeout configuration fails with a safe variable-name-only error.
+- Test `drains an in-flight request that finishes before the deadline and closes the pool once` asserts `pool.end` is called exactly once.
+- Test `does not hang shutdown past the configured bound` uses fake timers with a request that outlives the deadline and asserts shutdown resolves within `graceMs` and `pool.end` is called once.
+- Test `does not start concurrent pool shutdowns for repeated signals` asserts `pool.end` is called once after two SIGTERM events.
+- Test `rejects an invalid grace timeout with a variable-name-only message` asserts the thrown message contains the variable name and neither its value nor any secret.
+- `npx vitest run tests/server-lifecycle.test.ts` passes.
 
 ## Expected deliverables
 
@@ -50,4 +51,4 @@ The SIGINT/SIGTERM handler waits for `server.close` and then `pool.end` without 
 
 ## Suggested labels
 
-- `area: backend`, `area: infrastructure`, `type: enhancement`, `difficulty: high`.
+- `area: backend`, `area: infrastructure`, `type: enhancement`, `difficulty: medium`.

@@ -1,40 +1,43 @@
 # Make Role Changes Traceable in the Audit View
 
-**Publish:** Day 1
+**Complexity:** Intermediate (Medium, 150 pts)
 
-**Size:** Medium
+**Estimated effort:** 5 hours
+
+**Release day:** Day 1
 
 ## Problem statement
 
 Role-change writes store a subject wallet, but the audit API omits that field and the admin UI shows only the actor. The form also accepts no reason for the change.
 
-## Technical requirements
+## Technical implementation requirements
 
 - Include the subject wallet in audit API results and display it distinctly from the actor.
 - Collect a bounded, non-secret reason for role assignment/removal and include it in the audit event.
-- Keep the existing audit filtering issue #15 separate; this adds event context, not filters.
+- Keep the existing GitHub issue #15 for audit filtering separate; this adds event context, not filters.
 
-## Files to touch
+## Files and areas to touch
 
 - `server/records.ts`
 - `src/App.tsx`
 - `tests/backend.test.ts`
 
-## Dependencies on other issues
+## Dependencies
 
 - None.
 
-## Acceptance criteria
+## Measurable acceptance criteria
 
-- Each role-change audit row identifies actor, target wallet suffix, old/new role, reason, and time.
-- Reason length and empty-value behavior are validated consistently.
-- Existing role authorization and self-protection remain unchanged.
+- A test asserts each role-change audit row exposes the actor wallet suffix, the subject/target wallet suffix, the old role, the new role, the reason, and a timestamp.
+- A test asserts an over-length reason is rejected with a 4xx status and that an empty reason follows the documented behavior.
+- Existing role-authorization and self-protection tests still pass (an admin cannot change their own role).
+- `npm test -- tests/backend.test.ts` passes.
 
-## Deliverables
+## Expected deliverables
 
 - API/UI update and tests for role-change audit data and validation.
 
-## How to run tests
+## How to set up and run tests
 
 - `npm test -- tests/backend.test.ts`
 - `npm run typecheck`
