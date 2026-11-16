@@ -1,5 +1,7 @@
 # Respect prefers-reduced-motion for the Skeleton Shimmer and Smooth Scroll
 
+> **Status:** Dropped - merged into #23
+
 **Complexity:** trivial
 
 ## Context

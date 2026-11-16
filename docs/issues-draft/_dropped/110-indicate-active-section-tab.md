@@ -1,5 +1,7 @@
 # Indicate the Active Section in the Tab Bar
 
+> **Status:** Dropped - merged into #23
+
 **Complexity:** trivial
 
 ## Context

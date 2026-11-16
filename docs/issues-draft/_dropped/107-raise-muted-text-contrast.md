@@ -1,5 +1,7 @@
 # Raise the Contrast of Muted Secondary Text
 
+> **Status:** Dropped - merged into #23
+
 **Complexity:** trivial
 
 ## Context

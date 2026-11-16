@@ -1,5 +1,7 @@
 # Add a UTF-8 BOM to the Exported CSV So Excel Renders Non-ASCII Text Correctly
 
+> **Status:** Dropped - merged into #12
+
 **Complexity:** trivial
 
 ## Context

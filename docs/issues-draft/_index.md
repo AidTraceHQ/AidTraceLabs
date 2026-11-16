@@ -99,7 +99,6 @@ for the cross-references written into each draft (references use titles, not num
 | 091   | Coalesce the ledger reloads triggered by a single mutation                     | Medium     | Day 3          |
 | 092   | Sort the ledger on the server and bind cursors to the sort                     | High       | Day 2          |
 | 093   | Guard the CSV export against spreadsheet formula injection                     | Medium     | Day 3          |
-| 094   | Add a UTF-8 BOM to the exported CSV so Excel renders non-ASCII text correctly  | Trivial    | Day 5          |
 | 095   | Add an admin audit-log CSV export                                              | High       | Day 2          |
 | 096   | Include verification status, reason and last-checked time in the CSV export    | Medium     | Day 4          |
 | 097   | Export a beneficiary's own records as CSV                                      | Medium     | Day 4          |
@@ -111,11 +110,8 @@ for the cross-references written into each draft (references use titles, not num
 | 103   | Trap and Restore Focus in the Record and Disbursement Dialogs                  | Medium     | Day 1          |
 | 104   | Add Table Semantics and Keyboard Scrolling to the Data Tables                  | Medium     | Day 1          |
 | 105   | Associate Record-Form Validation Errors with Their Fields                      | Medium     | Day 2          |
-| 106   | Respect prefers-reduced-motion for the Skeleton Shimmer and Smooth Scroll      | Trivial    | Day 2          |
-| 107   | Raise the Contrast of Muted Secondary Text                                     | Trivial    | Day 3          |
 | 108   | Announce Activity Stream and Verification Status Changes                       | Medium     | Day 3          |
 | 109   | Enlarge Touch Targets for Compact Controls                                     | Medium     | Day 4          |
-| 110   | Indicate the Active Section in the Tab Bar                                     | Trivial    | Day 5          |
 | 111   | Add a Favicon and Declare the Supported Color Scheme                           | Trivial    | Day 3          |
 | 112   | Add a Skip-to-Content Link for Keyboard Users                                  | Trivial    | Day 3          |
 | 113   | Cancel Superseded CI Runs With a Concurrency Group                             | Trivial    | Day 5          |
