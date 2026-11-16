@@ -29,8 +29,12 @@ before implementing).
   limits.
 - Verification history is preserved: new rows are appended and existing rows are never
   edited. A transient Horizon failure leaves the record pending, never a final mismatch.
-- No hosted scheduler is introduced or assumed. The runner is invocable locally (script or
-  command) and documented as operator-run until deployment evidence exists.
+- Where the job runs is stated explicitly and recorded in the issue and the runbook: a
+  stand-alone script (for example `scripts/reverify.ts` invoked by a new npm script), a
+  protected HTTP endpoint, or a Vercel Cron entry in `vercel.json`. A hosted scheduler is
+  not assumed without deployment evidence.
+- The run is bounded: a documented maximum number of records per run (for example ≤ 200) and
+  a wall-clock timeout, so a single invocation cannot exhaust Horizon limits.
 - `npm run check` passes and the migration tests pass against a disposable PostgreSQL.
 
 ## Files to touch

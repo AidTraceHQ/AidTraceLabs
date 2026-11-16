@@ -29,6 +29,12 @@ reveals nothing private.
 - The response is built with `publicRecord()` semantics (`server/records.ts:264`): with
   `recipient_consent` false, `recipient`, `recipientAddress`, `txHash`, `note` and the
   verification `destination`, `link` and `ledger` are withheld exactly as on the ledger.
+- Which fields are public is stated explicitly: the response exposes only the record id,
+  network, asset code/issuer, amount, status, disbursement date, organization name, the
+  verification outcome and the checked transaction fields — and never the recipient name,
+  recipient wallet, transaction hash, note, or verification destination/link/ledger. A
+  consent-off record stays hidden: none of those withheld fields appear on the page or in
+  the JSON, exactly as on the transparency ledger.
 - An unknown or malformed identifier returns 404 or 400 without echoing any other record's
   fields.
 - The UI renders a shareable record page (reachable by URL, no sign-in) that shows network,

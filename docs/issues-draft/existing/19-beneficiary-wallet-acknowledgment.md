@@ -30,6 +30,11 @@ expiry and revocation model).
 - The public projection is unchanged or stricter than `publicRecord()`
   (`server/records.ts:264`); a record without an acknowledgment is projected no more
   permissively than today.
+- Which fields are public is stated explicitly, and a consent-off record stays hidden: an
+  acknowledgment never widens the projection beyond the current public set (record id,
+  network, asset, amount, status, date, organization name, verification outcome and checked
+  fields). The recipient name, recipient wallet, transaction hash, note and verification
+  destination/link/ledger remain withheld whenever `recipient_consent` is false.
 - `npm run check` passes, and product/privacy review is obtained before the feature is
   enabled.
 

@@ -22,6 +22,14 @@ required first (delivery model and recipient-verification policy).
   secrets are stored encrypted or as hashes, never in plain text.
 - Webhook deliveries are signed, replay is rejected, retries are bounded and safe, and a
   pending delivery can be cancelled.
+- Outbound requests block SSRF: the resolved target must be a public address, and
+  loopback, private, link-local, unique-local and cloud-metadata ranges (for example
+  `127.0.0.0/8`, `10.0.0.0/8`, `169.254.0.0/16`, `::1`) are rejected before the request
+  is sent and re-checked after any redirect.
+- Every outbound delivery uses explicit connect and read timeouts and a bounded retry
+  budget with backoff.
+- Secrets are never logged: signing keys, target credentials, tokens and full request
+  payloads never appear in logs, error messages or audit events.
 - Event payloads are minimized: no raw wallet address, note, or beneficiary name is sent by
   default.
 - When delivery is unconfigured or disabled, the API behaves exactly as it does today (no
