@@ -1,6 +1,6 @@
 # Centralize Database Error-to-Response Mapping
 
-**Complexity:** medium
+**Complexity:** high
 
 ## Context
 

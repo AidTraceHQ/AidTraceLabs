@@ -60,7 +60,7 @@ for the cross-references written into each draft (references use titles, not num
 | 052   | Add Timeouts to the Migration Pool                                             | Medium     | Day 3          |
 | 053   | Bound Idle Transactions Held by the Pool                                       | Medium     | Day 2          |
 | 054   | Abort Server-Side Horizon and Database Work When the Client Disconnects        | High       | Day 2          |
-| 055   | Centralize Database Error-to-Response Mapping                                  | Medium     | Day 2          |
+| 055   | Centralize Database Error-to-Response Mapping                                  | High       | Day 2          |
 | 056   | Bound How Long a Request Waits for a Pooled Database Client                    | Medium     | Day 1          |
 | 057   | Handle idle database-client errors on the connection pool                      | Medium     | Day 2          |
 | 058   | Reject the Example Placeholder Session Secret at Startup                       | Medium     | Day 2          |
