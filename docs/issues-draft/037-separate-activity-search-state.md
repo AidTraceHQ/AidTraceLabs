@@ -1,51 +1,34 @@
 # Separate Activity Search from Ledger Search
 
-**Complexity:** Intermediate (Medium, 150 pts)
+**Complexity:** medium
 
-**Estimated effort:** 4 hours
+## Context
 
-**Release day:** Day 3
+The public-ledger search input (the "Search records" field at `src/App.tsx`, line 1144) and the wallet activity search input (`aria-label="Search activity"` at `src/App.tsx`, lines 1360–1361) both bind to the same `search` state declared at `src/App.tsx` (lines 214–226). Searching the activity view therefore also changes the ledger query, leaving the public ledger filtered when the user switches tabs. Affected users: any connected wallet holder who searches activity and then returns to the public ledger. Current behavior: a single `search` state drives both filter inputs; activity search and ledger search are coupled. Expected behavior: a dedicated activity search state is used only by `filteredActivity`; the public-ledger search remains bound to the existing state and URL/filter behavior.
 
-## Problem statement
-
-The public-ledger search input (the "Search records" `search` field at `src/App.tsx:1144`) and the wallet activity search input (aria-label "Search activity" at `src/App.tsx:1360-1361`) both bind to the same `search` state declared at `src/App.tsx:214-226`. Searching activity therefore also changes the ledger query and leaves the public ledger filtered when the user switches views.
-
-## Technical implementation requirements
-
-- Add a dedicated activity search state and use it only in `filteredActivity`.
-- Keep public-ledger search bound to the existing ledger state and URL/filter behavior.
-- Avoid introducing cross-view search persistence unless separately designed.
-
-## Files and areas to touch
-
-- `src/App.tsx`
-- `src/activity-filters.ts` (pure activity filtering helper)
-- `tests/activity-filters.test.ts`
-
-## Dependencies
-
-- None. This is separate from prior draft "Restore Ledger Filters from the URL", which persists ledger filters in the URL.
-
-## Measurable acceptance criteria
+## Acceptance criteria
 
 - Test `typing in activity search does not change the ledger search or query` in `tests/activity-filters.test.ts` asserts the ledger query string is unchanged.
 - Test `typing in ledger search does not change activity results` asserts the activity result list is unchanged.
 - Test `switching views preserves each view's own search` asserts the ledger and activity search values remain independent.
 - `npx vitest run tests/activity-filters.test.ts` and `npm run typecheck` pass.
 
-## Expected deliverables
+## Files to touch
 
-- Independent state, extracted pure activity filtering helper, and regression tests for cross-view isolation.
+- `src/App.tsx`
+- `src/activity-filters.ts` (pure activity filtering helper)
+- `tests/activity-filters.test.ts`
 
-## How to set up and run tests
+## Test expectations
 
-- Run `npx vitest run tests/activity-filters.test.ts`.
-- Run `npm run typecheck`.
+- Run: `npx vitest run tests/activity-filters.test.ts`
+- Run: `npm run typecheck`
+- No database required.
 
 ## Out of scope
 
-- Cursor pagination (existing GitHub issue #22), search ranking, or changing server filter semantics.
+Cursor pagination (tracked by a separate open issue), search ranking, or changing server filter semantics. This is separate from "Restore Ledger Filters from the URL", which persists ledger filters in the URL.
 
-## Suggested labels
+## Depends on
 
-- `area: frontend`, `type: bug`, `difficulty: medium`.
+None

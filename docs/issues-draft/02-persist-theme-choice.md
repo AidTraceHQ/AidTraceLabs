@@ -1,48 +1,33 @@
 # Persist the Theme Choice
 
-**Complexity:** Beginner (Trivial, 100 pts)
+**Complexity:** trivial
 
-**Estimated effort:** 3 hours
+## Context
 
-**Release day:** Day 1
+The dark/light theme choice resets on page reload, unlike the network preference which is persisted via `src/network-preference.ts`. Affected users: any user who prefers dark mode and must re-select it after every reload. Current behavior: theme is held in component state only. Expected behavior: the chosen theme survives a page reload. Evidence: `src/App.tsx` (theme `useState` initialization) and `src/network-preference.ts` (the pattern to follow for browser-storage with an unavailability fallback).
 
-## Problem statement
+## Acceptance criteria
 
-The dark/light choice resets on reload, unlike the network preference which is persisted.
+- `npx vitest run tests/theme-preference.test.ts` passes and asserts a stored theme is read back with the same value after a simulated reload.
+- A test with an invalid stored value asserts the helper returns the default theme and the component renders without throwing.
+- A test with throwing or unavailable storage asserts the helper returns the default theme without throwing.
 
-## Technical implementation requirements
-
-- Store only the theme preference in browser storage.
-- Follow the storage-unavailable fallback pattern used by `src/network-preference.ts`.
-
-## Files and areas to touch
+## Files to touch
 
 - `src/App.tsx`
 - `src/theme-preference.ts`
 - `tests/theme-preference.test.ts`
 
-## Dependencies
+## Test expectations
 
-- None.
-
-## Measurable acceptance criteria
-
-- `npx vitest run tests/theme-preference.test.ts` passes and asserts a stored theme is read back with the same value after a simulated reload.
-- A test with an invalid stored value and a test with throwing/unavailable storage both assert the helper returns the default theme and the component still renders without throwing.
-
-## Expected deliverables
-
-- Theme preference helper, component integration, and storage/fallback tests.
-
-## How to set up and run tests
-
-- `npx vitest run tests/theme-preference.test.ts`
-- `npm run typecheck`
+- Run: `npx vitest run tests/theme-preference.test.ts`
+- Run: `npm run typecheck`
+- No database setup required.
 
 ## Out of scope
 
-- System-theme detection, theme redesign, or broader accessibility work.
+System-theme detection, theme redesign, or broader accessibility work.
 
-## Suggested labels
+## Depends on
 
-- `area: frontend`, `type: enhancement`, `difficulty: trivial`.
+None

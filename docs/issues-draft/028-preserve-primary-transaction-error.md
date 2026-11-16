@@ -1,49 +1,33 @@
 # Preserve the Original Error When Transaction Rollback Fails
 
-**Complexity:** Intermediate (Medium, 150 pts)
+**Complexity:** medium
 
-**Estimated effort:** 4 hours
+## Context
 
-**Release day:** Day 3
+`withTransaction` in `server/db.ts` (function `withTransaction`, lines 31–44) awaits `ROLLBACK` inside the catch block. If the rollback itself fails because the connection was lost, the rollback error replaces the original query/commit error. Maintainers see the rollback failure but not the root cause. Affected users: maintainers diagnosing transaction failures in production logs. Current behavior: a failed rollback replaces the primary error with the rollback error. Expected behavior: the original operation error is the primary rejection; the rollback failure is retained as a non-secret `cause` or secondary diagnostic without serializing SQL values or connection details. The client is always released in `finally`. Evidence: `server/db.ts` (function `withTransaction`, lines 31–44).
 
-## Problem statement
-
-`withTransaction` (`server/db.ts:31-44`) awaits `ROLLBACK` inside the catch block. If rollback itself fails because the connection was lost, that second error replaces the original query/commit error, obscuring the event that caused the transaction to fail.
-
-## Technical implementation requirements
-
-- Preserve the original operation error as the primary rejection.
-- Retain rollback failure as a non-secret `cause` or secondary diagnostic without serializing SQL values or connection details.
-- Always release the client in `finally` and do not claim the transaction was rolled back when rollback failed.
-
-## Files and areas to touch
-
-- `server/db.ts`
-- `tests/database-errors.test.ts` or a focused transaction-helper test
-
-## Dependencies
-
-- None.
-
-## Measurable acceptance criteria
+## Acceptance criteria
 
 - Test `preserves the work error as the primary rejection` in `tests/database-errors.test.ts` asserts the rejected error is the callback's original error object.
 - Test `surfaces a rollback failure without claiming success` asserts the rejection is not a successful result and carries the rollback failure only as a non-secret `cause`.
 - Test `releases the client exactly once` asserts the mocked `release` spy is called exactly once in the callback-failure-plus-rollback-failure case.
 - `npx vitest run tests/database-errors.test.ts` passes.
 
-## Expected deliverables
+## Files to touch
 
-- Transaction error-preservation change and focused mocked-client tests.
+- `server/db.ts`
+- `tests/database-errors.test.ts` (or a focused transaction-helper test)
 
-## How to set up and run tests
+## Test expectations
 
-- Run `npx vitest run tests/database-errors.test.ts` and `npm run typecheck`.
+- Run: `npx vitest run tests/database-errors.test.ts`
+- Run: `npm run typecheck`
+- No live database required (mocked client tests).
 
 ## Out of scope
 
-- Retrying transactions, changing isolation levels, or altering database error classification.
+Retrying transactions, changing isolation levels, or altering database error classification.
 
-## Suggested labels
+## Depends on
 
-- `area: backend`, `type: bug`, `difficulty: medium`.
+None

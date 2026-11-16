@@ -1,65 +1,36 @@
-# Add an admin audit-log CSV export
+# Add an Admin Audit-Log CSV Export
 
-**Complexity:** Advanced (High, 200 pts)
+**Complexity:** high
 
-**Estimated effort:** 12 hours
+## Context
 
-**Release day:** Day 2
+Administrators can filter and page audit events in the UI via `GET /api/audit` (documented in `docs/api.md`, line 22), but there is no way to export them. Reviewers, auditors, and grant reporting teams need the security trail in a file. Affected: admin users who need an exportable record of audit events for compliance or reporting. Current behavior: no export is available from the audit view. Expected behavior: a bounded export of the currently filtered audit events is available to admin users only, enforced both server-side and client-side. Because the audit list is cursor-paged, the export loops through the filtered set with an explicit cap and surfaces a clear message if the cap is reached instead of silently truncating. Must reuse the CSV escaping agreed for the records export (including formula-injection neutralization).
 
-## Problem statement
+## Acceptance criteria
 
-Administrators can filter and page audit events in the UI, and the events are served by
-`GET /api/audit` (documented at `docs/api.md:22`), but there is no way to export them. Reviewers,
-auditors, and grant reporting need the security trail in a file, not just on screen. Neighbouring
-work does not cover this: existing GitHub issue #12 is CSV **test coverage** for the records export,
-existing GitHub issue #14 is a per-record receipt export, and existing GitHub issue #16 is dashboard
-totals. A separate audit export is a genuine missing capability.
+- An admin can export the filtered audit events; the file contains exactly the filtered rows.
+- A non-admin request or route for the same data returns `403`/`404` and never CSV data.
+- When the result exceeds the cap, the UI reports that the export was truncated.
+- `npm test -- tests/backend.test.ts` and `npm run typecheck` pass.
 
-## Technical implementation requirements
-
-- Export the currently filtered audit events as CSV, honouring the same filters the audit view
-  already applies (`action`, `address`, `recordId`, `q` — `docs/api.md:24`).
-- Enforce admin authorization for the whole export: the export must never return rows to a
-  non-admin, and the client must not be the only guard.
-- Because the audit list is cursor-paged, page through the filtered set within a bounded loop with an
-  explicit cap, and surface a clear message if the cap is reached instead of silently truncating.
-- Columns: `created_at`, `action`, `actor`, `subject`, `record_id`, `summary`, and any safe metadata
-  already returned to the audit view. Do **not** export anything the audit view does not already
-  return.
-- Reuse the CSV escaping agreed for the records export (including formula-injection neutralisation).
-
-## Files and areas to touch
+## Files to touch
 
 - `src/App.tsx` (admin audit section)
 - `server/records.ts` (only if a bounded admin export path is added)
 - `docs/api.md`
-- `tests/backend.test.ts` (authorization) and `tests/csv.test.ts` (formatting)
+- `tests/backend.test.ts` (authorization)
+- `tests/csv.test.ts` (formatting)
 
-## Dependencies
+## Test expectations
 
-- The formula-injection guard draft should land first or together so the shared escaper is safe.
-
-## Measurable acceptance criteria
-
-- An admin can export the filtered audit events; the file contains exactly the filtered rows.
-- A non-admin request/route for the same data returns `403`/`404` and never CSV data.
-- When the result exceeds the cap, the UI reports that the export was truncated.
-- `npm test -- tests/backend.test.ts` and `npm run typecheck` pass.
-
-## Expected deliverables
-
-- An authorized audit-log CSV export (client, optional bounded server path), docs, and tests.
-
-## How to set up and run tests
-
-- Configure the guarded test database and run `npm test -- tests/backend.test.ts`.
-- Run `npm run dev` as an admin, apply audit filters, export, and compare the file with the on-screen
-  rows; then retry as a non-admin and confirm denial.
+- Configure: `TEST_DATABASE_URL`, `TEST_DATABASE_BRANCH=test`
+- Run: `npm test -- tests/backend.test.ts`
+- Manual: run `npm run dev` as an admin, apply audit filters, export, and compare the file with the on-screen rows; then retry as a non-admin and confirm denial.
 
 ## Out of scope
 
-- Changing audit filtering, adding new audit fields, scheduled exports, and external log shipping.
+Changing audit filtering, adding new audit fields, scheduled exports, and external log shipping.
 
-## Suggested labels
+## Depends on
 
-- `area: frontend`, `area: security`, `type: enhancement`, `difficulty: high`
+Guard the CSV export against spreadsheet formula injection

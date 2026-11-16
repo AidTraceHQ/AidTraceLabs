@@ -1,51 +1,34 @@
 # Make Role Changes Traceable in the Audit View
 
-**Complexity:** Intermediate (Medium, 150 pts)
+**Complexity:** medium
 
-**Estimated effort:** 5 hours
+## Context
 
-**Release day:** Day 1
+Role-change writes store the subject wallet address in the database, but the audit API omits that field and the admin UI shows only the actor wallet. The form also accepts no reason for the change. Affected users: administrators reviewing role-change history who cannot see who was changed or why. Current behavior: audit rows for role changes include only the actor; no reason is collected or stored. Expected behavior: each role-change audit row exposes the actor wallet suffix, the subject wallet suffix, the old role, the new role, the reason, and a timestamp. Evidence: `server/records.ts` (role mutation handlers and `writeAudit` calls) and `src/App.tsx` (admin audit display).
 
-## Problem statement
+## Acceptance criteria
 
-Role-change writes store a subject wallet, but the audit API omits that field and the admin UI shows only the actor. The form also accepts no reason for the change.
+- A test asserts each role-change audit row exposes the actor wallet suffix, the subject wallet suffix, the old role, the new role, the reason, and a timestamp.
+- A test asserts an over-length reason is rejected with a 4xx status and that an empty reason follows the documented behavior.
+- Existing role-authorization and self-protection tests still pass (an admin cannot change their own role).
+- `npm test -- tests/backend.test.ts` passes.
 
-## Technical implementation requirements
-
-- Include the subject wallet in audit API results and display it distinctly from the actor.
-- Collect a bounded, non-secret reason for role assignment/removal and include it in the audit event.
-- Keep the existing GitHub issue #15 for audit filtering separate; this adds event context, not filters.
-
-## Files and areas to touch
+## Files to touch
 
 - `server/records.ts`
 - `src/App.tsx`
 - `tests/backend.test.ts`
 
-## Dependencies
+## Test expectations
 
-- None.
-
-## Measurable acceptance criteria
-
-- A test asserts each role-change audit row exposes the actor wallet suffix, the subject/target wallet suffix, the old role, the new role, the reason, and a timestamp.
-- A test asserts an over-length reason is rejected with a 4xx status and that an empty reason follows the documented behavior.
-- Existing role-authorization and self-protection tests still pass (an admin cannot change their own role).
-- `npm test -- tests/backend.test.ts` passes.
-
-## Expected deliverables
-
-- API/UI update and tests for role-change audit data and validation.
-
-## How to set up and run tests
-
-- `npm test -- tests/backend.test.ts`
-- `npm run typecheck`
+- Run: `npm test -- tests/backend.test.ts`
+- Run: `npm run typecheck`
+- Requires `TEST_DATABASE_URL` and `TEST_DATABASE_BRANCH=test`.
 
 ## Out of scope
 
-- Audit filters, a new audit provider, or changes to role policy.
+Audit filters, a new audit provider, or changes to role policy. This draft adds event context, not filters; filters are tracked by a separate open issue.
 
-## Suggested labels
+## Depends on
 
-- `area: backend`, `area: frontend`, `type: enhancement`, `difficulty: medium`.
+None

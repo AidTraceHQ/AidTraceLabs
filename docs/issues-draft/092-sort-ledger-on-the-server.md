@@ -1,33 +1,21 @@
-<!-- OVERLAP: Partly overlaps with open issue #22 "Cursor Pagination UI". Narrowed to server-side sort parameter and cursor-binding; UI pagination controls remain in #22. -->
+# Sort the Ledger on the Server and Bind Cursors to the Sort
 
-# Sort the ledger on the server and bind cursors to the sort
+**Complexity:** high
 
-**Complexity:** Advanced (High, 200 pts)
+## Context
 
-**Estimated effort:** 14 hours
+Partly overlaps with open issue "Cursor Pagination UI". This draft is narrowed to the server-side sort parameter and cursor-binding; UI pagination controls remain in that separate issue.
 
-**Release day:** Day 2
+Sorting is performed in the browser over the fully loaded dataset in `src/App.tsx` (sort buttons at lines 878–884, applied at lines 804–820). This cannot be correct once paging is bounded because the browser can only sort rows it holds. The list route already paginates with signed cursors bound to query filters but exposes no sort parameter, coupling "sort works" to "load everything". Affected: the long-term scalability of the public ledger.
 
-## Problem statement
+## Acceptance criteria
 
-Sorting is performed in the browser over the fully loaded dataset (`src/App.tsx:804-820`, header
-buttons at `src/App.tsx:878-884`) rather than by the database. This only works because the client
-currently fetches every record; it cannot be correct once paging is bounded, because a browser can
-only sort the rows it happens to hold. The list route already paginates with signed cursors bound to
-the query filters (`docs/api.md:24`) but exposes no sort parameter, so the current design couples
-"sort works" to "load everything". Affected: the long-term scalability of the public ledger.
+- `GET /api/transparency?sort=amount&direction=desc&limit=N` returns rows in the requested order with a stable tiebreaker across pages.
+- A cursor issued for `sort=date` is rejected when replayed with `sort=amount`.
+- An unknown `sort` value returns `400`.
+- `npm test -- tests/backend.test.ts` and `npm run typecheck` pass.
 
-## Technical implementation requirements
-
-- Accept `sort` (and direction) on the transparency list route and apply it in SQL with a
-  deterministic tiebreaker (e.g. `date DESC, id DESC`) so paging is stable.
-- **Bind the signed cursor to the sort** so a cursor issued under one ordering cannot be replayed
-  under another; extend the existing cursor payload rather than adding a parallel mechanism.
-- Validate the allowed sort fields against an allow-list; reject anything else with `400`.
-- Update the client header buttons to request a server-side sort instead of re-sorting in memory.
-- Do not weaken the cursor signature (HMAC) or the public projection rules.
-
-## Files and areas to touch
+## Files to touch
 
 - `server/records.ts`
 - `src/App.tsx`
@@ -35,33 +23,16 @@ the query filters (`docs/api.md:24`) but exposes no sort parameter, so the curre
 - `tests/backend.test.ts`
 - `tests/` (a cursor/sort binding test)
 
-## Dependencies
+## Test expectations
 
-- Best implemented after (or alongside) the "return a bounded total" draft, which changes the same
-  envelope; if landed first, it must still keep the envelope backward-compatible.
-
-## Measurable acceptance criteria
-
-- `GET /api/transparency?sort=amount&direction=desc&limit=N` returns rows in the requested order with
-  a stable tiebreaker across pages.
-- A cursor issued for `sort=date` is rejected when replayed with `sort=amount`.
-- An unknown `sort` value returns `400`.
-- `npm test -- tests/backend.test.ts` and `npm run typecheck` pass.
-
-## Expected deliverables
-
-- Server-side ordering with sort-bound cursors, client wiring, docs, and tests.
-
-## How to set up and run tests
-
-- Configure the guarded test database and run `npm test -- tests/backend.test.ts`.
-- Run `npm run dev` and confirm the ledger sort headers reorder rows correctly across pages.
+- Configure: `TEST_DATABASE_URL`, `TEST_DATABASE_BRANCH=test`
+- Run: `npm test -- tests/backend.test.ts`
+- Manual: run `npm run dev` and confirm the ledger sort headers reorder rows correctly across pages.
 
 ## Out of scope
 
-- Cursor pagination UI controls (existing GitHub issue #22), multi-column sort, saved sort preferences, and full-text
-  ranking.
+Cursor pagination UI controls (tracked by the separate open issue "Cursor Pagination UI"), multi-column sort, saved sort preferences, and full-text ranking.
 
-## Suggested labels
+## Depends on
 
-- `area: backend`, `area: frontend`, `type: enhancement`, `difficulty: high`
+Return a bounded total so the ledger can page without loading every record

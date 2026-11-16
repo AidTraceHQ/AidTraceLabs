@@ -1,51 +1,34 @@
 # Bound the Account Activity Request Lifecycle
 
-**Complexity:** Intermediate (Medium, 150 pts)
+**Complexity:** medium
 
-**Estimated effort:** 5 hours
+## Context
 
-**Release day:** Day 3
+Activity loading starts three unbounded fetches (account, payments, transactions). A request from a previous wallet or network can finish after a switch or logout and overwrite the newer screen state. Polling can also overlap slow in-flight requests, creating an unbounded backlog. Affected users: connected wallet holders who switch networks or log out while activity is loading. Current behavior: no timeout, no cancellation token, and no generation check on activity fetch results. Expected behavior: results are associated with the wallet/network request generation, stale completions are ignored, and concurrent refreshes are bounded. Evidence: `src/App.tsx` (activity fetch logic, approximately lines 392–493).
 
-## Problem statement
-
-Activity loading starts three unbounded fetches. A request from a previous wallet/network can finish after a switch or logout and overwrite the newer screen state; polling can also overlap slow requests.
-
-## Technical implementation requirements
-
-- Add request timeouts and cancellation for the account/payment/transaction fetch group.
-- Associate results with the wallet/network request generation and ignore stale completions.
-- Prevent unbounded overlapping poll/SSE-triggered refreshes and clear loading state safely.
-
-## Files and areas to touch
-
-- `src/App.tsx`
-- `src/activity.ts` (if extracting request orchestration)
-- `tests/activity.test.ts`
-
-## Dependencies
-
-- "Use Configured Horizon Endpoints in Browser Activity" if the configured browser Horizon URL is introduced first; otherwise retain current defaults.
-
-## Measurable acceptance criteria
+## Acceptance criteria
 
 - A test logs out or switches wallet/network while activity fetches are in flight and asserts stale results do not repopulate the screen.
 - A test forces a request timeout and asserts loading state settles and a recoverable error is shown.
 - A test emits rapid stream events and asserts the count of concurrent activity requests stays under a fixed bound (no unbounded backlog).
 - `npx vitest run tests/activity.test.ts` passes.
 
-## Expected deliverables
+## Files to touch
 
-- Request lifecycle helper/component changes and focused cancellation/race tests.
+- `src/App.tsx`
+- `src/activity.ts` (if extracting request orchestration)
+- `tests/activity.test.ts`
 
-## How to set up and run tests
+## Test expectations
 
-- `npx vitest run tests/activity.test.ts`
-- `npm run typecheck`
+- Run: `npx vitest run tests/activity.test.ts`
+- Run: `npm run typecheck`
+- No database required; uses mocked Horizon responses.
 
 ## Out of scope
 
-- Historical activity pagination, redesigning the activity screen, or changing Stellar verification.
+Historical activity pagination, redesigning the activity screen, or changing Stellar verification.
 
-## Suggested labels
+## Depends on
 
-- `area: frontend`, `type: bug`, `difficulty: medium`.
+Use Configured Horizon Endpoints in Browser Activity

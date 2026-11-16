@@ -1,50 +1,33 @@
 # Test Database-Backed Per-Address Rate Limits
 
-**Complexity:** Advanced (High, 200 pts)
+**Complexity:** high
 
-**Estimated effort:** 16 hours
+## Context
 
-**Release day:** Day 2
+Authentication throttling uses a shared, database-backed counter in `server/auth.ts` (lines 149–164) keyed per address for challenges (line 185, 8 per 15 minutes), signature attempts (line 227, 12 per minute), record writes in `server/records.ts` (line 350, 60 per minute), and re-verification (line 873, 30 per minute). The only rate-limit test exercises the in-memory express-rate-limit IP limiter in `tests/rate-limits.test.ts` (lines 7–31); the database counter is never asserted, and the test environment neutralizes it in `tests/setup.ts` (lines 52–54). A regression in the `ON CONFLICT ... WHERE request_count < $4` upsert (lines 154–162) would pass silently. Affected: every user exposed to authentication or write abuse if throttling silently broke.
 
-## Problem statement
+## Acceptance criteria
 
-Authentication throttling uses a shared, database-backed counter (`server/auth.ts:149-164`) keyed per address for challenges (`server/auth.ts:185`, 8 per 15 minutes), signature attempts (`server/auth.ts:227`, 12 per minute), record writes (`server/records.ts:350`, 60 per minute), and re-verification (`server/records.ts:873`, 30 per minute). The only rate-limit test exercises the in-memory express-rate-limit IP limiter (`tests/rate-limits.test.ts:7-31`); the database counter is never asserted, and the test environment neutralises it (`tests/setup.ts:52-54`). A regression in the `ON CONFLICT ... WHERE request_count < $4` upsert (`server/auth.ts:154-162`) would pass silently. Affected: every user exposed to authentication or write abuse if throttling silently broke.
-
-## Technical implementation requirements
-
-- Add an integration test that lowers the relevant limit for one route and drives it past the threshold, asserting 429 with the documented error body.
-- Cover at least the challenge and write counters; verify a new window resets the counter and that different addresses do not share a bucket.
-- Assert the `rate_limits` row is created and incremented (query the table or observe the returned count).
-- Do NOT change the limits, keys, windows, or the upsert semantics, and do not remove the existing IP limiter.
-
-## Files and areas to touch
-
-- `tests/backend.test.ts` (or a new block in `tests/rate-limits.test.ts`)
-- `tests/setup.ts` only if a per-test limit override mechanism is required
-
-## Dependencies
-
-- Requires a test database. Distinct from the per-IP limiter store redesign (a separate, already-drafted item).
-
-## Measurable acceptance criteria
-
-- Exceeding the configured threshold returns 429; under-threshold requests succeed.
-- Different addresses have independent counters; a new window resets a counter.
+- An integration test lowers the relevant limit for one route and drives it past the threshold, asserting 429 with the documented error body.
+- At least the challenge and write counters are covered; a new window resets the counter; different addresses do not share a bucket.
+- The `rate_limits` row is created and incremented (queried directly or via the returned count).
 - `npm test -- tests/backend.test.ts tests/rate-limits.test.ts` passes; `npm run typecheck` passes.
 
-## Expected deliverables
+## Files to touch
 
-- Database rate-limit integration tests plus a documented way to override thresholds in tests.
+- `tests/backend.test.ts` (or a new block in `tests/rate-limits.test.ts`)
+- `tests/setup.ts` (only if a per-test limit override mechanism is required)
 
-## How to set up and run tests
+## Test expectations
 
-- Configure `TEST_DATABASE_URL`/`TEST_DATABASE_BRANCH=test`, then `npm test -- tests/backend.test.ts tests/rate-limits.test.ts`.
-- Run `npm run typecheck`.
+- Configure: `TEST_DATABASE_URL`/`TEST_DATABASE_BRANCH=test`
+- Run: `npm test -- tests/backend.test.ts tests/rate-limits.test.ts`
+- Run: `npm run typecheck`
 
 ## Out of scope
 
-- Changing the rate-limit store technology, limits, or window values.
+Changing the rate-limit store technology, limits, or window values.
 
-## Suggested labels
+## Depends on
 
-- `area: security`, `area: testing`, `type: enhancement`, `difficulty: high`.
+None

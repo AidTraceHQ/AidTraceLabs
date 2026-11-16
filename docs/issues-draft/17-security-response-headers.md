@@ -1,53 +1,36 @@
 # Define Security Headers for API and Static Responses
 
-**Complexity:** Intermediate (Medium, 150 pts)
+**Complexity:** medium
 
-**Estimated effort:** 4 hours
+## Context
 
-**Release day:** Day 3
+The API disables `X-Powered-By`, but no deliberate browser security-header policy is set in Express or Vercel configuration. Affected users: all users of the application whose browsers lack the signal to enforce framing, referrer, permissions, and transport security policies. Current behavior: no `Content-Security-Policy`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, or `Strict-Transport-Security` headers are sent. Expected behavior: compatible values for content-type sniffing, framing, referrer, permissions, and transport security are configured for both API and static responses; wallet/Freighter flows and required external Horizon/explorer links continue to work. Evidence: `server/app.ts` (middleware chain) and `vercel.json` (no headers block).
 
-## Problem statement
+## Acceptance criteria
 
-The API disables `x-powered-by`, but there is no deliberate browser security-header policy in Express or Vercel configuration.
+- A test asserts the frontend and API responses carry the documented headers with the documented values (content-type sniffing, framing, referrer, permissions, transport security).
+- A test asserts any introduced CSP contains no wildcard source (`*`) and lists only documented required sources.
+- Existing wallet/Freighter and external-link route tests still pass.
+- `npm run build` succeeds.
+- `npm test -- tests/backend.test.ts` passes.
 
-## Technical implementation requirements
-
-- Select and document compatible values for content type sniffing, framing, referrer, permissions, and transport security.
-- Configure static Vercel responses and API responses consistently where appropriate.
-- Test that wallet/Freighter flows and required external Horizon/explorer links continue to work.
-
-## Files and areas to touch
+## Files to touch
 
 - `server/app.ts`
 - `vercel.json`
 - `tests/backend.test.ts`
 - `docs/deployment.md`
 
-## Dependencies
+## Test expectations
 
-- None.
-
-## Measurable acceptance criteria
-
-- A test asserts the frontend and API responses carry the documented headers (content type sniffing, framing, referrer, permissions, transport security) with the documented values.
-- A test asserts any introduced CSP contains no wildcard source (`*`) and lists only documented required sources.
-- Existing wallet/Freighter and external-link route tests still pass and `npm run build` succeeds.
-- `npm test -- tests/backend.test.ts` passes.
-
-## Expected deliverables
-
-- Header policy/configuration, response tests, and deployment notes.
-
-## How to set up and run tests
-
-- `npm test -- tests/backend.test.ts`
-- `npm run build`
-- `npm run typecheck`
+- Run: `npm test -- tests/backend.test.ts`
+- Run: `npm run build`
+- Run: `npm run typecheck`
 
 ## Out of scope
 
-- Changing authentication, CORS allowlists, or wallet signing behavior.
+Changing authentication, CORS allowlists, or wallet signing behavior.
 
-## Suggested labels
+## Depends on
 
-- `area: security`, `area: infrastructure`, `type: enhancement`, `difficulty: medium`.
+None

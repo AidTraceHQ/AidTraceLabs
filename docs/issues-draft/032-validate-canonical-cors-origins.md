@@ -1,34 +1,12 @@
 # Validate CORS Configuration as Canonical Origins
 
-**Complexity:** Intermediate (Medium, 150 pts)
+**Complexity:** medium
 
-**Estimated effort:** 5 hours
+## Context
 
-**Release day:** Day 3
+`validateEnvironment` in `server/environment.ts` (the CORS block at lines 69–90) accepts any parseable URL for `CORS_ALLOWED_ORIGINS`. Request handling compares raw configured strings to the browser's origin using the module-level `allowedOrigins` set and `isAllowedOrigin` in `server/http-security.ts` (lines 3–12). A path, query, credentials, or trailing slash can pass startup validation and then deny legitimate requests. Affected users: developers and operators whose CORS configuration silently fails to match browser origins. Current behavior: any parseable URL is accepted; trailing slashes or paths cause silent request denial. Expected behavior: every entry is parsed as a canonical origin only (scheme, host, optional port; no credentials, path, query, or fragment). HTTP is allowed for explicit local development; HTTPS is required for non-local origins. Wildcard credentialed CORS must never be introduced.
 
-## Problem statement
-
-The `validateEnvironment` CORS block accepts any parseable URL for `CORS_ALLOWED_ORIGINS` (`server/environment.ts:69-90`), but request handling compares the raw configured strings to the browser's origin using the module-level `allowedOrigins` set and `isAllowedOrigin` (`server/http-security.ts:3-12`). A path, query, credentials, or trailing slash can pass startup and then deny legitimate requests.
-
-## Technical implementation requirements
-
-- Parse every comma-separated entry once and require it to be an origin only: scheme, host, optional port; no credentials, path, query, or fragment.
-- Allow HTTP for explicit local development origins; require HTTPS for non-local production origins.
-- Preserve exact origin matching; do not introduce wildcard credentialed CORS.
-
-## Files and areas to touch
-
-- `server/environment.ts`
-- `server/http-security.ts`
-- `tests/environment.test.ts`
-- `tests/backend.test.ts`
-- `docs/deployment.md`
-
-## Dependencies
-
-- None.
-
-## Measurable acceptance criteria
+## Acceptance criteria
 
 - Test `accepts canonical localhost and HTTPS origins and matches the request Origin exactly` asserts the echoed `Access-Control-Allow-Origin` equals the request `Origin`.
 - Test `rejects paths, trailing slashes, query strings, credentials, and unsupported schemes at startup` asserts `validateEnvironment` throws and the message echoes none of the input values.
@@ -36,19 +14,23 @@ The `validateEnvironment` CORS block accepts any parseable URL for `CORS_ALLOWED
 - Credentialed exact-match behavior is asserted: valid preflight returns `Access-Control-Allow-Credentials: true` and no wildcard `*` origin.
 - `npm test -- tests/environment.test.ts tests/backend.test.ts` passes.
 
-## Expected deliverables
+## Files to touch
 
-- Canonical origin parser/validation, unit and middleware tests, and config examples.
+- `server/environment.ts`
+- `server/http-security.ts`
+- `tests/environment.test.ts`
+- `tests/backend.test.ts`
+- `docs/deployment.md`
 
-## How to set up and run tests
+## Test expectations
 
-- Run `npm test -- tests/environment.test.ts tests/backend.test.ts` with DB integration disabled for unit/API cases.
-- Run `npm run typecheck`.
+- Run: `npm test -- tests/environment.test.ts tests/backend.test.ts` with database integration disabled for unit/API cases.
+- Run: `npm run typecheck`
 
 ## Out of scope
 
-- Changing the wallet login protocol, enabling cross-site cookies, or broadening allowed origins.
+Changing the wallet login protocol, enabling cross-site cookies, or broadening allowed origins.
 
-## Suggested labels
+## Depends on
 
-- `area: security`, `area: backend`, `type: bug`, `difficulty: medium`.
+None

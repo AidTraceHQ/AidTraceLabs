@@ -1,22 +1,19 @@
 # Use Configured Horizon Endpoints in Browser Activity
 
-**Complexity:** Intermediate (Medium, 150 pts)
+**Complexity:** medium
 
-**Estimated effort:** 4 hours
+## Context
 
-**Release day:** Day 3
+The API accepts configured Horizon URLs via environment variables, while browser account-activity fetches (account info, payments, transactions, event stream) always use hard-coded public Stellar Horizon hosts. Affected users: operators deploying to a private or staging Horizon instance. Current behavior: browser-side Horizon requests always target the public testnet/mainnet endpoints regardless of configuration. Expected behavior: a Vite-time configuration variable sets the browser Horizon endpoint, with safe testnet/mainnet defaults, validated as HTTPS base URLs, and no server-only secrets exposed. Evidence: `src/App.tsx` (account activity fetch calls) and `src/vite-env.d.ts` (declared Vite env types).
 
-## Problem statement
+## Acceptance criteria
 
-The API accepts configured Horizon URLs, while browser account activity always uses hard-coded public Horizon hosts.
+- A default build (`npm run build` with no `VITE_*` set) uses the public Stellar testnet/mainnet Horizon endpoints (asserted by test against captured request URLs).
+- A test with a configured browser endpoint asserts the same URL is used for account, payment, transaction, and event-stream activity requests.
+- A test asserts invalid or non-HTTPS production values fail validation and no `VITE_*` value contains a server-only secret.
+- `npm test -- tests/environment.test.ts` passes.
 
-## Technical implementation requirements
-
-- Add explicit public Vite configuration with safe testnet/mainnet defaults.
-- Validate configured values as HTTPS base URLs and avoid exposing server-only settings/secrets.
-- Use one source for account, payment, transaction, and event-stream activity requests.
-
-## Files and areas to touch
+## Files to touch
 
 - `src/App.tsx`
 - `src/vite-env.d.ts`
@@ -24,31 +21,16 @@ The API accepts configured Horizon URLs, while browser account activity always u
 - `tests/` (Horizon configuration tests)
 - `docs/deployment.md`
 
-## Dependencies
+## Test expectations
 
-- None.
-
-## Measurable acceptance criteria
-
-- A default build (`npm run build` with no `VITE_*` set) asserts targets of the public Stellar testnet/mainnet Horizon endpoints.
-- A test with a configured browser endpoint asserts the same URL is used for account, payment, transaction, and event-stream activity requests (captured request URLs match).
-- A test asserts invalid or non-HTTPS production values fail validation and no `VITE_*` value contains a server-only secret.
-- `npm test -- tests/environment.test.ts` passes.
-
-## Expected deliverables
-
-- Public endpoint configuration, validation, tests, and setup documentation.
-
-## How to set up and run tests
-
-- `npm test -- tests/environment.test.ts`
-- `npm run typecheck`
-- `npm run build`
+- Run: `npm test -- tests/environment.test.ts`
+- Run: `npm run typecheck`
+- Run: `npm run build`
 
 ## Out of scope
 
-- Changing server verification logic or adding a new Horizon provider.
+Changing server verification logic or adding a new Horizon provider.
 
-## Suggested labels
+## Depends on
 
-- `area: frontend`, `area: infrastructure`, `type: enhancement`, `difficulty: medium`.
+None

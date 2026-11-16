@@ -1,53 +1,34 @@
 # Load Older Horizon Wallet Activity Pages
 
-**Complexity:** Advanced (High, 200 pts)
+**Complexity:** high
 
-**Estimated effort:** 16 hours
+## Context
 
-**Release day:** Day 2
+Wallet activity fetches only 50 payment rows and 50 transaction rows and retains at most 100 merged entries in `src/App.tsx` (lines 392–493). No Horizon cursor is retained or exposed to the UI, so older activity is inaccessible. Affected users: wallet holders with significant transaction history who cannot see payments older than the first page. Current behavior: activity is capped at the first Horizon page with no load-more action. Expected behavior: Horizon paging tokens are retained separately for payments and transactions; a "load older" action merges, deduplicates, and sorts the next bounded page; cursors reset on wallet/network change; stale responses from previous selections are ignored. Evidence: `src/App.tsx` (activity fetch and merge logic, lines 392–493).
 
-## Problem statement
-
-Wallet activity fetches only 50 payment rows and 50 transaction rows and retains at most 100 merged entries (`src/App.tsx:392-493`). No Horizon cursor is retained or exposed to the UI, so older activity is inaccessible.
-
-## Technical implementation requirements
-
-- Retain the Horizon paging tokens separately for payments and transactions.
-- Add an explicit “load older” action that merges, deduplicates, and sorts the next bounded page without losing live updates.
-- Reset cursors on wallet/network change and ignore stale responses from previous selections.
-- Keep the public ledger's signed cursor API behavior unchanged.
-
-## Files and areas to touch
-
-- `src/App.tsx`
-- `src/activity.ts` (if extracting cursor/merge behavior)
-- `tests/activity.test.ts`
-- `src/index.css` or `src/fullstack.css` only for the control's responsive placement
-
-## Dependencies
-
-- None. Existing GitHub issue #22 concerns AidTrace ledger/admin pagination; this is the separate Horizon wallet-activity stream.
-
-## Measurable acceptance criteria
+## Acceptance criteria
 
 - The first page remains bounded and exposes a load-older control only when more data exists.
 - Loading another page deduplicates payments also present in the transaction response.
 - Switching wallet/network prevents old pages from appearing in the new activity view.
 - The control remains usable at narrow mobile widths.
 
-## Expected deliverables
+## Files to touch
 
-- Horizon cursor state, bounded merge UI, desktop/mobile screenshots using test data, and cursor/race tests.
+- `src/App.tsx`
+- `src/activity.ts` (if extracting cursor/merge behavior)
+- `tests/activity.test.ts`
+- `src/index.css` or `src/fullstack.css` (only for the control's responsive placement)
 
-## How to set up and run tests
+## Test expectations
 
-- Run `npx vitest run tests/activity.test.ts` with mocked Horizon responses.
-- Run `npm run typecheck`, `npm run lint`, and `npm run build`.
+- Run: `npx vitest run tests/activity.test.ts` with mocked Horizon responses.
+- Run: `npm run typecheck`, `npm run lint`, `npm run build`
 
 ## Out of scope
 
-- Server-side API pagination, scheduled reverification, or changes to Stellar payment matching.
+Server-side API pagination (tracked by a separate open issue), scheduled reverification, or changes to Stellar payment matching.
 
-## Suggested labels
+## Depends on
 
-- `area: frontend`, `area: testing`, `type: enhancement`, `difficulty: high`.
+None

@@ -1,51 +1,34 @@
 # Show the Last Verification Check Time
 
-**Complexity:** Intermediate (Medium, 150 pts)
+**Complexity:** medium
 
-**Estimated effort:** 4 hours
+## Context
 
-**Release day:** Day 3
+Verification responses carry a `checkedAt` timestamp, but the record detail view shows verification status and reason without telling the reviewer when that status was last checked. Affected users: reviewers and auditors who need to know whether a verification status is current or stale. Current behavior: the detail view renders status/reason only; `checkedAt` is not displayed. Expected behavior: when `checkedAt` is present in the API response, the record detail view renders the timestamp with locale-aware display and a stable accessible label. The display must clearly distinguish check time from transaction creation time and record creation time. Privacy: consent-off public views must not render withheld verification fields. Evidence: `src/App.tsx` (record detail rendering) and `server/records.ts` (the `verification` object in `recordSelect`, function `recordSelect`).
 
-## Problem statement
-
-Verification responses carry `checkedAt`, but the record detail view shows status/reason without telling the reviewer when that status was checked.
-
-## Technical implementation requirements
-
-- Render the existing timestamp when present, with locale-aware display and a stable accessible label.
-- Preserve privacy projection behavior when verification details are withheld.
-- Clearly distinguish check time from transaction creation time and record creation time.
-
-## Files and areas to touch
-
-- `src/App.tsx`
-- `tests/` (focused verification-detail rendering test)
-- `docs/api.md` only if response semantics need clarification
-
-## Dependencies
-
-- None. Existing GitHub issue #18 automates future reverification; this draft only displays existing metadata.
-
-## Measurable acceptance criteria
+## Acceptance criteria
 
 - A test renders verified, mismatch, not-found, and pending results and asserts the last check time is shown when the API provides `checkedAt`.
 - A test with a missing or undefined `checkedAt` asserts a neutral fallback renders without throwing.
 - A test asserts consent-off public views do not render withheld verification fields.
 - `npm test -- tests/api.test.ts` passes.
 
-## Expected deliverables
+## Files to touch
 
-- Detail-view timestamp and focused display/privacy tests.
+- `src/App.tsx`
+- `tests/` (focused verification-detail rendering test)
+- `docs/api.md` (only if response semantics need clarification)
 
-## How to set up and run tests
+## Test expectations
 
-- `npm test -- tests/api.test.ts`
-- `npm run typecheck`
+- Run: `npm test -- tests/api.test.ts`
+- Run: `npm run typecheck`
+- No database required for rendering tests.
 
 ## Out of scope
 
-- Scheduled checks, changing cache policy, or modifying Stellar verification logic.
+Scheduled checks, changing cache policy, or modifying Stellar verification logic. Scheduled re-verification is tracked by a separate open issue.
 
-## Suggested labels
+## Depends on
 
-- `area: frontend`, `type: enhancement`, `difficulty: medium`.
+None

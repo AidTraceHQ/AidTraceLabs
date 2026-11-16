@@ -1,51 +1,34 @@
 # Bound Browser API Request Time
 
-**Complexity:** Intermediate (Medium, 150 pts)
+**Complexity:** medium
 
-**Estimated effort:** 6 hours
+## Context
 
-**Release day:** Day 4
+The shared browser API wrapper in `src/api.ts` (lines 41–75) calls `fetch` without a deadline or abort signal. If a request stalls instead of rejecting, login/write busy state and page loading can remain pending indefinitely. Affected users: all users of the application on slow or unreliable connections. Current behavior: API requests have no timeout; a stalled request leaves the UI in a pending state forever. Expected behavior: a configurable finite deadline is applied to API requests using `AbortSignal.timeout` or equivalent; abort/timeout errors are converted to a clear safe message while preserving `ApiError` status behavior for HTTP responses; mutations are not retried automatically.
 
-## Problem statement
-
-The shared browser API wrapper calls `fetch` without a deadline or abort signal (`src/api.ts:41-75`). If a request stalls instead of rejecting, login/write busy state and page loading can remain pending indefinitely.
-
-## Technical implementation requirements
-
-- Add a configurable or centrally defined finite deadline to API requests using `AbortSignal.timeout` or an equivalent supported mechanism.
-- Convert abort/timeout errors to a clear safe message while preserving `ApiError` status behavior for HTTP responses.
-- Permit an explicit per-request timeout override only where a route has a documented longer bound.
-- Do not retry mutations automatically.
-
-## Files and areas to touch
-
-- `src/api.ts`
-- `tests/api.test.ts`
-- `src/App.tsx` only if a timeout-specific user message is needed
-
-## Dependencies
-
-- None. Prior draft "Bound the Account Activity Request Lifecycle" covers Horizon account-activity fetches, not the shared `/api` client.
-
-## Measurable acceptance criteria
+## Acceptance criteria
 
 - A never-resolving mocked fetch rejects within the configured deadline.
 - HTTP 409 remains an `ApiError` with status 409; a timeout is not misreported as an HTTP error.
 - Timed-out writes are not silently retried.
 
-## Expected deliverables
+## Files to touch
 
-- Bounded API fetch wrapper, timeout/error tests, and documented default duration.
+- `src/api.ts`
+- `tests/api.test.ts`
+- `src/App.tsx` (only if a timeout-specific user message is needed)
 
-## How to set up and run tests
+## Test expectations
 
-- Run `npm test -- tests/api.test.ts`.
-- Run `npm run typecheck` and `npm run lint`.
+- Run: `npm test -- tests/api.test.ts`
+- Run: `npm run typecheck`
+- Run: `npm run lint`
+- No database required.
 
 ## Out of scope
 
-- Server-side request timeouts, retries, or changes to auth/CSRF behavior.
+Server-side request timeouts, retries, or changes to auth/CSRF behavior. Activity-request lifecycle is tracked by "Bound the Account Activity Request Lifecycle".
 
-## Suggested labels
+## Depends on
 
-- `area: frontend`, `type: enhancement`, `difficulty: medium`.
+None

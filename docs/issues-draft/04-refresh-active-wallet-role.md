@@ -1,49 +1,33 @@
 # Reconcile the Active Wallet Role
 
-**Complexity:** Intermediate (Medium, 150 pts)
+**Complexity:** medium
 
-**Estimated effort:** 5 hours
+## Context
 
-**Release day:** Day 1
+The client restores its role from stored session state at startup, while the API resolves role assignments dynamically from the database. If another admin changes a wallet's role, the open UI shows controls for the previous role until the user manually reloads. Affected users: any wallet holder whose role changes while they have an active session. Current behavior: the role in client state is set once at startup and not refreshed. Expected behavior: the client reconciles the current role from `/api/me` at a bounded lifecycle event (e.g. tab focus) and after receiving `401`/`403` from a protected route. The server remains the authority; client state is display only. Evidence: `src/App.tsx` (role state restoration) and `src/api.ts` (session fetch).
 
-## Problem statement
+## Acceptance criteria
 
-The client restores its role at startup, while the API resolves role assignments dynamically. A role changed by another admin can leave the open UI showing controls for the previous role until reload.
+- A test that changes the role returned by `/api/me` mock and fires the refresh trigger (e.g. tab `focus` event) asserts the UI reflects the new role without a full page reload.
+- A test asserts that a `401` or `403` from a protected route causes the privileged control to be not rendered, even when client state still reports the previous role.
+- A test fires the refresh trigger N times within a short window and asserts the number of `/api/me` calls stays within a fixed small bound (no unbounded polling loop).
 
-## Technical implementation requirements
-
-- Reconcile the current session from `/api/me` at a bounded lifecycle point, such as tab focus, and after authorization failures.
-- Preserve server authorization as the authority; do not make client state an access-control check.
-
-## Files and areas to touch
+## Files to touch
 
 - `src/App.tsx`
 - `src/api.ts`
-- `tests/api.test.ts` or a focused session-state test
+- `tests/api.test.ts` (or a focused session-state test file)
 
-## Dependencies
+## Test expectations
 
-- None.
-
-## Measurable acceptance criteria
-
-- A test that changes the role returned by `/api/me` and fires the chosen refresh event (e.g. tab `focus`) asserts the UI reflects the new role from `/api/me` without a full page reload.
-- A test asserts that a `401` or `403` from a protected route fails closed (the privileged control is not rendered or used) even when the client state still reports the previous role.
-- A test fires the refresh event N times within a short window and asserts the number of `/api/me` calls stays within a fixed small bound, so there is no unbounded polling loop.
-
-## Expected deliverables
-
-- Client role reconciliation and focused state/API tests; no authentication protocol changes.
-
-## How to set up and run tests
-
-- `npx vitest run tests/api.test.ts`
-- `npm run typecheck`
+- Run: `npx vitest run tests/api.test.ts`
+- Run: `npm run typecheck`
+- No database setup required for mocked tests.
 
 ## Out of scope
 
-- Changing wallet login, signatures, sessions, role policy, or administrator assignment rules.
+Changing wallet login, signatures, sessions, role policy, or administrator assignment rules.
 
-## Suggested labels
+## Depends on
 
-- `area: frontend`, `type: bug`, `difficulty: medium`.
+None

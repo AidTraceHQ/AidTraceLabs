@@ -1,33 +1,12 @@
 # Clean Up Expired Authentication and Rate-Limit Rows
 
-**Complexity:** Intermediate (Medium, 150 pts)
+**Complexity:** medium
 
-**Estimated effort:** 5 hours
+## Context
 
-**Release day:** Day 1
+Sessions, challenges, and rate-limit counters have expiry timestamps, but no bounded cleanup task removes expired rows. Affected users: operators of long-running deployments where the ephemeral tables grow without bound. Current behavior: expired/revoked rows accumulate indefinitely. Expected behavior: an operator-invoked or scheduled command deletes only expired/revoked ephemeral rows in bounded batches and prints row counts only. The cleanup must leave audit events, aid records, and unexpired rows untouched. Evidence: `migrations/001_initial_schema.sql` (sessions, challenges, rate_limits table definitions).
 
-## Problem statement
-
-Sessions, challenges, and rate-limit counters have expiry timestamps, but no bounded cleanup task removes expired rows.
-
-## Technical implementation requirements
-
-- Add an operator-invoked or scheduled cleanup that deletes only expired/revoked ephemeral rows in bounded batches.
-- Document retention for audit events and aid records separately; do not apply this cleanup to them.
-
-## Files and areas to touch
-
-- `scripts/` (new cleanup command)
-- `package.json`
-- `migrations/001_initial_schema.sql` only if query-supporting indexes are missing
-- `tests/` (focused cleanup tests)
-- `docs/deployment.md`
-
-## Dependencies
-
-- Runtime least-privilege permissions from "Separate Runtime and Migration Database Roles" may constrain the cleanup identity.
-
-## Measurable acceptance criteria
+## Acceptance criteria
 
 - Running the cleanup against a fixture with expired and unexpired sessions/challenges/rate-limits deletes only the expired rows (asserted by row counts) and leaves unexpired rows, audit events, and aid records intact.
 - Running the command twice produces no further deletions after the first run (idempotent).
@@ -35,19 +14,24 @@ Sessions, challenges, and rate-limit counters have expiry timestamps, but no bou
 - Each run prints counts only and never row contents.
 - `npm test -- tests/backend.test.ts` passes.
 
-## Expected deliverables
+## Files to touch
 
-- Cleanup command, focused tests, and scheduling/retention documentation.
+- `scripts/` (new cleanup command)
+- `package.json`
+- `migrations/001_initial_schema.sql` (only if query-supporting indexes are missing)
+- `tests/` (focused cleanup tests)
+- `docs/deployment.md`
 
-## How to set up and run tests
+## Test expectations
 
-- `npm test -- tests/backend.test.ts`
-- `npm run typecheck`
+- Run: `npm test -- tests/backend.test.ts`
+- Run: `npm run typecheck`
+- Requires `TEST_DATABASE_URL` and `TEST_DATABASE_BRANCH=test`.
 
 ## Out of scope
 
-- Deleting aid records, verification history, audit history, or user identities.
+Deleting aid records, verification history, audit history, or user identities.
 
-## Suggested labels
+## Depends on
 
-- `area: backend`, `area: infrastructure`, `type: enhancement`, `difficulty: medium`.
+Separate Runtime and Migration Database Roles

@@ -1,55 +1,37 @@
 # Share Per-IP Rate Limits Across Serverless Instances
 
-**Complexity:** Advanced (High, 200 pts)
+**Complexity:** high
 
-**Estimated effort:** 10 hours
+## Context
 
-**Release day:** Day 1
+The current per-IP API/auth/public-read rate-limit counters use an in-memory store (`server/rate-limits.ts`), so separate Vercel serverless instances do not share limits. A single client can exhaust the limit on one instance and be served unrestricted by another. Affected users: all users of the API under a serverless deployment where multiple instances run concurrently. Current behavior: each process holds its own counter; limits are per-process. Expected behavior: counters are shared across instances so the configured rate is enforced globally. Failure of the shared store must be bounded and must not silently disable all limits. Evidence: `server/rate-limits.ts` (rate limiter configuration) and `docs/backend-design.md` (stale per-process statement).
 
-## Problem statement
+## Acceptance criteria
 
-The current per-IP API/auth/public-read counters use an in-memory store, so separate Vercel instances do not share limits.
+- An integration test starts two independent app instances sharing the configured store and asserts that after instance A exhausts the limit, instance B returns `429` for the same IP.
+- Existing endpoint-limit and trusted-proxy tests in `tests/rate-limits.test.ts` still pass.
+- A test with the shared store unavailable asserts behavior is explicit, bounded, and does not silently disable all limits.
+- `npm test -- tests/rate-limits.test.ts` passes.
 
-## Technical implementation requirements
-
-- Select a durable/shared rate-limit store supported by the deployment architecture.
-- Keep the existing route-specific windows/limits configurable and preserve trusted-proxy IP handling.
-- Define bounded failure behavior if the shared store is unavailable.
-- Reconcile the stale statement in `docs/backend-design.md` with the implemented per-process limits and the new shared-store behavior.
-
-## Files and areas to touch
+## Files to touch
 
 - `server/rate-limits.ts`
 - `server/environment.ts`
-- `package.json` and lockfile only if a justified store adapter is selected
+- `package.json` and lockfile (only if a justified store adapter is selected)
 - `tests/rate-limits.test.ts`
 - `docs/deployment.md`
 
-## Dependencies
+## Test expectations
 
-- None. Existing GitHub issue #20 covers outbound alerts, not inbound abuse controls.
-
-## Measurable acceptance criteria
-
-- An integration test starts two independent app instances sharing the configured store and asserts that after instance A exhausts the limit, instance B returns the rate-limit rejection (e.g. `429`) for the same IP.
-- Existing endpoint-limit and trusted-proxy tests in `tests/rate-limits.test.ts` still pass.
-- A test with the shared store unavailable asserts behavior is explicit and bounded and does not silently disable all limits.
-- `npm test -- tests/rate-limits.test.ts` passes.
-
-## Expected deliverables
-
-- Shared store adapter/configuration, integration tests, and deployment setup instructions.
-
-## How to set up and run tests
-
-- `npm test -- tests/rate-limits.test.ts`
-- `npm run typecheck`
-- `npm run check`
+- Run: `npm test -- tests/rate-limits.test.ts`
+- Run: `npm run typecheck`
+- Run: `npm run check`
+- Requires a shared-store instance for the integration cases.
 
 ## Out of scope
 
-- Changing authentication policy, increasing limits, or adding email/webhook alerts.
+Changing authentication policy, increasing limits, or adding email/webhook alerts. Outbound alerts are tracked by a separate open issue.
 
-## Suggested labels
+## Depends on
 
-- `area: security`, `area: infrastructure`, `type: enhancement`, `difficulty: high`.
+None

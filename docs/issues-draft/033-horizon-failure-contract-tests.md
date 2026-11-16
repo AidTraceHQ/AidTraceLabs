@@ -1,51 +1,34 @@
 # Lock Down Horizon Failure-State Contracts
 
-**Complexity:** Intermediate (Medium, 150 pts)
+**Complexity:** medium
 
-**Estimated effort:** 6 hours
+## Context
 
-**Release day:** Day 3
+The `checkTransaction` function in `server/stellar-verification.ts` (lines 145–280) has distinct branches for transport failures, non-2xx responses, unknown transaction success, operation endpoint errors, malformed operation bodies, missing paging cursors, and explicitly unsuccessful transactions. The existing verification tests in `tests/backend.test.ts` (block at lines 80–286) exercise success, mismatch, strict-send, not-found, and paging budget but not the complete transport failure contract. Affected users: maintainers who cannot detect regressions in failure-path verification behavior. Current behavior: eight failure shapes are unasserted; a future refactor could change their `status` or `reason` values silently. Expected behavior: a focused failure-contract test suite using mocked `fetch` asserts each shape with no live Horizon calls and no database credentials required.
 
-## Problem statement
+## Acceptance criteria
 
-The `checkTransaction` function has distinct branches for thrown fetch errors, unreadable/non-2xx transaction responses, unknown transaction success, operation endpoint errors, malformed operation bodies, missing paging cursors, and explicitly unsuccessful transactions (`server/stellar-verification.ts:145-280`). Existing tests in the "On-chain verification distinguishes matching and mismatching payments" block exercise success, mismatch, strict-send, not-found, and paging budget, but not the complete transport failure contract (`tests/backend.test.ts:80-286`).
-
-## Technical implementation requirements
-
-- Add one focused verification failure-contract suite using mocked `fetch` responses.
-- Assert the existing intended mapping for timeout/network error, malformed JSON, 429/5xx, missing success flag, operation failure, missing cursor, and unsuccessful transaction.
-- Keep production verification logic unchanged unless a test demonstrates behavior contradicting the documented pending/not-found/mismatch semantics; any change must be narrowly specified.
-
-## Files and areas to touch
-
-- `tests/backend.test.ts`
-- `server/stellar-verification.ts` only if a contract defect is demonstrated
-- `docs/backend-design.md` if response-state wording changes
-
-## Dependencies
-
-- None. This is separate from existing GitHub issue #17's multi-operation transaction cases.
-
-## Measurable acceptance criteria
-
-- `npm test -- tests/backend.test.ts` runs a new failure-contract suite that stubs `fetch` and calls no live Horizon and needs no wallet/database credential.
-- Each of the eight shapes (timeout/network error, malformed JSON, 429, 5xx, missing success flag, operation failure, missing cursor, unsuccessful transaction) has an assertion on `status` and `reason`.
+- `npm test -- tests/backend.test.ts` runs a new failure-contract suite that stubs `fetch`, calls no live Horizon, and needs no wallet or database credential.
+- Each of the eight failure shapes (timeout/network error, malformed JSON, 429, 5xx, missing success flag, operation failure, missing cursor, unsuccessful transaction) has an assertion on `status` and `reason`.
 - A test asserts none of the failure shapes returns `status: 'verified'`.
 - The suite runs with `TEST_DATABASE_URL` and `TEST_DATABASE_URL_UNPOOLED` empty.
 
-## Expected deliverables
+## Files to touch
 
-- Deterministic failure-path verification tests and, only if needed, a narrowly scoped behavior correction.
+- `tests/backend.test.ts`
+- `server/stellar-verification.ts` (only if a contract defect is demonstrated)
+- `docs/backend-design.md` (if response-state wording changes)
 
-## How to set up and run tests
+## Test expectations
 
-- To skip database integration locally, set `TEST_DATABASE_URL` and `TEST_DATABASE_URL_UNPOOLED` empty in the shell, then run `npm test -- tests/backend.test.ts`; the Horizon tests use mocked `fetch`.
-- Run `npm run typecheck`.
+- Set `TEST_DATABASE_URL` and `TEST_DATABASE_URL_UNPOOLED` empty to skip database integration.
+- Run: `npm test -- tests/backend.test.ts`
+- Run: `npm run typecheck`
 
 ## Out of scope
 
-- Multi-operation algorithm changes, scheduled reverification (existing GitHub issue #18), or new payment operation support.
+Multi-operation algorithm changes, scheduled reverification (tracked by a separate open issue), or new payment operation support.
 
-## Suggested labels
+## Depends on
 
-- `area: backend`, `area: testing`, `type: enhancement`, `difficulty: medium`.
+None

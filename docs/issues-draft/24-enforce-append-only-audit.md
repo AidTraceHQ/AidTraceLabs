@@ -1,54 +1,36 @@
 # Enforce Append-Only Audit Access
 
-**Complexity:** Advanced (High, 200 pts)
+**Complexity:** high
 
-**Estimated effort:** 10 hours
+## Context
 
-**Release day:** Day 3
+Audit events are stored in an ordinary table; the schema does not prevent `UPDATE` or `DELETE` by the application database identity. Affected users: security auditors and compliance reviewers who need tamper-evidence guarantees for the audit trail. Current behavior: the runtime credential can update or delete any audit row; no database-level protection exists. Expected behavior: database ownership and grants allow the runtime to append and read audit events but not update or delete them. Migration and owner access remain separate. The policy must be tested against the actual runtime role. Evidence: `migrations/001_initial_schema.sql` (audit_events table definition) and `server/records.ts` (the `writeAudit` helper, function `writeAudit`).
 
-## Problem statement
-
-Audit events are stored in an ordinary table; the schema does not prevent update/delete operations by the application database identity.
-
-## Technical implementation requirements
-
-- Define database ownership and grants so runtime code can append and read events but cannot update/delete them.
-- Keep migration/owner access separate and document emergency maintenance behavior.
-- Test the policy against the actual runtime role rather than relying only on application route tests.
-
-## Files and areas to touch
-
-- `migrations/` (new grants/ownership migration)
-- `server/records.ts` only if the write path needs an explicit audit-writer role
-- `tests/backend.test.ts`
-- `docs/security.md`
-- `docs/deployment.md`
-
-## Dependencies
-
-- "Separate Runtime and Migration Database Roles" runtime/migration database role separation.
-
-## Measurable acceptance criteria
+## Acceptance criteria
 
 - An integration test authenticated as the runtime role asserts it can insert and read audit rows but that `UPDATE`/`DELETE` on the audit table fail with a privilege error.
 - Re-running `npm run db:migrate` on a fresh database applies the grants idempotently and the integration test passes.
 - The documented emergency maintenance path names the higher-privilege role required.
 - `npm test -- tests/backend.test.ts` passes against the dedicated test database.
 
-## Expected deliverables
+## Files to touch
 
-- Database privilege migration, role-based integration test, and operational documentation.
+- `migrations/` (new grants/ownership migration)
+- `server/records.ts` (only if the write path needs an explicit audit-writer role)
+- `tests/backend.test.ts`
+- `docs/security.md`
+- `docs/deployment.md`
 
-## How to set up and run tests
+## Test expectations
 
-- `npm test -- tests/backend.test.ts` against the dedicated test database
-- `npm run db:migrate` against an isolated test branch only
-- `npm run typecheck`
+- Run: `npm test -- tests/backend.test.ts` against the dedicated test database.
+- Run: `npm run db:migrate` against an isolated test branch only.
+- Run: `npm run typecheck`
 
 ## Out of scope
 
-- Replacing audit storage or claiming protection from a database superuser.
+Replacing audit storage or claiming protection from a database superuser.
 
-## Suggested labels
+## Depends on
 
-- `area: security`, `area: backend`, `type: enhancement`, `difficulty: high`.
+Separate Runtime and Migration Database Roles

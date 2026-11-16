@@ -1,53 +1,31 @@
-# Add a UTF-8 BOM to the exported CSV so Excel renders non-ASCII text correctly
+# Add a UTF-8 BOM to the Exported CSV So Excel Renders Non-ASCII Text Correctly
 
-**Complexity:** Beginner (Trivial, 100 pts)
+**Complexity:** trivial
 
-**Estimated effort:** 2 hours
+## Context
 
-**Release day:** Day 5
+`exportCsv` in `src/App.tsx` builds the CSV from a string and creates the blob with `type: 'text/csv;charset=utf-8'` but writes no byte-order mark (line 905). Microsoft Excel on Windows often ignores the MIME charset for CSV files opened by double-click and assumes the system ANSI code page, so recipient and organization names containing non-ASCII characters render as mojibake. Affected: users who export and open the ledger in desktop Excel. Current behavior: no BOM is prepended; non-ASCII characters may render incorrectly in Excel. Expected behavior: the UTF-8 BOM (`\uFEFF`) is prepended to the CSV string before creating the blob.
 
-## Problem statement
+## Acceptance criteria
 
-`exportCsv` builds the file from a string and creates the blob with `type:
-'text/csv;charset=utf-8'` but writes no byte-order mark (`src/App.tsx:905`). Microsoft Excel on
-Windows often ignores the MIME charset for CSV files opened by double-click and assumes the system
-ANSI code page, so recipient and organization names containing non-ASCII characters render as
-mojibake. Affected: users who export and open the ledger in desktop Excel.
+- The produced export string starts with `\uFEFF` followed by the header row.
+- Opening the file in Excel shows non-ASCII names correctly (manual check with a name such as `München` or `Ω`).
+- `npm run typecheck` and `npm test` pass.
 
-## Technical implementation requirements
-
-- Prepend the UTF-8 BOM (`\uFEFF`) to the CSV string before creating the blob.
-- Keep the CRLF row separator and the existing `text/csv;charset=utf-8` type.
-- Do not change the column set, escaping, or which rows are exported.
-
-## Files and areas to touch
+## Files to touch
 
 - `src/App.tsx` (or `src/csv.ts` if the export is extracted)
 
-## Dependencies
+## Test expectations
 
-- Shares the export code with the formula-injection guard; if that guard extracts a builder, add the
-  BOM there. Either order is fine.
-
-## Measurable acceptance criteria
-
-- The produced export string starts with `\uFEFF` followed by the header row.
-- Opening the file in Excel shows non-ASCII names correctly (manual check with a name such as
-  `München`, `Ω`).
-- `npm run typecheck` and `npm test` pass.
-
-## Expected deliverables
-
-- A BOM-prefixed CSV export (and a test asserting the leading BOM if a builder is extracted).
-
-## How to set up and run tests
-
-- Run `npm run dev`, export the ledger, open the file in a spreadsheet, and verify non-ASCII names.
+- Manual: run `npm run dev`, export the ledger, open the file in a spreadsheet, and verify non-ASCII names.
+- Run: `npm run typecheck`
+- Run: `npm test`
 
 ## Out of scope
 
-- Changing the export format, adding new columns, and locale-specific number formatting.
+Changing the export format, adding new columns, and locale-specific number formatting.
 
-## Suggested labels
+## Depends on
 
-- `area: frontend`, `type: enhancement`, `difficulty: trivial`
+Guard the CSV export against spreadsheet formula injection

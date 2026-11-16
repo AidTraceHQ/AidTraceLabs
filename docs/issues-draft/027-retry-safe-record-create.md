@@ -1,24 +1,20 @@
 # Make Record Creation Retry-Safe After Commit
 
-**Complexity:** Advanced (High, 200 pts)
+**Complexity:** high
 
-**Estimated effort:** 16 hours
+## Context
 
-**Release day:** Day 1
+`POST /api/records` commits the record and audit rows, then attempts to persist the verification result and reload the record. If a later database operation fails, the client receives an error even though the record was saved. Retrying a create without a transaction hash can create a second record. Affected users: organizations and admins who cannot distinguish "not saved" from "saved but response failed." Current behavior: `server/records.ts` (function containing the `withTransaction` block at approximately lines 789–868) commits before all post-commit work; there is no idempotency key. Expected behavior: an idempotency key scoped to the authenticated organization wallet prevents duplicate records; post-commit persistence failures surface as a saved record in `pending` state with a Verify path.
 
-## Problem statement
+## Acceptance criteria
 
-The `POST /api/records` route handler (`server/records.ts:789-868`, whose `withTransaction` block inserts the record and audit rows) commits before verification-result persistence and the final record reload. If a later database operation fails, the client can receive an error even though the record exists; retrying a create without a transaction hash can create a second record. Organizations and admins cannot reliably distinguish “not saved” from “saved but response failed.”
+- A test replays the same create request with the same key and asserts both calls return `201` with the same `record.id`, and the `aid_records` and audit row counts each increase by exactly one.
+- A test with key reuse and a changed body asserts HTTP `409` and unchanged row counts.
+- A test forces the post-commit verification/reload write to throw and asserts a `2xx` response whose `record.status` is `pending` with a Verify path.
+- A test with an empty `txHash` asserts `201` and a repeat adds no second row.
+- `npm test -- tests/backend.test.ts` passes.
 
-## Technical implementation requirements
-
-- Add an idempotency key to record creation, scoped to the authenticated organization wallet.
-- Store the key, request fingerprint, and canonical record result atomically with the record/audit write.
-- Return the original result for a retry with the same key and body; return `409` for reuse with a different body.
-- Treat post-commit verification persistence/reload failures as a saved record in `pending` state, with a safe message and a later explicit Verify action.
-- Keep database write transactions non-retried; do not alter authentication, authorization, or Stellar matching logic.
-
-## Files and areas to touch
+## Files to touch
 
 - `server/records.ts`
 - `migrations/` (new idempotency receipt table or equivalent constraint)
@@ -26,32 +22,16 @@ The `POST /api/records` route handler (`server/records.ts:789-868`, whose `withT
 - `src/App.tsx`
 - `tests/backend.test.ts`
 
-## Dependencies
+## Test expectations
 
-- None.
-
-## Measurable acceptance criteria
-
-- Test `replays the same create request and returns the original record` asserts two identical `POST /api/records` calls with the same key return the same `201` `record.id`, and the `aid_records` and audit row counts each increase by exactly 1.
-- Test `rejects key reuse with a changed body` asserts HTTP `409` and unchanged record/audit row counts.
-- Test `keeps a post-commit persistence failure recoverable` forces the verification/reload write to throw and asserts a `2xx` response whose `record.status` is `pending` with a Verify path.
-- Test `treats an empty-hash create as retry-safe` asserts an empty `txHash` returns `201` and a repeat adds no second row.
-- `npm test -- tests/backend.test.ts` passes.
-
-## Expected deliverables
-
-- Idempotency persistence and API/client handling.
-- Database-backed regression tests and concise API documentation for the key contract.
-
-## How to set up and run tests
-
-- Configure the dedicated disposable `TEST_DATABASE_URL`, `TEST_DATABASE_URL_UNPOOLED`, and `TEST_DATABASE_BRANCH=test` as documented in `CONTRIBUTING.md`.
-- Run `npm test -- tests/backend.test.ts` and `npm run typecheck`.
+- Configure: `TEST_DATABASE_URL`, `TEST_DATABASE_URL_UNPOOLED`, `TEST_DATABASE_BRANCH=test` (see `CONTRIBUTING.md`).
+- Run: `npm test -- tests/backend.test.ts`
+- Run: `npm run typecheck`
 
 ## Out of scope
 
-- Retrying arbitrary writes, a generic job queue, scheduled reverification (existing GitHub issue #18), or changes to payment verification rules.
+Retrying arbitrary writes, a generic job queue, scheduled reverification (tracked by a separate open issue), or changes to payment verification rules.
 
-## Suggested labels
+## Depends on
 
-- `area: backend`, `area: security`, `type: enhancement`, `difficulty: high`.
+None

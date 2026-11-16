@@ -1,51 +1,34 @@
 # Restore Ledger Filters from the URL
 
-**Complexity:** Intermediate (Medium, 150 pts)
+**Complexity:** medium
 
-**Estimated effort:** 5 hours
+## Context
 
-**Release day:** Day 3
+Ledger filters are component state used to build API queries but are not encoded in browser location, so a filtered view cannot be bookmarked or shared. Affected users: reviewers, auditors, and support staff who share or bookmark filtered ledger views. Current behavior: filter state is local to the component; reloading or sharing the URL shows the unfiltered ledger. Expected behavior: supported filter keys are parsed from `URLSearchParams` on initial load; the URL is updated with `replaceState` on change without leaking session data. Evidence: `src/App.tsx` (ledger filter state) and `src/ledger-filters.ts` if extracted.
 
-## Problem statement
-
-Ledger filters are component state used to build API queries, but are not encoded in browser location, so users cannot bookmark or share a filtered view.
-
-## Technical implementation requirements
-
-- Parse supported filter keys from `URLSearchParams` on initial load.
-- Update the URL with `replaceState` or navigation semantics without leaking session data.
-- Keep invalid values on safe defaults and preserve existing debounce/request behavior.
-
-## Files and areas to touch
-
-- `src/App.tsx`
-- `src/ledger-filters.ts` (if extracted)
-- `tests/ledger-filters.test.ts`
-
-## Dependencies
-
-- None. This is URL state, not the progressive pagination in existing GitHub issue #22.
-
-## Measurable acceptance criteria
+## Acceptance criteria
 
 - A test loads a URL with valid filter query keys and asserts the visible filter state and the resulting query match.
 - A test clears filters and asserts their query keys are removed from the URL.
 - A test asserts no wallet/session token or private activity value appears in the URL after any filter interaction.
 - `npx vitest run tests/ledger-filters.test.ts` passes.
 
-## Expected deliverables
+## Files to touch
 
-- URL-state helper and filter round-trip tests.
+- `src/App.tsx`
+- `src/ledger-filters.ts` (if extracted)
+- `tests/ledger-filters.test.ts`
 
-## How to set up and run tests
+## Test expectations
 
-- `npx vitest run tests/ledger-filters.test.ts`
-- `npm run typecheck`
+- Run: `npx vitest run tests/ledger-filters.test.ts`
+- Run: `npm run typecheck`
+- No database required.
 
 ## Out of scope
 
-- Pagination cursors, beneficiary private-view URLs, or general routing replacement.
+Pagination cursors, beneficiary private-view URLs, or general routing replacement. This is URL state only, not the progressive pagination tracked by a separate open issue.
 
-## Suggested labels
+## Depends on
 
-- `area: frontend`, `type: enhancement`, `difficulty: medium`.
+None

@@ -1,48 +1,33 @@
 # Use the Local Calendar Date for New Records
 
-**Complexity:** Beginner (Trivial, 100 pts)
+**Complexity:** trivial
 
-**Estimated effort:** 3 hours
+## Context
 
-**Release day:** Day 1
+The form initializes its date input from a UTC ISO string, which can display the previous or next calendar day for users in time zones offset from UTC (e.g. `America/New_York` or `Asia/Tokyo`). The same issue occurs when the form resets after a successful save. Affected users: anyone creating a new aid record from a time zone that differs from UTC. Current behavior: `new Date().toISOString().slice(0, 10)` returns a UTC date. Expected behavior: the date input should reflect the user's local calendar date. Evidence: `src/App.tsx` (form `useState` initializer) and `src/date.ts` if a helper exists.
 
-## Problem statement
+## Acceptance criteria
 
-The form initializes its date from a UTC ISO string, which can show the previous or next calendar day for users in some time zones.
+- `npx vitest run tests/date.test.ts` passes and asserts that a date input initialized from local midnight equals the local calendar date for a UTC-negative zone (e.g. `America/New_York`) and a UTC-positive zone (e.g. `Asia/Tokyo`).
+- A test that saves and then resets the form asserts the date input value is identical before and after, with no ±1 calendar-day shift.
+- No server or schema change is introduced.
 
-## Technical implementation requirements
-
-- Derive the date input value from local year, month, and day components.
-- Use the same helper when resetting the form after save.
-
-## Files and areas to touch
+## Files to touch
 
 - `src/App.tsx`
 - `src/date.ts` (if extracting a reusable helper)
 - `tests/date.test.ts`
 
-## Dependencies
+## Test expectations
 
-- None.
-
-## Measurable acceptance criteria
-
-- `npx vitest run tests/date.test.ts` passes and asserts that a date input initialized from local midnight equals the local calendar date for a UTC-negative zone (e.g. `America/New_York`) and a UTC-positive zone (e.g. `Asia/Tokyo`).
-- A test that saves and then re-opens/resets the form asserts the date input value is identical before and after, with no +-1 calendar-day shift.
-
-## Expected deliverables
-
-- Date helper and focused timezone tests; no server or schema change.
-
-## How to set up and run tests
-
-- `npx vitest run tests/date.test.ts`
-- `npm run typecheck`
+- Run: `npx vitest run tests/date.test.ts`
+- Run: `npm run typecheck`
+- No database setup required.
 
 ## Out of scope
 
-- Changing the record's stored date format or localization of all displayed dates.
+Changing the record's stored date format or adding localization of all displayed dates.
 
-## Suggested labels
+## Depends on
 
-- `area: frontend`, `type: bug`, `difficulty: trivial`.
+None

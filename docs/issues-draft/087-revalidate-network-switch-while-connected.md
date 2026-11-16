@@ -1,63 +1,32 @@
-# Re-validate or warn when the network is switched with an active session
+# Re-Validate or Warn When the Network Is Switched With an Active Session
 
-**Complexity:** Intermediate (Medium, 150 pts)
+**Complexity:** medium
 
-**Estimated effort:** 4 hours
+## Context
 
-**Release day:** Day 3
+A session is bound to the network chosen at connect time: `connectWallet` in `src/App.tsx` rejects a Freighter wallet whose network differs (lines 555–562) and requests the challenge for the current `network` (lines 563–566). After connecting, the top-level network selector can still change `network`. The wallet-activity Refresh then queries Horizon for the new network (`loadActivity(session.address, network)` at lines 1390–1393) while the session cookie, role, and record reads remain on the original network. Nothing warns the user or invalidates the session. Affected: any connected wallet that toggles testnet/mainnet. Current behavior: the network selector remains active during a session and silently creates a mismatch. Expected behavior: when a session is active, switching networks either leaves `network` unchanged with a visible explanation, or requires an explicit reconnect and clears the session before switching.
 
-## Problem statement
+## Acceptance criteria
 
-A session is bound to the network chosen at connect time: `connectWallet` rejects a Freighter wallet
-whose network differs (`src/App.tsx:555-562`) and requests the challenge for the current `network`
-(`src/App.tsx:563-566`, the `/api/auth/challenge` `api.post`). After connecting, the top-level network selector
-can still change `network`. The wallet-activity Refresh button then queries Horizon for the new network
-(`loadActivity(session.address, network)` at `src/App.tsx:1390-1393`) while the session cookie, role, and record
-reads remain on the original network. Nothing warns the user or invalidates the session, so the activity tab can
-show a different chain than the records the user is managing. Affected: any connected wallet that toggles
-testnet/mainnet.
+- With a session active, attempting to change `network` either leaves `network` unchanged and shows an explanation, or calls `disconnect()` so `session` becomes null; in no case does an active session remain while `network !== session.network`.
+- With no session, switching networks still persists the choice via `writeNetworkPreference` in `src/network-preference.ts` (function `writeNetworkPreference`, lines 10–20) and reloads the ledger.
+- `npm run typecheck` and `npm test` exit 0.
 
-## Technical implementation requirements
-
-- When a session is active, either disable the network switch with a visible explanation, or require
-  an explicit reconnect and clear the session before switching.
-- Keep `network-preference.ts` persistence (`src/network-preference.ts:10-20`,
-  `readNetworkPreference`/`writeNetworkPreference`) for the disconnected case.
-- Do not change the server challenge/verify contract or the cookie settings.
-- Existing GitHub issue #11 (testnet context banner) is a display-only change; this must actually prevent
-  the session/network mismatch.
-
-## Files and areas to touch
+## Files to touch
 
 - `src/App.tsx`
 - `src/network-preference.ts` (only if the switch handler moves)
 
-## Dependencies
+## Test expectations
 
-- None. Distinct from existing GitHub issue #11 (banner) and from the record-form network-default draft.
-
-## Measurable acceptance criteria
-
-- With a session active, attempting to change `network` either leaves `network` unchanged and shows an
-  explanation, or calls `disconnect()` so `session` becomes null; in no case does an active session remain
-  while `network !== session.network`.
-- With no session, switching networks still persists the choice via `writeNetworkPreference` and reloads the
-  ledger.
-- `npm run typecheck` and `npm test` exit 0.
-
-## Expected deliverables
-
-- A guarded network switch (or forced reconnect) while connected, with a visible rationale.
-
-## How to set up and run tests
-
-- Run `npm run dev`, connect a testnet wallet, then attempt to switch to mainnet and confirm the
-  guard; disconnect and confirm the preference still persists.
+- Manual: run `npm run dev`, connect a testnet wallet, attempt to switch to mainnet and confirm the guard; disconnect and confirm the preference still persists.
+- Run: `npm run typecheck`
+- Run: `npm test`
 
 ## Out of scope
 
-- Horizon endpoint configuration from env, multi-network sessions, and the testnet banner.
+Horizon endpoint configuration from env, multi-network sessions, and the testnet banner (tracked by a separate open issue).
 
-## Suggested labels
+## Depends on
 
-- `area: frontend`, `type: bug`, `difficulty: medium`
+None

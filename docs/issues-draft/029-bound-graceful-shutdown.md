@@ -1,34 +1,12 @@
 # Bound the Local Server Graceful Shutdown
 
-**Complexity:** Intermediate (Medium, 150 pts)
+**Complexity:** medium
 
-**Estimated effort:** 6 hours
+## Context
 
-**Release day:** Day 2
+The `SIGINT`/`SIGTERM` `shutdown(signal)` handler in `server/index.ts` (function `shutdown`, lines 14–28) waits for `server.close` and then `pool.end` without a grace deadline. A long-lived or stuck request can keep a local/container process alive indefinitely during shutdown. Affected users: self-hosted operators and container orchestrators relying on predictable shutdown behavior. Current behavior: shutdown waits indefinitely for in-flight requests; `pool.end` is called only after the server closes. Expected behavior: one configurable, validated shutdown grace period bounds the wait; at deadline, remaining idle/active sockets are closed using supported Node server APIs, the pool is closed exactly once, overlapping signals are idempotent, and a non-zero exit code is returned when cleanup fails.
 
-## Problem statement
-
-The SIGINT/SIGTERM `shutdown(signal)` handler waits for `server.close` and then `pool.end` without a grace deadline (`server/index.ts:14-28`). A long-lived or stuck request can keep a local/container process alive indefinitely during shutdown.
-
-## Technical implementation requirements
-
-- Introduce one configurable, validated shutdown grace period with a documented default.
-- Stop accepting new connections immediately; allow in-flight work to finish until the deadline.
-- At deadline, close remaining idle/active sockets using supported Node server APIs, then close the pool exactly once.
-- Keep shutdown idempotent for overlapping signals and return a nonzero process status when cleanup fails.
-
-## Files and areas to touch
-
-- `server/index.ts`
-- `server/environment.ts`
-- `tests/` (server lifecycle tests)
-- `docs/deployment.md`
-
-## Dependencies
-
-- None.
-
-## Measurable acceptance criteria
+## Acceptance criteria
 
 - Test `drains an in-flight request that finishes before the deadline and closes the pool once` asserts `pool.end` is called exactly once.
 - Test `does not hang shutdown past the configured bound` uses fake timers with a request that outlives the deadline and asserts shutdown resolves within `graceMs` and `pool.end` is called once.
@@ -36,19 +14,24 @@ The SIGINT/SIGTERM `shutdown(signal)` handler waits for `server.close` and then 
 - Test `rejects an invalid grace timeout with a variable-name-only message` asserts the thrown message contains the variable name and neither its value nor any secret.
 - `npx vitest run tests/server-lifecycle.test.ts` passes.
 
-## Expected deliverables
+## Files to touch
 
-- Bounded shutdown lifecycle, fake-server/fake-pool tests, and operator documentation.
+- `server/index.ts`
+- `server/environment.ts`
+- `tests/server-lifecycle.test.ts` (new)
+- `docs/deployment.md`
 
-## How to set up and run tests
+## Test expectations
 
-- Run the focused server lifecycle test (new `tests/server-lifecycle.test.ts`) with `npx vitest run tests/server-lifecycle.test.ts`.
-- Run `npm run typecheck` and `npm run lint`.
+- Run: `npx vitest run tests/server-lifecycle.test.ts`
+- Run: `npm run typecheck`
+- Run: `npm run lint`
+- No live database required.
 
 ## Out of scope
 
-- Vercel Function lifecycle behavior, forced process termination without a deadline, or database retry policy.
+Vercel Function lifecycle behavior, forced process termination without a deadline, or database retry policy.
 
-## Suggested labels
+## Depends on
 
-- `area: backend`, `area: infrastructure`, `type: enhancement`, `difficulty: medium`.
+None
