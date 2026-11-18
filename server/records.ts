@@ -533,10 +533,11 @@ function sendPage<T>(
   items: T[],
   hasMore: boolean,
   limit: number,
-  cursorFor: (item: T) => Cursor,
+  cursorFor: (item: T, index: number) => Cursor,
   extra: Record<string, unknown> = {},
 ) {
-  const cursorData = hasMore && items.length ? cursorFor(items[items.length - 1]!) : null;
+  const lastIndex = items.length - 1;
+  const cursorData = hasMore && items.length ? cursorFor(items[lastIndex]!, lastIndex) : null;
   const filterValues = Object.entries(request.query)
     .filter(([name]) => name !== 'cursor' && name !== 'limit')
     .sort(([left], [right]) => left.localeCompare(right));
@@ -832,8 +833,8 @@ async function transparencyHandler(request: Request, response: Response): Promis
     records,
     result.hasMore,
     page.limit,
-    (item) => ({
-      createdAt: item.createdAt,
+    (item, index) => ({
+      createdAt: timestamp(result.rows[index]!.created_at)!,
       id: item.id,
     }),
     {

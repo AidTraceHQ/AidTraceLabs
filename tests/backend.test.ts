@@ -1091,6 +1091,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
 
     const pageOne = await request(app).get('/api/transparency').query({ limit: '1' });
     expect(pageOne.body.hasMore).toBe(true);
+    expect(pageOne.body.records[0].createdAt).toBe('');
     const pageTwo = await request(app)
       .get('/api/transparency')
       .query({ limit: '1', cursor: pageOne.body.nextCursor });
