@@ -1,10 +1,10 @@
 # Validate CORS Configuration as Canonical Origins
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-`validateEnvironment` in `server/environment.ts` (the CORS block at lines 69–90) accepts any parseable URL for `CORS_ALLOWED_ORIGINS`. Request handling compares raw configured strings to the browser's origin using the module-level `allowedOrigins` set and `isAllowedOrigin` in `server/http-security.ts` (lines 3–12). A path, query, credentials, or trailing slash can pass startup validation and then deny legitimate requests. Affected users: developers and operators whose CORS configuration silently fails to match browser origins. Current behavior: any parseable URL is accepted; trailing slashes or paths cause silent request denial. Expected behavior: every entry is parsed as a canonical origin only (scheme, host, optional port; no credentials, path, query, or fragment). HTTP is allowed for explicit local development; HTTPS is required for non-local origins. Wildcard credentialed CORS must never be introduced.
+`validateEnvironment` in `server/environment.ts` (the CORS block at lines 69Ã¢â‚¬â€œ90) accepts any parseable URL for `CORS_ALLOWED_ORIGINS`. Request handling compares raw configured strings to the browser's origin using the module-level `allowedOrigins` set and `isAllowedOrigin` in `server/http-security.ts` (lines 3Ã¢â‚¬â€œ12). A path, query, credentials, or trailing slash can pass startup validation and then deny legitimate requests. Affected users: developers and operators whose CORS configuration silently fails to match browser origins. Current behavior: any parseable URL is accepted; trailing slashes or paths cause silent request denial. Expected behavior: every entry is parsed as a canonical origin only (scheme, host, optional port; no credentials, path, query, or fragment). HTTP is allowed for explicit local development; HTTPS is required for non-local origins. Wildcard credentialed CORS must never be introduced.
 
 ## Acceptance criteria
 

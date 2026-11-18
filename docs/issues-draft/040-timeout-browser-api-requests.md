@@ -1,10 +1,10 @@
 # Bound Browser API Request Time
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The shared browser API wrapper in `src/api.ts` (lines 41–75) calls `fetch` without a deadline or abort signal. If a request stalls instead of rejecting, login/write busy state and page loading can remain pending indefinitely. Affected users: all users of the application on slow or unreliable connections. Current behavior: API requests have no timeout; a stalled request leaves the UI in a pending state forever. Expected behavior: a configurable finite deadline is applied to API requests using `AbortSignal.timeout` or equivalent; abort/timeout errors are converted to a clear safe message while preserving `ApiError` status behavior for HTTP responses; mutations are not retried automatically.
+The shared browser API wrapper in `src/api.ts` (lines 41Ã¢â‚¬â€œ75) calls `fetch` without a deadline or abort signal. If a request stalls instead of rejecting, login/write busy state and page loading can remain pending indefinitely. Affected users: all users of the application on slow or unreliable connections. Current behavior: API requests have no timeout; a stalled request leaves the UI in a pending state forever. Expected behavior: a configurable finite deadline is applied to API requests using `AbortSignal.timeout` or equivalent; abort/timeout errors are converted to a clear safe message while preserving `ApiError` status behavior for HTTP responses; mutations are not retried automatically.
 
 ## Acceptance criteria
 

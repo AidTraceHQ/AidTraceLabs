@@ -1,10 +1,10 @@
 # Bound How Long a Request Waits for a Pooled Database Client
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The runtime pool is configured with `max` and `connectionTimeoutMillis` in `server/db.ts` (lines 14–22, the exported `pool`), and `withTransaction` (function `withTransaction`, lines 31–44) awaits `pool.connect()` with no application-level deadline. `connectionTimeoutMillis` bounds establishing a new connection; there is no explicit bound on how long a caller waits for a free client when the pool is already at `max`. Under the `VERCEL` configuration the pool is only 3 clients (the `serverless` constant and `max` at lines 12–16). Affected: requests under burst load or when a client is held by a stalled operation. Current behavior: callers wait without a defined ceiling. Expected behavior: a bounded wait fails with a clear transient/database-unavailable outcome mapping to the existing 503 path; a late-arriving client is released immediately.
+The runtime pool is configured with `max` and `connectionTimeoutMillis` in `server/db.ts` (lines 14Ã¢â‚¬â€œ22, the exported `pool`), and `withTransaction` (function `withTransaction`, lines 31Ã¢â‚¬â€œ44) awaits `pool.connect()` with no application-level deadline. `connectionTimeoutMillis` bounds establishing a new connection; there is no explicit bound on how long a caller waits for a free client when the pool is already at `max`. Under the `VERCEL` configuration the pool is only 3 clients (the `serverless` constant and `max` at lines 12Ã¢â‚¬â€œ16). Affected: requests under burst load or when a client is held by a stalled operation. Current behavior: callers wait without a defined ceiling. Expected behavior: a bounded wait fails with a clear transient/database-unavailable outcome mapping to the existing 503 path; a late-arriving client is released immediately.
 
 ## Acceptance criteria
 

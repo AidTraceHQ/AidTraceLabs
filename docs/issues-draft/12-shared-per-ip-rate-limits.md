@@ -1,6 +1,6 @@
 # Share Per-IP Rate Limits Across Serverless Instances
 
-**Complexity:** high
+**Complexity:** advanced
 
 ## Context
 

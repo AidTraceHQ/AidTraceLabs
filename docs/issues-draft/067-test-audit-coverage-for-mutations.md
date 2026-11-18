@@ -1,10 +1,10 @@
 # Test Audit Events for Every Successful Mutation
 
-**Complexity:** high
+**Complexity:** advanced
 
 ## Context
 
-Every successful mutation writes an audit row: `record_created` at `server/records.ts` (lines 830–836), `record_updated` (lines 983–989), `record_voided` (lines 1063–1069), `wallet_role_changed` (lines 1163–1170), `wallet_role_removed` (lines 1210–1217), `wallet_authenticated` at `server/auth.ts` (lines 307–311), `wallet_logged_out` (lines 369–373), and `wallet_logout_everywhere` (lines 397–401). Only `record_voided` is asserted in `tests/backend.test.ts` (lines 859–868); no test references the other action names (confirmed: no matches in `tests/`). Affected: audit-trail integrity for every recorded action. Current behavior: seven of eight audit actions are unasserted and could regress silently.
+Every successful mutation writes an audit row: `record_created` at `server/records.ts` (lines 830Ã¢â‚¬â€œ836), `record_updated` (lines 983Ã¢â‚¬â€œ989), `record_voided` (lines 1063Ã¢â‚¬â€œ1069), `wallet_role_changed` (lines 1163Ã¢â‚¬â€œ1170), `wallet_role_removed` (lines 1210Ã¢â‚¬â€œ1217), `wallet_authenticated` at `server/auth.ts` (lines 307Ã¢â‚¬â€œ311), `wallet_logged_out` (lines 369Ã¢â‚¬â€œ373), and `wallet_logout_everywhere` (lines 397Ã¢â‚¬â€œ401). Only `record_voided` is asserted in `tests/backend.test.ts` (lines 859Ã¢â‚¬â€œ868); no test references the other action names (confirmed: no matches in `tests/`). Affected: audit-trail integrity for every recorded action. Current behavior: seven of eight audit actions are unasserted and could regress silently.
 
 ## Acceptance criteria
 

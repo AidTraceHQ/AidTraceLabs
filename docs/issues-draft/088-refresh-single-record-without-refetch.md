@@ -1,10 +1,10 @@
 # Add a Single-Record Endpoint and Stop Refetching the Ledger to Refresh One Row
 
-**Complexity:** high
+**Complexity:** advanced
 
 ## Context
 
-Refreshing a single record re-downloads the whole ledger. `getLatestRecord` in `src/App.tsx` (function `getLatestRecord`, lines 288–301) calls `api.getAllPages('/api/transparency?q=<id>')` and searches the returned pages. `getAllPages` in `src/api.ts` (lines 83–119) walks the entire cursor chain, so a one-row refresh costs one request per page of matches. The verify and update paths follow the same pattern (lines 689–690 in `verifyRecord` and lines 743–744 in `editRecord`). There is no single-record route in the documented API in `docs/api.md` (lines 5–22). Affected: any user verifying or editing a record while the ledger is large.
+Refreshing a single record re-downloads the whole ledger. `getLatestRecord` in `src/App.tsx` (function `getLatestRecord`, lines 288Ã¢â‚¬â€œ301) calls `api.getAllPages('/api/transparency?q=<id>')` and searches the returned pages. `getAllPages` in `src/api.ts` (lines 83Ã¢â‚¬â€œ119) walks the entire cursor chain, so a one-row refresh costs one request per page of matches. The verify and update paths follow the same pattern (lines 689Ã¢â‚¬â€œ690 in `verifyRecord` and lines 743Ã¢â‚¬â€œ744 in `editRecord`). There is no single-record route in the documented API in `docs/api.md` (lines 5Ã¢â‚¬â€œ22). Affected: any user verifying or editing a record while the ledger is large.
 
 ## Acceptance criteria
 

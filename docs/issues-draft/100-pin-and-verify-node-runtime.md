@@ -1,10 +1,10 @@
 # Pin and Verify the Node Runtime
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The supported Node version is not declared anywhere. `package.json` has no `engines` field (lines 1–68), there is no `.nvmrc`, CI runs Node 20 (`.github/workflows/ci.yml`, line 47) while the hosted demo project is configured for Node 22 (`docs/demo-deployment.md`, lines 35–43), and `@types/node` is pinned to `^20` (`package.json`, line 44). Contributors can install on an untested version and nothing fails until a runtime difference appears. This is a declarative pin only — it must not upgrade any dependency or the runtime. Affected: contributors and CI reliability.
+The supported Node version is not declared anywhere. `package.json` has no `engines` field (lines 1Ã¢â‚¬â€œ68), there is no `.nvmrc`, CI runs Node 20 (`.github/workflows/ci.yml`, line 47) while the hosted demo project is configured for Node 22 (`docs/demo-deployment.md`, lines 35Ã¢â‚¬â€œ43), and `@types/node` is pinned to `^20` (`package.json`, line 44). Contributors can install on an untested version and nothing fails until a runtime difference appears. This is a declarative pin only Ã¢â‚¬â€ it must not upgrade any dependency or the runtime. Affected: contributors and CI reliability.
 
 ## Acceptance criteria
 

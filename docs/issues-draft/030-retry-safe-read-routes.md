@@ -1,10 +1,10 @@
 # Apply One Transient Retry to Remaining Safe Read Routes
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-`retryReadOnlyDatabase` retries one transient failure for the wrapped `GET /api/transparency` handler in `server/records.ts` (function `retryReadOnlyDatabase`, lines 763–766). The `GET /api/beneficiary` handler (line 766), `GET /api/admin/roles` (line 1082), and `GET /api/audit` (line 1228) are not wrapped. These reads return a 503 on a transient connection reset even though a read-only retry is safe. Affected users: clients who receive unnecessary 503 errors during brief database restarts. Current behavior: only the transparency route is wrapped in the retry helper; the other three safe reads fail without retry. Expected behavior: the existing one-retry helper is applied to the remaining database-backed GET handlers; write routes are never retried.
+`retryReadOnlyDatabase` retries one transient failure for the wrapped `GET /api/transparency` handler in `server/records.ts` (function `retryReadOnlyDatabase`, lines 763Ã¢â‚¬â€œ766). The `GET /api/beneficiary` handler (line 766), `GET /api/admin/roles` (line 1082), and `GET /api/audit` (line 1228) are not wrapped. These reads return a 503 on a transient connection reset even though a read-only retry is safe. Affected users: clients who receive unnecessary 503 errors during brief database restarts. Current behavior: only the transparency route is wrapped in the retry helper; the other three safe reads fail without retry. Expected behavior: the existing one-retry helper is applied to the remaining database-backed GET handlers; write routes are never retried.
 
 ## Acceptance criteria
 

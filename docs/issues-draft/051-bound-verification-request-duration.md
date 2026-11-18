@@ -1,10 +1,10 @@
 # Bound the Total Duration of a Verification Request
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-`checkTransaction` in `server/stellar-verification.ts` fetches the transaction and then reads operations in up to 20 pages (constants `operationPageSize`/`operationPageLimit` at lines 38–39), each issued by `getJson` (function `getJson`, lines 131–134) with its own independent 10-second abort inside the operations loop (lines 228–278). There is no overall time budget. The verification work behind `POST /api/records/:id/verify` (handler at `server/records.ts`, lines 870–914), the `POST /api/records` block (lines 848–864), and the `PUT /api/records/:id` block (lines 1007–1023) can occupy a handler for roughly 200 seconds or more, exceeding typical reverse-proxy and serverless function limits. Affected: clients and deployments with a proxy or function timeout.
+`checkTransaction` in `server/stellar-verification.ts` fetches the transaction and then reads operations in up to 20 pages (constants `operationPageSize`/`operationPageLimit` at lines 38Ã¢â‚¬â€œ39), each issued by `getJson` (function `getJson`, lines 131Ã¢â‚¬â€œ134) with its own independent 10-second abort inside the operations loop (lines 228Ã¢â‚¬â€œ278). There is no overall time budget. The verification work behind `POST /api/records/:id/verify` (handler at `server/records.ts`, lines 870Ã¢â‚¬â€œ914), the `POST /api/records` block (lines 848Ã¢â‚¬â€œ864), and the `PUT /api/records/:id` block (lines 1007Ã¢â‚¬â€œ1023) can occupy a handler for roughly 200 seconds or more, exceeding typical reverse-proxy and serverless function limits. Affected: clients and deployments with a proxy or function timeout.
 
 ## Acceptance criteria
 

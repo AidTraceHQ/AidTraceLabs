@@ -1,12 +1,12 @@
 # Return a Bounded Total So the Ledger Can Page Without Loading Every Record
 
-**Complexity:** high
+**Complexity:** advanced
 
 ## Context
 
-Partly overlaps with open issue "Cursor Pagination UI". This draft is narrowed to the server-side total-count envelope field and footer rendering; UI pagination controls remain in that separate issue.
+> **Overlap note:** Server-side total count is a prerequisite for open issue "Cursor Pagination UI"; partly overlaps scope. Narrowed: adds `total` envelope field and replaces `getAllPages` on first load; no UI pagination controls.
 
-The ledger loads every matching record before it can render. The client calls `api.getAllPages('/api/transparency?...')` in `src/App.tsx` (lines 272–281), which loops the signed cursor until exhaustion in `src/api.ts` (lines 83–119), because `pageCount`, sort/filter application, and the `Showing A–B of C` footer are all computed in the browser (lines 790–861 and 1291–1315). First paint and every reload therefore scale with the whole table, not with the page size, even though the server already paginates with signed cursors. The server cursor envelope (`readPage`/`sendPage` in `server/records.ts`) does not expose a total. Affected: public ledger performance as the dataset grows.
+The ledger loads every matching record before it can render. The client calls `api.getAllPages('/api/transparency?...')` in `src/App.tsx` (lines 272Ã¢â‚¬â€œ281), which loops the signed cursor until exhaustion in `src/api.ts` (lines 83Ã¢â‚¬â€œ119), because `pageCount`, sort/filter application, and the `Showing AÃ¢â‚¬â€œB of C` footer are all computed in the browser (lines 790Ã¢â‚¬â€œ861 and 1291Ã¢â‚¬â€œ1315). First paint and every reload therefore scale with the whole table, not with the page size, even though the server already paginates with signed cursors. The server cursor envelope (`readPage`/`sendPage` in `server/records.ts`) does not expose a total. Affected: public ledger performance as the dataset grows.
 
 ## Acceptance criteria
 

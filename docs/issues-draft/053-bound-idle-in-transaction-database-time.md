@@ -1,10 +1,10 @@
 # Bound Idle Transactions Held by the Pool
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The runtime pool in `server/db.ts` sets `statement_timeout` (15 s) and `query_timeout` (20 s) in the exported `pool` configuration (lines 20–21), which bound individual statements, but nothing bounds a client that opens a transaction and then stalls before the next statement. `withTransaction` (function `withTransaction`, lines 31–44) can leave such a client idle-in-transaction holding row locks until the connection is eventually closed. No `idle_in_transaction_session_timeout` or `idle_session_timeout` is set anywhere in `server/` (confirmed by searching the tree). Affected: concurrent writers blocked behind a stalled transaction. Current behavior: a client that runs `BEGIN` and stalls holds row locks indefinitely. Expected behavior: `idle_in_transaction_session_timeout` is set on connections, and the stalled session is terminated by the server within the configured bound.
+The runtime pool in `server/db.ts` sets `statement_timeout` (15 s) and `query_timeout` (20 s) in the exported `pool` configuration (lines 20Ã¢â‚¬â€œ21), which bound individual statements, but nothing bounds a client that opens a transaction and then stalls before the next statement. `withTransaction` (function `withTransaction`, lines 31Ã¢â‚¬â€œ44) can leave such a client idle-in-transaction holding row locks until the connection is eventually closed. No `idle_in_transaction_session_timeout` or `idle_session_timeout` is set anywhere in `server/` (confirmed by searching the tree). Affected: concurrent writers blocked behind a stalled transaction. Current behavior: a client that runs `BEGIN` and stalls holds row locks indefinitely. Expected behavior: `idle_in_transaction_session_timeout` is set on connections, and the stalled session is terminated by the server within the configured bound.
 
 ## Acceptance criteria
 

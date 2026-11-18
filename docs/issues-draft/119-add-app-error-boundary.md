@@ -1,10 +1,10 @@
 # Wrap the Application in an Error Boundary With a Recoverable Fallback
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-`src/main.tsx` (lines 6–10) mounts `<App />` inside `StrictMode` with no error boundary. React unmounts the whole tree when a render-phase error escapes, so any thrown error — a `.map` over a malformed API payload, an unexpected `null` in a record, a `new Date(invalid)` path — produces a permanently blank page with no message and no way back except a manual reload. There is no boundary component anywhere (confirmed by searching for `ErrorBoundary`/`componentDidCatch`) and no top-level `window.onerror` handling in `src/`. Affected: any user whose data triggers a render error; they see a white screen and cannot tell whether the app is broken or still loading, which is especially damaging for a transparency tool where the public ledger is the product.
+`src/main.tsx` (lines 6Ã¢â‚¬â€œ10) mounts `<App />` inside `StrictMode` with no error boundary. React unmounts the whole tree when a render-phase error escapes, so any thrown error Ã¢â‚¬â€ a `.map` over a malformed API payload, an unexpected `null` in a record, a `new Date(invalid)` path Ã¢â‚¬â€ produces a permanently blank page with no message and no way back except a manual reload. There is no boundary component anywhere (confirmed by searching for `ErrorBoundary`/`componentDidCatch`) and no top-level `window.onerror` handling in `src/`. Affected: any user whose data triggers a render error; they see a white screen and cannot tell whether the app is broken or still loading, which is especially damaging for a transparency tool where the public ledger is the product.
 
 ## Acceptance criteria
 

@@ -1,10 +1,10 @@
 # Add a Migration Status and Dry-Run Report
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The only migration entry point applies every pending file immediately. `package.json` (line 14) exposes exactly one command, `db:migrate`, mapped to `scripts/migrate.ts`. The `migrate()` function (lines 65–110) creates `schema_migrations` if absent, lists the migration files, and for each unapplied file runs it inside a transaction. There is no flag, no listing mode, and no way to see what a run would do. An operator preparing a deployment must either read the directory by hand and query `schema_migrations` with a separate client, or run the migration for real. Affected: maintainers and reviewers who need to confirm that a shared environment is up to date with `migrations/` before testing or merging a schema change.
+The only migration entry point applies every pending file immediately. `package.json` (line 14) exposes exactly one command, `db:migrate`, mapped to `scripts/migrate.ts`. The `migrate()` function (lines 65Ã¢â‚¬â€œ110) creates `schema_migrations` if absent, lists the migration files, and for each unapplied file runs it inside a transaction. There is no flag, no listing mode, and no way to see what a run would do. An operator preparing a deployment must either read the directory by hand and query `schema_migrations` with a separate client, or run the migration for real. Affected: maintainers and reviewers who need to confirm that a shared environment is up to date with `migrations/` before testing or merging a schema change.
 
 ## Acceptance criteria
 

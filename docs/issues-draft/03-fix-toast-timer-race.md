@@ -1,6 +1,6 @@
 # Prevent Older Toast Timers Clearing Newer Messages
 
-**Complexity:** trivial
+**Complexity:** beginner
 
 ## Context
 

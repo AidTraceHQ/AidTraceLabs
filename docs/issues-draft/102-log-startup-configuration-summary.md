@@ -1,10 +1,10 @@
 # Log a Startup Configuration Summary Without Secrets
 
-**Complexity:** trivial
+**Complexity:** beginner
 
 ## Context
 
-Startup validates the environment but reports nothing about what it found. `validateEnvironment` in `server/environment.ts` (function `validateEnvironment`, lines 30–96) checks secret length, placeholder prefixes, and CORS entries, then returns. `server/index.ts` (line 11, the `app.listen` callback) logs only the listening port. When a deployment is misconfigured — a missing `PUBLIC_APP_ORIGIN`, an empty CORS allow-list, or the fallback Horizon URL — there is no startup line to inspect. Affected: operators and reviewers deploying the API. Current behavior: only the port is logged at startup. Expected behavior: one log line summarizes configuration presence and shape (never secret values), greppable at a stable prefix.
+Startup validates the environment but reports nothing about what it found. `validateEnvironment` in `server/environment.ts` (function `validateEnvironment`, lines 30Ã¢â‚¬â€œ96) checks secret length, placeholder prefixes, and CORS entries, then returns. `server/index.ts` (line 11, the `app.listen` callback) logs only the listening port. When a deployment is misconfigured Ã¢â‚¬â€ a missing `PUBLIC_APP_ORIGIN`, an empty CORS allow-list, or the fallback Horizon URL Ã¢â‚¬â€ there is no startup line to inspect. Affected: operators and reviewers deploying the API. Current behavior: only the port is logged at startup. Expected behavior: one log line summarizes configuration presence and shape (never secret values), greppable at a stable prefix.
 
 ## Acceptance criteria
 

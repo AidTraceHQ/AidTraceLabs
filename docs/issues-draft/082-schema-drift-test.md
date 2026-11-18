@@ -1,10 +1,10 @@
 # Add a Schema Drift Test for the Documented Data Model
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The applied schema comes from `migrations/001_initial_schema.sql` and `migrations/002_unique_network_tx_hash.sql`, while `docs/backend-design.md` (lines 22–172) hand-maintains a full description of every table, column, constraint, and index. Nothing verifies that the two agree. A future migration can add, rename, or drop a column or index while the documentation keeps describing the old shape, and no test will fail. Affected: maintainers and reviewers who rely on the documented data model being accurate.
+The applied schema comes from `migrations/001_initial_schema.sql` and `migrations/002_unique_network_tx_hash.sql`, while `docs/backend-design.md` (lines 22Ã¢â‚¬â€œ172) hand-maintains a full description of every table, column, constraint, and index. Nothing verifies that the two agree. A future migration can add, rename, or drop a column or index while the documentation keeps describing the old shape, and no test will fail. Affected: maintainers and reviewers who rely on the documented data model being accurate.
 
 ## Acceptance criteria
 

@@ -1,10 +1,10 @@
 # Test the Authorization Matrix for Every Protected Route
 
-**Complexity:** high
+**Complexity:** advanced
 
 ## Context
 
-Protected routes enforce roles centrally in `server/records.ts` (role check at lines 326–355 and 337–340). The suite covers a donor's forbidden create, a cross-organization edit, an unauthenticated `/api/records`, and self-removal. It never checks an unauthenticated 401 or a wrong-role 403 on `/api/admin/roles`, `/api/audit`, `/api/beneficiary`, `/api/records/:id/verify`, or `/api/records/:id/void`. Affected: any role whose boundary is assumed but not asserted. Note: `/api/records/:id/verify` accepts any authenticated session (line 871), so it has no role-403 case — that must be recorded explicitly rather than asserted.
+Protected routes enforce roles centrally in `server/records.ts` (role check at lines 326Ã¢â‚¬â€œ355 and 337Ã¢â‚¬â€œ340). The suite covers a donor's forbidden create, a cross-organization edit, an unauthenticated `/api/records`, and self-removal. It never checks an unauthenticated 401 or a wrong-role 403 on `/api/admin/roles`, `/api/audit`, `/api/beneficiary`, `/api/records/:id/verify`, or `/api/records/:id/void`. Affected: any role whose boundary is assumed but not asserted. Note: `/api/records/:id/verify` accepts any authenticated session (line 871), so it has no role-403 case Ã¢â‚¬â€ that must be recorded explicitly rather than asserted.
 
 ## Acceptance criteria
 

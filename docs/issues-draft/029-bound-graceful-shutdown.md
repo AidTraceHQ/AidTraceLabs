@@ -1,10 +1,10 @@
 # Bound the Local Server Graceful Shutdown
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The `SIGINT`/`SIGTERM` `shutdown(signal)` handler in `server/index.ts` (function `shutdown`, lines 14–28) waits for `server.close` and then `pool.end` without a grace deadline. A long-lived or stuck request can keep a local/container process alive indefinitely during shutdown. Affected users: self-hosted operators and container orchestrators relying on predictable shutdown behavior. Current behavior: shutdown waits indefinitely for in-flight requests; `pool.end` is called only after the server closes. Expected behavior: one configurable, validated shutdown grace period bounds the wait; at deadline, remaining idle/active sockets are closed using supported Node server APIs, the pool is closed exactly once, overlapping signals are idempotent, and a non-zero exit code is returned when cleanup fails.
+The `SIGINT`/`SIGTERM` `shutdown(signal)` handler in `server/index.ts` (function `shutdown`, lines 14Ã¢â‚¬â€œ28) waits for `server.close` and then `pool.end` without a grace deadline. A long-lived or stuck request can keep a local/container process alive indefinitely during shutdown. Affected users: self-hosted operators and container orchestrators relying on predictable shutdown behavior. Current behavior: shutdown waits indefinitely for in-flight requests; `pool.end` is called only after the server closes. Expected behavior: one configurable, validated shutdown grace period bounds the wait; at deadline, remaining idle/active sockets are closed using supported Node server APIs, the pool is closed exactly once, overlapping signals are idempotent, and a non-zero exit code is returned when cleanup fails.
 
 ## Acceptance criteria
 

@@ -1,12 +1,12 @@
 # Export a Beneficiary's Own Records as CSV
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-Partly extends the CSV export covered by open issue "CSV Export Tests". This draft is narrowed to the beneficiary-only export control; it does not duplicate transparency export tests.
+> **Overlap note:** Uses the same CSV builder as the transparency export covered by open issue "CSV Export Tests". Narrowed: beneficiary-only export control using the shared builder; no duplicate test infrastructure.
 
-The beneficiary view in `src/App.tsx` (table at lines 1487–1530) lists records addressed to the session wallet with only a Refresh control (lines 1479–1485). There is no way for a beneficiary to download their own records; the only export is on the public transparency page (button at lines 1093–1100) and it exports the full ledger. Affected: beneficiaries who need a personal record of what they received.
+The beneficiary view in `src/App.tsx` (table at lines 1487Ã¢â‚¬â€œ1530) lists records addressed to the session wallet with only a Refresh control (lines 1479Ã¢â‚¬â€œ1485). There is no way for a beneficiary to download their own records; the only export is on the public transparency page (button at lines 1093Ã¢â‚¬â€œ1100) and it exports the full ledger. Affected: beneficiaries who need a personal record of what they received.
 
 ## Acceptance criteria
 

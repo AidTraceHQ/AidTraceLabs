@@ -1,6 +1,6 @@
 # Document and Verify PostgreSQL Network Restrictions
 
-**Complexity:** medium
+**Complexity:** beginner
 
 ## Context
 

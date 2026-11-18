@@ -1,6 +1,6 @@
 # Document the Cursor Pagination Contract and Its Limits
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 

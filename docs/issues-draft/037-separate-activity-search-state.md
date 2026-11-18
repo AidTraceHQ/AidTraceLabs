@@ -1,10 +1,10 @@
 # Separate Activity Search from Ledger Search
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The public-ledger search input (the "Search records" field at `src/App.tsx`, line 1144) and the wallet activity search input (`aria-label="Search activity"` at `src/App.tsx`, lines 1360–1361) both bind to the same `search` state declared at `src/App.tsx` (lines 214–226). Searching the activity view therefore also changes the ledger query, leaving the public ledger filtered when the user switches tabs. Affected users: any connected wallet holder who searches activity and then returns to the public ledger. Current behavior: a single `search` state drives both filter inputs; activity search and ledger search are coupled. Expected behavior: a dedicated activity search state is used only by `filteredActivity`; the public-ledger search remains bound to the existing state and URL/filter behavior.
+The public-ledger search input (the "Search records" field at `src/App.tsx`, line 1144) and the wallet activity search input (`aria-label="Search activity"` at `src/App.tsx`, lines 1360Ã¢â‚¬â€œ1361) both bind to the same `search` state declared at `src/App.tsx` (lines 214Ã¢â‚¬â€œ226). Searching the activity view therefore also changes the ledger query, leaving the public ledger filtered when the user switches tabs. Affected users: any connected wallet holder who searches activity and then returns to the public ledger. Current behavior: a single `search` state drives both filter inputs; activity search and ledger search are coupled. Expected behavior: a dedicated activity search state is used only by `filteredActivity`; the public-ledger search remains bound to the existing state and URL/filter behavior.
 
 ## Acceptance criteria
 

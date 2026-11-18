@@ -1,10 +1,10 @@
 # Capture and Surface the Transaction Memo for Reconciliation
 
-**Complexity:** high
+**Complexity:** advanced
 
 ## Context
 
-Neither the verification input type nor the Horizon transaction shape carries a memo field in `server/stellar-verification.ts` (types at lines 4–12 and 29–34), and `checkTransaction` (lines 151–384) never reads `memo`/`memo_type`. The `verification_results` table has no memo column in `migrations/001_initial_schema.sql` (lines 77–94). Stellar senders commonly tag disbursements with a memo (an aid or reference id), so a reviewer cannot see or confirm the memo an organization used to tie a payment to its record. Affected: reviewers reconciling an on-chain payment against a record, and auditors wanting the on-chain reference. This is read-only capture only; the matching rule must not change. Privacy: the existing consent-aware projection must continue to withhold verification details on consent-off public views (`server/records.ts`, function `recordSelect`, lines 264–288).
+Neither the verification input type nor the Horizon transaction shape carries a memo field in `server/stellar-verification.ts` (types at lines 4Ã¢â‚¬â€œ12 and 29Ã¢â‚¬â€œ34), and `checkTransaction` (lines 151Ã¢â‚¬â€œ384) never reads `memo`/`memo_type`. The `verification_results` table has no memo column in `migrations/001_initial_schema.sql` (lines 77Ã¢â‚¬â€œ94). Stellar senders commonly tag disbursements with a memo (an aid or reference id), so a reviewer cannot see or confirm the memo an organization used to tie a payment to its record. Affected: reviewers reconciling an on-chain payment against a record, and auditors wanting the on-chain reference. This is read-only capture only; the matching rule must not change. Privacy: the existing consent-aware projection must continue to withhold verification details on consent-off public views (`server/records.ts`, function `recordSelect`, lines 264Ã¢â‚¬â€œ288).
 
 ## Acceptance criteria
 

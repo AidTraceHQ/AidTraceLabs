@@ -1,12 +1,12 @@
 # Guard the CSV Export Against Spreadsheet Formula Injection
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-Partly extends the CSV export covered by open issue "CSV Export Tests". This draft is narrowed to injection neutralization and its tests; it does not duplicate existing happy-path test coverage.
+> **Overlap note:** Adds injection safety to the same export code that open issue "CSV Export Tests" plans to test. Narrowed: injection escaper and its own tests only; does not duplicate "CSV Export Tests" happy-path coverage.
 
-`exportCsv` in `src/App.tsx` escapes only double quotes before writing values (the `escape` helper at line 898, within lines 885–911). Columns include user-controlled fields — `recipient`, `purpose`, `organization` (lines 886–897) — so a value beginning with `=`, `+`, `-`, or `@` becomes a live formula when the file is opened in Excel, LibreOffice, or Google Sheets. A purpose such as `=HYPERLINK("http://evil","click")` or `=cmd|'/c calc'!A0` executes on open. Affected: anyone who exports the ledger and opens it in a spreadsheet.
+`exportCsv` in `src/App.tsx` escapes only double quotes before writing values (the `escape` helper at line 898, within lines 885Ã¢â‚¬â€œ911). Columns include user-controlled fields Ã¢â‚¬â€ `recipient`, `purpose`, `organization` (lines 886Ã¢â‚¬â€œ897) Ã¢â‚¬â€ so a value beginning with `=`, `+`, `-`, or `@` becomes a live formula when the file is opened in Excel, LibreOffice, or Google Sheets. A purpose such as `=HYPERLINK("http://evil","click")` or `=cmd|'/c calc'!A0` executes on open. Affected: anyone who exports the ledger and opens it in a spreadsheet.
 
 ## Acceptance criteria
 

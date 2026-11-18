@@ -1,10 +1,10 @@
 # Support Muxed-Account (M-Address) Aid Recipients
 
-**Complexity:** high
+**Complexity:** advanced
 
 ## Context
 
-Recipient addresses are validated with `StrKey.isValidEd25519PublicKey` in `server/records.ts` (lines 131–133, used inside function `validateRecord` at lines 139–180), which accepts only G-addresses and rejects Stellar muxed accounts (`M...`). On the verification side, `operationDestination` in `server/stellar-verification.ts` (lines 85–92) reads only `to`, `destination`, and the create-account `account` field, never consulting `to_muxed`/`to_muxed_id`. Matching compares the destination to the recorded recipient by exact string equality (line 314). A payment sent to a muxed account verifies against the underlying base account only, silently discarding the muxed id. Affected: organizations and beneficiaries using muxed accounts, and reviewers relying on an exact recipient match. Note: `migrations/001_initial_schema.sql` (lines 77–94) stores `destination` as TEXT, so a muxed string can be persisted once validation and matching accept it.
+Recipient addresses are validated with `StrKey.isValidEd25519PublicKey` in `server/records.ts` (lines 131Ã¢â‚¬â€œ133, used inside function `validateRecord` at lines 139Ã¢â‚¬â€œ180), which accepts only G-addresses and rejects Stellar muxed accounts (`M...`). On the verification side, `operationDestination` in `server/stellar-verification.ts` (lines 85Ã¢â‚¬â€œ92) reads only `to`, `destination`, and the create-account `account` field, never consulting `to_muxed`/`to_muxed_id`. Matching compares the destination to the recorded recipient by exact string equality (line 314). A payment sent to a muxed account verifies against the underlying base account only, silently discarding the muxed id. Affected: organizations and beneficiaries using muxed accounts, and reviewers relying on an exact recipient match. Note: `migrations/001_initial_schema.sql` (lines 77Ã¢â‚¬â€œ94) stores `destination` as TEXT, so a muxed string can be persisted once validation and matching accept it.
 
 ## Acceptance criteria
 

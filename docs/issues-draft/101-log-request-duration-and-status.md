@@ -1,10 +1,10 @@
 # Log Request Duration and Status for the API
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The API emits no per-request log. The middleware chain in `server/app.ts` (lines 9–18, from `app.disable('x-powered-by')` through `app.use(recordsRouter)`) installs CORS, rate limits, body parsing, and the routers but no timing or access logging. The only request-derived log is the error logger, which prints only the raw error without method, path, or duration (line 47, the `console.error('Unhandled API error:', error)` call). Affected: maintainers diagnosing incidents and reliability work that has no latency signal to measure against. Must integrate with "Add Correlated, Redacted API Error Logs" if that has landed; otherwise be self-contained and forward-compatible.
+The API emits no per-request log. The middleware chain in `server/app.ts` (lines 9Ã¢â‚¬â€œ18, from `app.disable('x-powered-by')` through `app.use(recordsRouter)`) installs CORS, rate limits, body parsing, and the routers but no timing or access logging. The only request-derived log is the error logger, which prints only the raw error without method, path, or duration (line 47, the `console.error('Unhandled API error:', error)` call). Affected: maintainers diagnosing incidents and reliability work that has no latency signal to measure against. Must integrate with "Add Correlated, Redacted API Error Logs" if that has landed; otherwise be self-contained and forward-compatible.
 
 ## Acceptance criteria
 

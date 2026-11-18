@@ -1,12 +1,12 @@
 # Include Verification Status, Reason, and Last-Checked Time in the CSV Export
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-Partly extends the CSV export covered by open issue "CSV Export Tests". This draft is narrowed to adding verification columns only; it does not change existing columns or test infrastructure.
+> **Overlap note:** Adds verification columns to the same export code that open issue "CSV Export Tests" plans to test. Narrowed: verification column additions only; does not duplicate test infrastructure.
 
-The CSV export columns in `src/App.tsx` (function `exportCsv`, lines 886–897) omit the verification fields that the client already holds. The record model carries verification detail (lines 44–55) that the ledger renders, including a mismatch reason. An auditor who exports the ledger cannot see why a record is a mismatch or when it was last checked. Affected: anyone producing a downloadable record of aid disbursements who needs verification detail.
+The CSV export columns in `src/App.tsx` (function `exportCsv`, lines 886Ã¢â‚¬â€œ897) omit the verification fields that the client already holds. The record model carries verification detail (lines 44Ã¢â‚¬â€œ55) that the ledger renders, including a mismatch reason. An auditor who exports the ledger cannot see why a record is a mismatch or when it was last checked. Affected: anyone producing a downloadable record of aid disbursements who needs verification detail.
 
 ## Acceptance criteria
 

@@ -1,6 +1,6 @@
 # Prevent Removing the Last Active Administrator
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 

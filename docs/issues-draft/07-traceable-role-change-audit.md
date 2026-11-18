@@ -1,6 +1,6 @@
 # Make Role Changes Traceable in the Audit View
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 

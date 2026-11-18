@@ -1,10 +1,10 @@
 # Detect Changes to Applied Migration Files
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The `migrate()` function in `scripts/migrate.ts` (lines 65–78) records only a version and applied timestamp in `schema_migrations`. If an already-released SQL file is edited in place, a deployed database silently skips the changed content while a fresh database applies the new version. Affected users: operators running migrations who cannot detect schema drift between environments. Current behavior: no checksum is stored; editing a migration file after deployment is undetectable. Expected behavior: a stable SHA-256 checksum is computed for each migration file and persisted with the applied version. On a later run, stored checksums are compared and the runner fails closed on a mismatch before applying further migrations. Existing null checksums require an explicit reviewed baseline procedure.
+The `migrate()` function in `scripts/migrate.ts` (lines 65Ã¢â‚¬â€œ78) records only a version and applied timestamp in `schema_migrations`. If an already-released SQL file is edited in place, a deployed database silently skips the changed content while a fresh database applies the new version. Affected users: operators running migrations who cannot detect schema drift between environments. Current behavior: no checksum is stored; editing a migration file after deployment is undetectable. Expected behavior: a stable SHA-256 checksum is computed for each migration file and persisted with the applied version. On a later run, stored checksums are compared and the runner fails closed on a mismatch before applying further migrations. Existing null checksums require an explicit reviewed baseline procedure.
 
 ## Acceptance criteria
 

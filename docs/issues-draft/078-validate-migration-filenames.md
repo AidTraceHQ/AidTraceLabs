@@ -1,10 +1,10 @@
 # Reject Unrecognized and Non-Sequential Migration Files
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The `migrate()` runner in `scripts/migrate.ts` lists `migrations/`, keeps only files matching `/^\d{3}_[a-z0-9_]+\.sql$/`, and silently ignores everything else (the `readdir`+regex filter at lines 74–76). A file such as `003-add-index.sql` (hyphen), `003_Add_Index.sql` (uppercase), or `0003_x.sql` (four digits) is never applied but `npm run db:migrate` exits successfully with no warning. There is also no detection of numbering gaps or duplicate numeric prefixes, so an out-of-order or colliding migration can be applied in an unexpected order. Additionally, the runner hardcodes the `002` filename to run a duplicate-hash preflight (the `version === '002_unique_network_tx_hash'` branch at lines 89–90); renaming that file silently disables the safety check. Affected: operators running migrations who cannot tell a migration was skipped.
+The `migrate()` runner in `scripts/migrate.ts` lists `migrations/`, keeps only files matching `/^\d{3}_[a-z0-9_]+\.sql$/`, and silently ignores everything else (the `readdir`+regex filter at lines 74Ã¢â‚¬â€œ76). A file such as `003-add-index.sql` (hyphen), `003_Add_Index.sql` (uppercase), or `0003_x.sql` (four digits) is never applied but `npm run db:migrate` exits successfully with no warning. There is also no detection of numbering gaps or duplicate numeric prefixes, so an out-of-order or colliding migration can be applied in an unexpected order. Additionally, the runner hardcodes the `002` filename to run a duplicate-hash preflight (the `version === '002_unique_network_tx_hash'` branch at lines 89Ã¢â‚¬â€œ90); renaming that file silently disables the safety check. Affected: operators running migrations who cannot tell a migration was skipped.
 
 ## Acceptance criteria
 

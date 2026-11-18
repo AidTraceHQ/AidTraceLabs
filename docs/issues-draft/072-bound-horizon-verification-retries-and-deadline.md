@@ -1,10 +1,10 @@
 # Bound Horizon Verification With Bounded Retries and a Total Deadline
 
-**Complexity:** high
+**Complexity:** advanced
 
 ## Context
 
-`getJson` in `server/stellar-verification.ts` (function `getJson`, lines 130–141) performs exactly one GET with a per-request 10-second abort and no retry, so a single transient transport error immediately becomes `pending` (lines 176–187). The same helper is called inside a loop of up to twenty sequential operation GETs (lines 228–278). The worst case is roughly twenty times ten seconds of wall time for one `/verify` request, which can exceed serverless or edge timeouts. Affected: organizations on flaky networks who must retry manually, and operators whose functions can time out on operation-heavy transactions.
+`getJson` in `server/stellar-verification.ts` (function `getJson`, lines 130Ã¢â‚¬â€œ141) performs exactly one GET with a per-request 10-second abort and no retry, so a single transient transport error immediately becomes `pending` (lines 176Ã¢â‚¬â€œ187). The same helper is called inside a loop of up to twenty sequential operation GETs (lines 228Ã¢â‚¬â€œ278). The worst case is roughly twenty times ten seconds of wall time for one `/verify` request, which can exceed serverless or edge timeouts. Affected: organizations on flaky networks who must retry manually, and operators whose functions can time out on operation-heavy transactions.
 
 ## Acceptance criteria
 

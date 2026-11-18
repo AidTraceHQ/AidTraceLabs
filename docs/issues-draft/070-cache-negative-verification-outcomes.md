@@ -1,10 +1,10 @@
 # Cache Negative Verification Outcomes to Stop Repeat Horizon Lookups
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-`cachedVerification` in `server/records.ts` returns a cache hit only when the latest result is `verified` or `mismatch` and `cache_expires_at` is still in the future (lines 679–690). `storeVerification` sets `cache_expires_at` only for those two statuses via `CASE WHEN $3 IN ('verified', 'mismatch') THEN NOW() + INTERVAL '1 hour' END` (lines 641–677). A `not-found` or `pending` result is recomputed on every `POST /api/records/:id/verify` call (handler at lines 870–914), each issuing one transaction GET plus up to twenty operation GETs to Horizon (lines 228–278). `docs/backend-design.md` (line 225) records that "Pending and other statuses do not receive a cache expiry", confirming this is current behavior. Affected: reviewers repeatedly pressing Verify on a hash Horizon has not yet indexed, and Horizon itself receiving redundant traffic.
+`cachedVerification` in `server/records.ts` returns a cache hit only when the latest result is `verified` or `mismatch` and `cache_expires_at` is still in the future (lines 679Ã¢â‚¬â€œ690). `storeVerification` sets `cache_expires_at` only for those two statuses via `CASE WHEN $3 IN ('verified', 'mismatch') THEN NOW() + INTERVAL '1 hour' END` (lines 641Ã¢â‚¬â€œ677). A `not-found` or `pending` result is recomputed on every `POST /api/records/:id/verify` call (handler at lines 870Ã¢â‚¬â€œ914), each issuing one transaction GET plus up to twenty operation GETs to Horizon (lines 228Ã¢â‚¬â€œ278). `docs/backend-design.md` (line 225) records that "Pending and other statuses do not receive a cache expiry", confirming this is current behavior. Affected: reviewers repeatedly pressing Verify on a hash Horizon has not yet indexed, and Horizon itself receiving redundant traffic.
 
 ## Acceptance criteria
 

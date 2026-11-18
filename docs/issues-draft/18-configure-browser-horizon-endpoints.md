@@ -1,6 +1,6 @@
 # Use Configured Horizon Endpoints in Browser Activity
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 

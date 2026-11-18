@@ -1,10 +1,10 @@
 # Test Record Input Validation and Amount Bounds
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-`validateRecord` and `amountToStroops` are exported from `server/records.ts` (line 1328) and enforce address, asset, amount, date, and consent rules (functions `validateRecord` at lines 139–180 and `amountToStroops` at lines 108–118). No test imports them (confirmed by searching `tests/`). The integration suite only creates valid records, so a regression in the reject rules — allowing zero or overflowing amounts, `XLM` with an issuer, or a non-native asset without an issuer — would not fail the suite. Affected: downstream consumers who trust stored record invariants.
+`validateRecord` and `amountToStroops` are exported from `server/records.ts` (line 1328) and enforce address, asset, amount, date, and consent rules (functions `validateRecord` at lines 139Ã¢â‚¬â€œ180 and `amountToStroops` at lines 108Ã¢â‚¬â€œ118). No test imports them (confirmed by searching `tests/`). The integration suite only creates valid records, so a regression in the reject rules Ã¢â‚¬â€ allowing zero or overflowing amounts, `XLM` with an issuer, or a non-native asset without an issuer Ã¢â‚¬â€ would not fail the suite. Affected: downstream consumers who trust stored record invariants.
 
 ## Acceptance criteria
 

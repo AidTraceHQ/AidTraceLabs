@@ -1,10 +1,10 @@
 # Bound the Account Activity Request Lifecycle
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-Activity loading starts three unbounded fetches (account, payments, transactions). A request from a previous wallet or network can finish after a switch or logout and overwrite the newer screen state. Polling can also overlap slow in-flight requests, creating an unbounded backlog. Affected users: connected wallet holders who switch networks or log out while activity is loading. Current behavior: no timeout, no cancellation token, and no generation check on activity fetch results. Expected behavior: results are associated with the wallet/network request generation, stale completions are ignored, and concurrent refreshes are bounded. Evidence: `src/App.tsx` (activity fetch logic, approximately lines 392–493).
+Activity loading starts three unbounded fetches (account, payments, transactions). A request from a previous wallet or network can finish after a switch or logout and overwrite the newer screen state. Polling can also overlap slow in-flight requests, creating an unbounded backlog. Affected users: connected wallet holders who switch networks or log out while activity is loading. Current behavior: no timeout, no cancellation token, and no generation check on activity fetch results. Expected behavior: results are associated with the wallet/network request generation, stale completions are ignored, and concurrent refreshes are bounded. Evidence: `src/App.tsx` (activity fetch logic, approximately lines 392Ã¢â‚¬â€œ493).
 
 ## Acceptance criteria
 

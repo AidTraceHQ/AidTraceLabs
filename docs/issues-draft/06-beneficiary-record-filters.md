@@ -1,6 +1,6 @@
 # Add Filters to the Beneficiary Record View
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 

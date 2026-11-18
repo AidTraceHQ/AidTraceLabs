@@ -1,6 +1,6 @@
 # Let Organizations Set a Display Name
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 

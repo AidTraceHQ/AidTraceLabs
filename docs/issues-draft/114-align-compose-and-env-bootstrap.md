@@ -1,10 +1,10 @@
 # Make Docker Compose and the `.env` Bootstrap Agree
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The documented local bootstrap and Docker Compose disagree about which environment file exists, so `docker compose up` fails for a contributor who followed the written steps. `CONTRIBUTING.md` (line 9) tells contributors to run `npm run setup:env`, which copies `.env.example` to `.env.local` (in `scripts/setup-env.ts`, lines 7–8 and 15–16). The `api` service in `docker-compose.yml` (line 20) asks Compose for `.env`. `.env` and `.env.*` are both gitignored except `.env.example` (`.gitignore`, lines 4–6), so no committed file satisfies the Compose reference. `docs/deployment.md` (line 9) states Compose "has not been run or verified", consistent with a configuration that cannot be started from a clean checkout. Affected: every contributor trying the documented container path.
+The documented local bootstrap and Docker Compose disagree about which environment file exists, so `docker compose up` fails for a contributor who followed the written steps. `CONTRIBUTING.md` (line 9) tells contributors to run `npm run setup:env`, which copies `.env.example` to `.env.local` (in `scripts/setup-env.ts`, lines 7Ã¢â‚¬â€œ8 and 15Ã¢â‚¬â€œ16). The `api` service in `docker-compose.yml` (line 20) asks Compose for `.env`. `.env` and `.env.*` are both gitignored except `.env.example` (`.gitignore`, lines 4Ã¢â‚¬â€œ6), so no committed file satisfies the Compose reference. `docs/deployment.md` (line 9) states Compose "has not been run or verified", consistent with a configuration that cannot be started from a clean checkout. Affected: every contributor trying the documented container path.
 
 ## Acceptance criteria
 

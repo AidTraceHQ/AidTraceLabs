@@ -1,6 +1,6 @@
 # Enforce Append-Only Audit Access
 
-**Complexity:** high
+**Complexity:** advanced
 
 ## Context
 

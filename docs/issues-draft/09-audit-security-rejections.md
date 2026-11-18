@@ -1,6 +1,6 @@
 # Audit Security-Relevant Rejections
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 

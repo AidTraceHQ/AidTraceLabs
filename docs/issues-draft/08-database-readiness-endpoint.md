@@ -1,10 +1,10 @@
 # Add a Database Readiness Probe
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-`/api/_healthcheck` reports process liveness even when PostgreSQL is unavailable, so an orchestrator cannot distinguish a running process from a ready API. Affected users: operators using health checks to route traffic or gate deployments. Current behavior: `GET /api/_healthcheck` returns `{ ok: true }` regardless of database connectivity. Expected behavior: a separate readiness route performs a bounded `SELECT 1` and returns a non-200 status when the database is unavailable, without exposing connection details. The existing liveness route must continue to return success independently. Evidence: `server/app.ts` (health check handler at the `app.get('/api/_healthcheck', …)` route).
+`/api/_healthcheck` reports process liveness even when PostgreSQL is unavailable, so an orchestrator cannot distinguish a running process from a ready API. Affected users: operators using health checks to route traffic or gate deployments. Current behavior: `GET /api/_healthcheck` returns `{ ok: true }` regardless of database connectivity. Expected behavior: a separate readiness route performs a bounded `SELECT 1` and returns a non-200 status when the database is unavailable, without exposing connection details. The existing liveness route must continue to return success independently. Evidence: `server/app.ts` (health check handler at the `app.get('/api/_healthcheck', Ã¢â‚¬Â¦)` route).
 
 ## Acceptance criteria
 

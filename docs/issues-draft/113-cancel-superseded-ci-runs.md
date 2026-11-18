@@ -1,10 +1,10 @@
 # Cancel Superseded CI Runs With a Concurrency Group
 
-**Complexity:** trivial
+**Complexity:** beginner
 
 ## Context
 
-The CI workflow triggers on every pull request synchronization and every push to `main` (`.github/workflows/ci.yml`, lines 3–7) but defines no `concurrency` group (confirmed by reading the whole workflow, lines 1–58). Each new push to the same branch queues another full quality job while the previous one keeps running. Affected: contributors and maintainers who wait behind redundant runs and consume shared GitHub Actions minutes. Current behavior: every push queues an independent run; previous runs complete regardless. Expected behavior: a newer push on the same branch cancels the previous in-progress run; runs on the default branch are allowed to complete.
+The CI workflow triggers on every pull request synchronization and every push to `main` (`.github/workflows/ci.yml`, lines 3Ã¢â‚¬â€œ7) but defines no `concurrency` group (confirmed by reading the whole workflow, lines 1Ã¢â‚¬â€œ58). Each new push to the same branch queues another full quality job while the previous one keeps running. Affected: contributors and maintainers who wait behind redundant runs and consume shared GitHub Actions minutes. Current behavior: every push queues an independent run; previous runs complete regardless. Expected behavior: a newer push on the same branch cancels the previous in-progress run; runs on the default branch are allowed to complete.
 
 ## Acceptance criteria
 

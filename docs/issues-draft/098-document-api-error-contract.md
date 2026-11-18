@@ -1,10 +1,10 @@
 # Document the API Error and Status-Code Contract
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-`docs/api.md` lists every route and states one error shape (line 3) but never documents which status codes the API returns or when. A contributor integrating with the API cannot tell from the docs what `400`, `401`, `403`, `404`, `409`, `413`, `429`, `503`, or `500` mean, which failures are retryable, or that CSRF/Origin failures on protected writes are distinct from an expired session. The behavior exists in `server/app.ts` (lines 28–53), `server/records.ts`, and `server/database-errors.ts` (function `databaseUnavailableResponse`, lines 58–66) and surfaces only in tests. Affected: API consumers and onboarding contributors.
+`docs/api.md` lists every route and states one error shape (line 3) but never documents which status codes the API returns or when. A contributor integrating with the API cannot tell from the docs what `400`, `401`, `403`, `404`, `409`, `413`, `429`, `503`, or `500` mean, which failures are retryable, or that CSRF/Origin failures on protected writes are distinct from an expired session. The behavior exists in `server/app.ts` (lines 28Ã¢â‚¬â€œ53), `server/records.ts`, and `server/database-errors.ts` (function `databaseUnavailableResponse`, lines 58Ã¢â‚¬â€œ66) and surfaces only in tests. Affected: API consumers and onboarding contributors.
 
 ## Acceptance criteria
 

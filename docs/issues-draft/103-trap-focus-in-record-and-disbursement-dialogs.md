@@ -1,12 +1,12 @@
 # Trap and Restore Focus in the Record and Disbursement Dialogs
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-Partly a sub-task of open issue "Accessibility Pass". This draft is narrowed to dialog focus-trap only.
+> **Overlap note:** Sub-task of open issue "Accessibility Pass". Narrowed to dialog focus-trap only; keep as a standalone deliverable.
 
-The record detail dialog and the new disbursement form render over the page but do not manage keyboard focus. The create form's backdrop in `src/App.tsx` (lines 1726–1734) has only `role="presentation"` and no dialog semantics. The detail dialog (lines 1898–1914) declares `role="dialog"` and `aria-modal="true"` but never moves focus into itself, traps Tab, closes on Escape, or restores focus to the row that opened it. Keyboard and screen-reader users can Tab into the obscured page behind the backdrop, and closing a dialog drops focus at the document body. Affected: keyboard-only and screen-reader users.
+The record detail dialog and the new disbursement form render over the page but do not manage keyboard focus. The create form's backdrop in `src/App.tsx` (lines 1726Ã¢â‚¬â€œ1734) has only `role="presentation"` and no dialog semantics. The detail dialog (lines 1898Ã¢â‚¬â€œ1914) declares `role="dialog"` and `aria-modal="true"` but never moves focus into itself, traps Tab, closes on Escape, or restores focus to the row that opened it. Keyboard and screen-reader users can Tab into the obscured page behind the backdrop, and closing a dialog drops focus at the document body. Affected: keyboard-only and screen-reader users.
 
 ## Acceptance criteria
 

@@ -1,10 +1,10 @@
 # Align and Bound Operation-Amount Parsing With Record Amounts
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-Record amounts are parsed by `amountToStroops` in `server/records.ts` (function `amountToStroops`, lines 108–118), which rejects zero/negative values and anything above the BIGINT bound. Horizon operation amounts are parsed by a separate `toStroops` in `server/stellar-verification.ts` (lines 60–72), which reuses the seven-decimal pattern (line 40) but applies no positive or upper bound and silently returns `null` for any non-matching value. In the matching loop a `null` amount fails the `amount === expectedAmount` comparison and is reported as the generic "Amount differs from the recorded amount." (lines 311–315 and 363). An unparseable operation amount is indistinguishable from a genuine mismatch. Affected: reviewers who cannot tell a data-quality problem apart from a real discrepancy.
+Record amounts are parsed by `amountToStroops` in `server/records.ts` (function `amountToStroops`, lines 108Ã¢â‚¬â€œ118), which rejects zero/negative values and anything above the BIGINT bound. Horizon operation amounts are parsed by a separate `toStroops` in `server/stellar-verification.ts` (lines 60Ã¢â‚¬â€œ72), which reuses the seven-decimal pattern (line 40) but applies no positive or upper bound and silently returns `null` for any non-matching value. In the matching loop a `null` amount fails the `amount === expectedAmount` comparison and is reported as the generic "Amount differs from the recorded amount." (lines 311Ã¢â‚¬â€œ315 and 363). An unparseable operation amount is indistinguishable from a genuine mismatch. Affected: reviewers who cannot tell a data-quality problem apart from a real discrepancy.
 
 ## Acceptance criteria
 

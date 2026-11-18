@@ -1,10 +1,10 @@
 # Test Request Body Size and Malformed-JSON Handling
 
-**Complexity:** trivial
+**Complexity:** beginner
 
 ## Context
 
-The JSON body parser caps payloads at 32 KB and rejects malformed JSON in `server/app.ts` (line 16), and the error handler maps oversized bodies to 413 and malformed JSON to 400 (lines 28–41). The malformed-JSON path is tested in `tests/backend.test.ts` (lines 61–67), but the `entity.too.large` branch (lines 33–41) is never exercised, so a regression in the size cap would not fail the suite. Affected: the API's resistance to oversized-payload abuse.
+The JSON body parser caps payloads at 32 KB and rejects malformed JSON in `server/app.ts` (line 16), and the error handler maps oversized bodies to 413 and malformed JSON to 400 (lines 28Ã¢â‚¬â€œ41). The malformed-JSON path is tested in `tests/backend.test.ts` (lines 61Ã¢â‚¬â€œ67), but the `entity.too.large` branch (lines 33Ã¢â‚¬â€œ41) is never exercised, so a regression in the size cap would not fail the suite. Affected: the API's resistance to oversized-payload abuse.
 
 ## Acceptance criteria
 

@@ -1,10 +1,10 @@
 # Add an index for the admin roles list ordering
 
-**Complexity:** trivial
+**Complexity:** beginner
 
 ## Context
 
-`GET /api/admin/roles` sorts by `updated_at` then wallet address. The `listRows` call in that handler passes `'wr.updated_at'` and `'wr.wallet_address'` as the time and id columns in `server/records.ts` (lines 1113–1114), so the query issues `ORDER BY wr.updated_at DESC, wr.wallet_address DESC`. The only index on `wallet_roles` is `wallet_roles_role_wallet_idx(role, wallet_address)` in `migrations/001_initial_schema.sql` (line 13), which does not match that ordering. As role rows accumulate, PostgreSQL must read the table and sort in memory for every admin role listing. Affected: administrators loading the role list.
+`GET /api/admin/roles` sorts by `updated_at` then wallet address. The `listRows` call in that handler passes `'wr.updated_at'` and `'wr.wallet_address'` as the time and id columns in `server/records.ts` (lines 1113Ã¢â‚¬â€œ1114), so the query issues `ORDER BY wr.updated_at DESC, wr.wallet_address DESC`. The only index on `wallet_roles` is `wallet_roles_role_wallet_idx(role, wallet_address)` in `migrations/001_initial_schema.sql` (line 13), which does not match that ordering. As role rows accumulate, PostgreSQL must read the table and sort in memory for every admin role listing. Affected: administrators loading the role list.
 
 ## Acceptance criteria
 

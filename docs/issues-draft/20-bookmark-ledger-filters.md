@@ -1,6 +1,6 @@
 # Restore Ledger Filters from the URL
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 

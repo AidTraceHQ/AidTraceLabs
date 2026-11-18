@@ -1,10 +1,10 @@
 # Validate Reversed Date-Filter Ranges
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The `from`/`to` handling inside `applyRecordFilters` in `server/records.ts` (lines 522–564) validates each date separately but accepts a `from` later than `to`. Users receive an empty result without an explanation. The activity view's `activityFrom`/`activityTo` inputs in `src/App.tsx` (lines 1378–1387) also accept independent dates with no cross-validation. Affected users: reviewers applying date filters who see empty results with no indication the range is inverted. Current behavior: a reversed date range silently returns no results on the API and no message in the client. Expected behavior: the API returns `400` with a field-specific message for `from > to`; the client activity view shows an inline invalid-range message and filters nothing.
+The `from`/`to` handling inside `applyRecordFilters` in `server/records.ts` (lines 522Ã¢â‚¬â€œ564) validates each date separately but accepts a `from` later than `to`. Users receive an empty result without an explanation. The activity view's `activityFrom`/`activityTo` inputs in `src/App.tsx` (lines 1378Ã¢â‚¬â€œ1387) also accept independent dates with no cross-validation. Affected users: reviewers applying date filters who see empty results with no indication the range is inverted. Current behavior: a reversed date range silently returns no results on the API and no message in the client. Expected behavior: the API returns `400` with a field-specific message for `from > to`; the client activity view shows an inline invalid-range message and filters nothing.
 
 ## Acceptance criteria
 

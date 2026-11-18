@@ -1,6 +1,6 @@
 # Reconcile the Active Wallet Role
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 

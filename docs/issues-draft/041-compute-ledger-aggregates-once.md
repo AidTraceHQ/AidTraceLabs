@@ -1,12 +1,12 @@
 # Avoid Recomputing Ledger Aggregates for Every Cursor Page
 
-**Complexity:** high
+**Complexity:** advanced
 
 ## Context
 
-Partly overlaps with open issues "Cursor Pagination UI" and "Dashboard Totals". This draft is narrowed to server-side per-page aggregate recompute only; it does not add UI controls or change dashboard total semantics.
+> **Overlap note:** Performance of server aggregate queries partly overlaps open issues "Cursor Pagination UI" and "Dashboard Totals". Narrowed to server-side per-page deduplication only; no UI controls or dashboard totals.
 
-Every transparency request runs a grouped amount/status summary and global distinct organization/asset queries before returning one page in `server/records.ts` (lines 693–725). The client fetches multiple pages for one view, so identical aggregate work is repeated for each cursor page. Affected users: public ledger visitors on large datasets who experience slow multi-page loads. Current behavior: summary and facet queries run on every cursor page. Expected behavior: summary/facets are returned on the first page only or through a separately cached query; `getAllPages` retains first-page metadata when combining pages; a measured before/after benchmark on a seeded database is recorded.
+Every transparency request runs a grouped amount/status summary and global distinct organization/asset queries before returning one page in `server/records.ts` (lines 693Ã¢â‚¬â€œ725). The client fetches multiple pages for one view, so identical aggregate work is repeated for each cursor page. Affected users: public ledger visitors on large datasets who experience slow multi-page loads. Current behavior: summary and facet queries run on every cursor page. Expected behavior: summary/facets are returned on the first page only or through a separately cached query; `getAllPages` retains first-page metadata when combining pages; a measured before/after benchmark on a seeded database is recorded.
 
 ## Acceptance criteria
 

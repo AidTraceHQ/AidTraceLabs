@@ -1,10 +1,10 @@
 # Assert Mainnet Horizon and Explorer Selection in Verification
 
-**Complexity:** trivial
+**Complexity:** beginner
 
 ## Context
 
-`horizonUrl` in `server/stellar-verification.ts` (lines 42–58) selects the mainnet base URL when `record.network === 'mainnet'` and testnet otherwise. `explorerLink` (lines 143–149) builds the `public` explorer link only for mainnet, and `recordSelect` in `server/records.ts` builds `verification_link` the same way (lines 248–251). Every verification test uses `network: 'testnet'` in `tests/backend.test.ts` (lines 107, 162, 211), so the mainnet branches are never exercised and could regress silently. Affected: mainnet deployments whose endpoint selection or transaction links break without any test failing.
+`horizonUrl` in `server/stellar-verification.ts` (lines 42Ã¢â‚¬â€œ58) selects the mainnet base URL when `record.network === 'mainnet'` and testnet otherwise. `explorerLink` (lines 143Ã¢â‚¬â€œ149) builds the `public` explorer link only for mainnet, and `recordSelect` in `server/records.ts` builds `verification_link` the same way (lines 248Ã¢â‚¬â€œ251). Every verification test uses `network: 'testnet'` in `tests/backend.test.ts` (lines 107, 162, 211), so the mainnet branches are never exercised and could regress silently. Affected: mainnet deployments whose endpoint selection or transaction links break without any test failing.
 
 ## Acceptance criteria
 

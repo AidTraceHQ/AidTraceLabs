@@ -1,10 +1,10 @@
 # Test the Hosted Node 22 Runtime in CI
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-CI installs and tests only on Node 20 in `.github/workflows/ci.yml` (lines 27–31), while the hosted demo project is configured for Node 22 in `docs/demo-deployment.md` (lines 35–43). The deployed major version is therefore not covered by the repository's automated checks. Affected users: maintainers who cannot detect Node 22 incompatibilities before deployment. Current behavior: CI only verifies Node 20; Node 22 is never tested. Expected behavior: a Node 22 CI run covers the same lockfile and supported checks (build, typecheck, test) while retaining Node 20 as the minimum-runtime check.
+CI installs and tests only on Node 20 in `.github/workflows/ci.yml` (lines 27Ã¢â‚¬â€œ31), while the hosted demo project is configured for Node 22 in `docs/demo-deployment.md` (lines 35Ã¢â‚¬â€œ43). The deployed major version is therefore not covered by the repository's automated checks. Affected users: maintainers who cannot detect Node 22 incompatibilities before deployment. Current behavior: CI only verifies Node 20; Node 22 is never tested. Expected behavior: a Node 22 CI run covers the same lockfile and supported checks (build, typecheck, test) while retaining Node 20 as the minimum-runtime check.
 
 ## Acceptance criteria
 

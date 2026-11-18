@@ -1,10 +1,10 @@
 # Adopt Type-Aware ESLint to Catch Floating Promises
 
-**Complexity:** high
+**Complexity:** advanced
 
 ## Context
 
-`eslint.config.js` (lines 7–29) extends `tseslint.configs.recommended` (line 10), which does not enable the type-aware rules. The language options never set `parserOptions.project` or `projectService` (lines 12–17), so ESLint parses types syntactically only. No floating (unawaited) promise is reported anywhere in the asynchronous code, and `npm run lint` passes with a dropped promise. The codebase has promise-returning handlers not awaited — e.g. `onClick={() => void loadTransparency()}` in `src/App.tsx` (line 1088) and `router.get('/api/me', …, retryReadOnlyDatabase(...))` in `server/auth.ts` (lines 336–337) — so a forgotten `await` degrades into a silent unhandled rejection rather than a lint error. Affected: reviewers and maintainers; the reliability work in "Handle Unhandled Rejections and Uncaught Exceptions" and "Abort Server-Side Horizon and Database Work When the Client Disconnects" has no lint guard, so the same class of defect can be reintroduced.
+`eslint.config.js` (lines 7Ã¢â‚¬â€œ29) extends `tseslint.configs.recommended` (line 10), which does not enable the type-aware rules. The language options never set `parserOptions.project` or `projectService` (lines 12Ã¢â‚¬â€œ17), so ESLint parses types syntactically only. No floating (unawaited) promise is reported anywhere in the asynchronous code, and `npm run lint` passes with a dropped promise. The codebase has promise-returning handlers not awaited Ã¢â‚¬â€ e.g. `onClick={() => void loadTransparency()}` in `src/App.tsx` (line 1088) and `router.get('/api/me', Ã¢â‚¬Â¦, retryReadOnlyDatabase(...))` in `server/auth.ts` (lines 336Ã¢â‚¬â€œ337) Ã¢â‚¬â€ so a forgotten `await` degrades into a silent unhandled rejection rather than a lint error. Affected: reviewers and maintainers; the reliability work in "Handle Unhandled Rejections and Uncaught Exceptions" and "Abort Server-Side Horizon and Database Work When the Client Disconnects" has no lint guard, so the same class of defect can be reintroduced.
 
 ## Acceptance criteria
 

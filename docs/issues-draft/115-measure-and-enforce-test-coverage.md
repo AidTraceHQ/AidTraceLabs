@@ -1,10 +1,10 @@
 # Measure and Enforce Test Coverage in CI
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The suite runs in CI but nothing measures what it covers, so a change can silently drop coverage of a security or money-path module. `vitest.config.ts` (lines 3–11) configures environment, include, setup files, and timeouts but no `coverage` block. `.github/workflows/ci.yml` (line 54) runs `npm test` with no coverage collection and no threshold gate. The Vitest coverage provider is not installed (`package.json`, lines 41–65). Affected: maintainers who cannot see whether a pull request reduced protection of `server/auth.ts`, `server/records.ts`, or `server/stellar-verification.ts`.
+The suite runs in CI but nothing measures what it covers, so a change can silently drop coverage of a security or money-path module. `vitest.config.ts` (lines 3Ã¢â‚¬â€œ11) configures environment, include, setup files, and timeouts but no `coverage` block. `.github/workflows/ci.yml` (line 54) runs `npm test` with no coverage collection and no threshold gate. The Vitest coverage provider is not installed (`package.json`, lines 41Ã¢â‚¬â€œ65). Affected: maintainers who cannot see whether a pull request reduced protection of `server/auth.ts`, `server/records.ts`, or `server/stellar-verification.ts`.
 
 ## Acceptance criteria
 

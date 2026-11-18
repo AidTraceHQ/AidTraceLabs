@@ -1,6 +1,6 @@
 # Add an Admin Audit-Log CSV Export
 
-**Complexity:** high
+**Complexity:** advanced
 
 ## Context
 

@@ -1,10 +1,10 @@
 # Add Concrete API Contract Examples
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-`docs/api.md` (lines 1–25) lists routes and query names but directs readers to source handlers for exact schemas. Contributors cannot see representative request/response envelopes for challenge login, record validation, or signed cursor pagination in one place. Affected users: contributors building integrations and onboarding developers. Current behavior: API doc has route signatures but no JSON examples. Expected behavior: safe synthetic JSON examples are provided for challenge issue, session result, record create, validation/conflict errors, and a paginated list with `nextCursor`/`hasMore`. Each example links to the handler or test that enforces it.
+`docs/api.md` (lines 1Ã¢â‚¬â€œ25) lists routes and query names but directs readers to source handlers for exact schemas. Contributors cannot see representative request/response envelopes for challenge login, record validation, or signed cursor pagination in one place. Affected users: contributors building integrations and onboarding developers. Current behavior: API doc has route signatures but no JSON examples. Expected behavior: safe synthetic JSON examples are provided for challenge issue, session result, record create, validation/conflict errors, and a paginated list with `nextCursor`/`hasMore`. Each example links to the handler or test that enforces it.
 
 ## Acceptance criteria
 

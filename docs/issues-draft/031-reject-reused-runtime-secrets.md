@@ -1,10 +1,10 @@
 # Reject Reuse of Session and Pseudonym Secrets
 
-**Complexity:** trivial
+**Complexity:** beginner
 
 ## Context
 
-Security documentation requires distinct `SESSION_SECRET` and `PSEUDONYM_SECRET`, but `validateEnvironment` in `server/environment.ts` (the secret checks at lines 40–49) tests only their lengths and placeholder prefixes. Accidental copy/paste reuse of the same value for both secrets currently passes validation. Affected users: operators who accidentally configure identical secrets and operators relying on cursor/CSRF integrity. Current behavior: equal `SESSION_SECRET` and `PSEUDONYM_SECRET` values pass validation. Expected behavior: validation rejects equality in production and development when both explicit values are set; the error names both variables but contains neither value. Evidence: `server/environment.ts` (function `validateEnvironment`, lines 40–49) and `docs/security.md` ("Secret handling" section at lines 15–20).
+Security documentation requires distinct `SESSION_SECRET` and `PSEUDONYM_SECRET`, but `validateEnvironment` in `server/environment.ts` (the secret checks at lines 40Ã¢â‚¬â€œ49) tests only their lengths and placeholder prefixes. Accidental copy/paste reuse of the same value for both secrets currently passes validation. Affected users: operators who accidentally configure identical secrets and operators relying on cursor/CSRF integrity. Current behavior: equal `SESSION_SECRET` and `PSEUDONYM_SECRET` values pass validation. Expected behavior: validation rejects equality in production and development when both explicit values are set; the error names both variables but contains neither value. Evidence: `server/environment.ts` (function `validateEnvironment`, lines 40Ã¢â‚¬â€œ49) and `docs/security.md` ("Secret handling" section at lines 15Ã¢â‚¬â€œ20).
 
 ## Acceptance criteria
 

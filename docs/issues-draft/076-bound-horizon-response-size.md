@@ -1,10 +1,10 @@
 # Bound the Horizon Response Size Before Parsing
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-`getJson` in `server/stellar-verification.ts` (lines 136–140, the `await response.json()` call) parses whatever Horizon returns with no size limit and no content-type check. The operations-loading loop in `checkTransaction` reads `result.data?._embedded?.records` without confirming it is an array (lines 240–242). Because the Horizon base URL is operator-configurable (function `horizonUrl`, lines 42–58), a misconfigured or compromised endpoint or redirect to a large resource can force the serverless function to buffer and parse an arbitrarily large body. Affected: operators of the API under a bad Horizon configuration. This adds a size guard and an array-shape guard; it does not overlap with the failure-state contract tests in "Lock Down Horizon Failure-State Contracts".
+`getJson` in `server/stellar-verification.ts` (lines 136Ã¢â‚¬â€œ140, the `await response.json()` call) parses whatever Horizon returns with no size limit and no content-type check. The operations-loading loop in `checkTransaction` reads `result.data?._embedded?.records` without confirming it is an array (lines 240Ã¢â‚¬â€œ242). Because the Horizon base URL is operator-configurable (function `horizonUrl`, lines 42Ã¢â‚¬â€œ58), a misconfigured or compromised endpoint or redirect to a large resource can force the serverless function to buffer and parse an arbitrarily large body. Affected: operators of the API under a bad Horizon configuration. This adds a size guard and an array-shape guard; it does not overlap with the failure-state contract tests in "Lock Down Horizon Failure-State Contracts".
 
 ## Acceptance criteria
 

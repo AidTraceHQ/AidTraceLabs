@@ -1,10 +1,10 @@
 # Return 4xx for Unsupported Request Encodings
 
-**Complexity:** trivial
+**Complexity:** beginner
 
 ## Context
 
-The error handler in `server/app.ts` maps only malformed JSON (`SyntaxError`, lines 29–32) and oversized bodies (`entity.too.large`, lines 33–41) to client error responses. Every other body-parser error falls through to the generic 500 branch (lines 47–52). The JSON parser is installed globally (`server/app.ts`, line 16) and rejects a body with an unsupported charset with an error carrying `type: 'charset.unsupported'` (status 415); an unsupported content-encoding yields `encoding.unsupported`. These client-caused conditions produce a misleading 500 today. Affected: API clients that send unusual but invalid content types. Current behavior: `Content-Type: application/json; charset=utf-16le` returns 500. Expected behavior: returns 415 with `{ "error": "..." }`.
+The error handler in `server/app.ts` maps only malformed JSON (`SyntaxError`, lines 29Ã¢â‚¬â€œ32) and oversized bodies (`entity.too.large`, lines 33Ã¢â‚¬â€œ41) to client error responses. Every other body-parser error falls through to the generic 500 branch (lines 47Ã¢â‚¬â€œ52). The JSON parser is installed globally (`server/app.ts`, line 16) and rejects a body with an unsupported charset with an error carrying `type: 'charset.unsupported'` (status 415); an unsupported content-encoding yields `encoding.unsupported`. These client-caused conditions produce a misleading 500 today. Affected: API clients that send unusual but invalid content types. Current behavior: `Content-Type: application/json; charset=utf-16le` returns 500. Expected behavior: returns 415 with `{ "error": "..." }`.
 
 ## Acceptance criteria
 

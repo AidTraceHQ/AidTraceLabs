@@ -1,10 +1,10 @@
 # Load Older Horizon Wallet Activity Pages
 
-**Complexity:** high
+**Complexity:** advanced
 
 ## Context
 
-Wallet activity fetches only 50 payment rows and 50 transaction rows and retains at most 100 merged entries in `src/App.tsx` (lines 392–493). No Horizon cursor is retained or exposed to the UI, so older activity is inaccessible. Affected users: wallet holders with significant transaction history who cannot see payments older than the first page. Current behavior: activity is capped at the first Horizon page with no load-more action. Expected behavior: Horizon paging tokens are retained separately for payments and transactions; a "load older" action merges, deduplicates, and sorts the next bounded page; cursors reset on wallet/network change; stale responses from previous selections are ignored. Evidence: `src/App.tsx` (activity fetch and merge logic, lines 392–493).
+Wallet activity fetches only 50 payment rows and 50 transaction rows and retains at most 100 merged entries in `src/App.tsx` (lines 392Ã¢â‚¬â€œ493). No Horizon cursor is retained or exposed to the UI, so older activity is inaccessible. Affected users: wallet holders with significant transaction history who cannot see payments older than the first page. Current behavior: activity is capped at the first Horizon page with no load-more action. Expected behavior: Horizon paging tokens are retained separately for payments and transactions; a "load older" action merges, deduplicates, and sorts the next bounded page; cursors reset on wallet/network change; stale responses from previous selections are ignored. Evidence: `src/App.tsx` (activity fetch and merge logic, lines 392Ã¢â‚¬â€œ493).
 
 ## Acceptance criteria
 

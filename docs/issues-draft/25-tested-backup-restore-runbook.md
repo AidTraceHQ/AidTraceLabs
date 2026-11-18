@@ -1,6 +1,6 @@
 # Document and Exercise Database Backup Restoration
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 

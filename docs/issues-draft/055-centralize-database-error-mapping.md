@@ -1,10 +1,10 @@
 # Centralize Database Error-to-Response Mapping
 
-**Complexity:** high
+**Complexity:** advanced
 
 ## Context
 
-Unique-violation handling exists only as an ad-hoc `23505` check in `server/records.ts` (the `uniqueViolation` helper, line 611–613) used in exactly two catch blocks (at lines 838–844 and 997–1003). Every other database error reaches the generic 500 branch of `errorHandler` in `server/app.ts` (lines 47–52). Admin role writes can raise foreign-key (`23503`) or check (`23514`) violations, and no shared SQLSTATE-to-HTTP translation exists outside the transient 503 path in `server/database-errors.ts` (function `databaseUnavailableResponse`, lines 58–66). The error object's `status`/`statusCode` is never consulted (confirmed by searching `server/`). Affected: API clients and operators who receive 500 for determinable client errors.
+Unique-violation handling exists only as an ad-hoc `23505` check in `server/records.ts` (the `uniqueViolation` helper, line 611Ã¢â‚¬â€œ613) used in exactly two catch blocks (at lines 838Ã¢â‚¬â€œ844 and 997Ã¢â‚¬â€œ1003). Every other database error reaches the generic 500 branch of `errorHandler` in `server/app.ts` (lines 47Ã¢â‚¬â€œ52). Admin role writes can raise foreign-key (`23503`) or check (`23514`) violations, and no shared SQLSTATE-to-HTTP translation exists outside the transient 503 path in `server/database-errors.ts` (function `databaseUnavailableResponse`, lines 58Ã¢â‚¬â€œ66). The error object's `status`/`statusCode` is never consulted (confirmed by searching `server/`). Affected: API clients and operators who receive 500 for determinable client errors.
 
 ## Acceptance criteria
 

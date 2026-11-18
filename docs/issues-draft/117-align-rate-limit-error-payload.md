@@ -1,10 +1,10 @@
 # Align the Rate-Limit Response With the Documented Error Contract
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The API documents a human-readable error contract (`{ "error": "..." }` in `docs/api.md`, line 3), and every hand-written failure follows it (e.g. `{ error: 'Too many challenges. Wait a few minutes and try again.' }` in `server/auth.ts`, line 186). The three `express-rate-limit` limiters break that contract by returning a machine code as the message: `server/rate-limits.ts` (lines 11 and 21) both use `message: { error: 'rate_limit_exceeded' }`. Those limiters are mounted on `/api` and `/api/auth` routes in `server/app.ts` (lines 14–15). A client cannot distinguish "you are rate limited" from validation errors by shape, and the frontend surfaces whatever string it receives via `ApiError` in `src/api.ts`. Affected: frontend users seeing `rate_limit_exceeded` instead of an actionable message.
+The API documents a human-readable error contract (`{ "error": "..." }` in `docs/api.md`, line 3), and every hand-written failure follows it (e.g. `{ error: 'Too many challenges. Wait a few minutes and try again.' }` in `server/auth.ts`, line 186). The three `express-rate-limit` limiters break that contract by returning a machine code as the message: `server/rate-limits.ts` (lines 11 and 21) both use `message: { error: 'rate_limit_exceeded' }`. Those limiters are mounted on `/api` and `/api/auth` routes in `server/app.ts` (lines 14Ã¢â‚¬â€œ15). A client cannot distinguish "you are rate limited" from validation errors by shape, and the frontend surfaces whatever string it receives via `ApiError` in `src/api.ts`. Affected: frontend users seeing `rate_limit_exceeded` instead of an actionable message.
 
 ## Acceptance criteria
 

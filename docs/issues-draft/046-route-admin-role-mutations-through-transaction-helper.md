@@ -1,10 +1,10 @@
 # Route Admin Role Mutations Through the Shared Transaction Helper
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The two admin role mutation handlers in `server/records.ts` open a pooled client and hand-roll the transaction instead of using the shared `withTransaction` helper. `POST /api/admin/roles` (lines 1144–1177) calls `pool.connect()`, `BEGIN`, `COMMIT`, and a `catch` that awaits `ROLLBACK` and rethrows. `DELETE /api/admin/roles/:address` (lines 1195–1224) does the same but additionally rolls back manually inside the `try` before its 404 response (lines 1204–1208). This duplicates `withTransaction` from `server/db.ts` (function `withTransaction`, lines 31–44) and gives the two routes divergent rollback paths. A fix to the shared helper will not reach these handlers. Affected: maintainers and any future transaction-handling change.
+The two admin role mutation handlers in `server/records.ts` open a pooled client and hand-roll the transaction instead of using the shared `withTransaction` helper. `POST /api/admin/roles` (lines 1144Ã¢â‚¬â€œ1177) calls `pool.connect()`, `BEGIN`, `COMMIT`, and a `catch` that awaits `ROLLBACK` and rethrows. `DELETE /api/admin/roles/:address` (lines 1195Ã¢â‚¬â€œ1224) does the same but additionally rolls back manually inside the `try` before its 404 response (lines 1204Ã¢â‚¬â€œ1208). This duplicates `withTransaction` from `server/db.ts` (function `withTransaction`, lines 31Ã¢â‚¬â€œ44) and gives the two routes divergent rollback paths. A fix to the shared helper will not reach these handlers. Affected: maintainers and any future transaction-handling change.
 
 ## Acceptance criteria
 

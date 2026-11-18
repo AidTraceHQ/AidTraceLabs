@@ -1,10 +1,10 @@
 # Cap and Report Active Sessions per Wallet
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-Every successful signature verification in `server/auth.ts` (the INSERT at lines 302–306) creates a new session row with no limit on how many can exist for one wallet. Sessions live for seven days (constant `sessionTtlMs` at line 22) and are only invalidated by logout or logout-everywhere (lines 364–374 and 391–402). A user who reconnects repeatedly — or an attacker with a captured signature — accumulates unbounded live sessions. Because `last_seen_at` is never updated (column exists in `migrations/001_initial_schema.sql`, line 31, but is never written), an operator cannot even identify stale sessions. Affected: wallet owners who cannot reason about where they are still signed in, and maintainers responsible for session hygiene.
+Every successful signature verification in `server/auth.ts` (the INSERT at lines 302Ã¢â‚¬â€œ306) creates a new session row with no limit on how many can exist for one wallet. Sessions live for seven days (constant `sessionTtlMs` at line 22) and are only invalidated by logout or logout-everywhere (lines 364Ã¢â‚¬â€œ374 and 391Ã¢â‚¬â€œ402). A user who reconnects repeatedly Ã¢â‚¬â€ or an attacker with a captured signature Ã¢â‚¬â€ accumulates unbounded live sessions. Because `last_seen_at` is never updated (column exists in `migrations/001_initial_schema.sql`, line 31, but is never written), an operator cannot even identify stale sessions. Affected: wallet owners who cannot reason about where they are still signed in, and maintainers responsible for session hygiene.
 
 ## Acceptance criteria
 

@@ -1,10 +1,10 @@
 # Make Record Creation Retry-Safe After Commit
 
-**Complexity:** high
+**Complexity:** advanced
 
 ## Context
 
-`POST /api/records` commits the record and audit rows, then attempts to persist the verification result and reload the record. If a later database operation fails, the client receives an error even though the record was saved. Retrying a create without a transaction hash can create a second record. Affected users: organizations and admins who cannot distinguish "not saved" from "saved but response failed." Current behavior: `server/records.ts` (function containing the `withTransaction` block at approximately lines 789–868) commits before all post-commit work; there is no idempotency key. Expected behavior: an idempotency key scoped to the authenticated organization wallet prevents duplicate records; post-commit persistence failures surface as a saved record in `pending` state with a Verify path.
+`POST /api/records` commits the record and audit rows, then attempts to persist the verification result and reload the record. If a later database operation fails, the client receives an error even though the record was saved. Retrying a create without a transaction hash can create a second record. Affected users: organizations and admins who cannot distinguish "not saved" from "saved but response failed." Current behavior: `server/records.ts` (function containing the `withTransaction` block at approximately lines 789Ã¢â‚¬â€œ868) commits before all post-commit work; there is no idempotency key. Expected behavior: an idempotency key scoped to the authenticated organization wallet prevents duplicate records; post-commit persistence failures surface as a saved record in `pending` state with a Verify path.
 
 ## Acceptance criteria
 

@@ -1,6 +1,6 @@
 # Reconcile General and Demo Deployment Status
 
-**Complexity:** medium
+**Complexity:** beginner
 
 ## Context
 

@@ -1,6 +1,6 @@
 # Define Security Headers for API and Static Responses
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 

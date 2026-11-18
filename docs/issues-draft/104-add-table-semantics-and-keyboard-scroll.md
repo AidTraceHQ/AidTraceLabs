@@ -1,12 +1,12 @@
 # Add Table Semantics and Keyboard Scrolling to the Data Tables
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-Partly a sub-task of open issue "Accessibility Pass". This draft is narrowed to table semantics and scroll only.
+> **Overlap note:** Sub-task of open issue "Accessibility Pass". Narrowed to table semantics and keyboard scroll only.
 
-The five data tables in `src/App.tsx` render bare `<table>`/`<th>` markup with no `<caption>`, no `scope` on header cells, and no exposed sort state. Only some headers are sortable buttons (lines 1226–1249); the sorted column is not exposed via `aria-sort`. On small viewports each table is forced to `min-width: 880px` in `src/index.css` (the `.table-wrap table` rule at lines 1051–1053) inside `.table-wrap { overflow-x: auto }` (lines 405–407), but the five table-wrap `<div>` elements (lines 1222, 1398, 1487, 1600, 1652) have no `tabindex`, `role`, or accessible name, so keyboard-only users cannot scroll a table horizontally. Affected: screen-reader and keyboard-only users across all five tables.
+The five data tables in `src/App.tsx` render bare `<table>`/`<th>` markup with no `<caption>`, no `scope` on header cells, and no exposed sort state. Only some headers are sortable buttons (lines 1226Ã¢â‚¬â€œ1249); the sorted column is not exposed via `aria-sort`. On small viewports each table is forced to `min-width: 880px` in `src/index.css` (the `.table-wrap table` rule at lines 1051Ã¢â‚¬â€œ1053) inside `.table-wrap { overflow-x: auto }` (lines 405Ã¢â‚¬â€œ407), but the five table-wrap `<div>` elements (lines 1222, 1398, 1487, 1600, 1652) have no `tabindex`, `role`, or accessible name, so keyboard-only users cannot scroll a table horizontally. Affected: screen-reader and keyboard-only users across all five tables.
 
 ## Acceptance criteria
 

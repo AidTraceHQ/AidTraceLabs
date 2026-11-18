@@ -1,12 +1,12 @@
 # Add a Skip-to-Content Link for Keyboard Users
 
-**Complexity:** trivial
+**Complexity:** beginner
 
 ## Context
 
-Partly a sub-task of open issue "Accessibility Pass". This draft is narrowed to the skip-to-content link only.
+> **Overlap note:** Sub-task of open issue "Accessibility Pass". Narrowed to skip-to-content link only.
 
-The layout in `src/App.tsx` renders a top bar (lines 925–981), then the tab bar (lines 1041–1072), and only then `<main>` (line 983). A keyboard or switch user must Tab through every top-bar control and every tab before reaching page content, and there is no bypass mechanism: no skip link, no jump target, and no `tabIndex` anywhere in the component (confirmed by reading `src/App.tsx`). Affected: keyboard-only, screen-reader, and motor-impaired users on every page (WCAG 2.4.1 Bypass Blocks).
+The layout in `src/App.tsx` renders a top bar (lines 925Ã¢â‚¬â€œ981), then the tab bar (lines 1041Ã¢â‚¬â€œ1072), and only then `<main>` (line 983). A keyboard or switch user must Tab through every top-bar control and every tab before reaching page content, and there is no bypass mechanism: no skip link, no jump target, and no `tabIndex` anywhere in the component (confirmed by reading `src/App.tsx`). Affected: keyboard-only, screen-reader, and motor-impaired users on every page (WCAG 2.4.1 Bypass Blocks).
 
 ## Acceptance criteria
 

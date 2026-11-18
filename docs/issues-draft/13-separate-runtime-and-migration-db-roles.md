@@ -1,6 +1,6 @@
 # Separate Runtime and Migration Database Roles
 
-**Complexity:** high
+**Complexity:** advanced
 
 ## Context
 

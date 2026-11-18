@@ -1,10 +1,10 @@
 # Lock Down Horizon Failure-State Contracts
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The `checkTransaction` function in `server/stellar-verification.ts` (lines 145–280) has distinct branches for transport failures, non-2xx responses, unknown transaction success, operation endpoint errors, malformed operation bodies, missing paging cursors, and explicitly unsuccessful transactions. The existing verification tests in `tests/backend.test.ts` (block at lines 80–286) exercise success, mismatch, strict-send, not-found, and paging budget but not the complete transport failure contract. Affected users: maintainers who cannot detect regressions in failure-path verification behavior. Current behavior: eight failure shapes are unasserted; a future refactor could change their `status` or `reason` values silently. Expected behavior: a focused failure-contract test suite using mocked `fetch` asserts each shape with no live Horizon calls and no database credentials required.
+The `checkTransaction` function in `server/stellar-verification.ts` (lines 145Ã¢â‚¬â€œ280) has distinct branches for transport failures, non-2xx responses, unknown transaction success, operation endpoint errors, malformed operation bodies, missing paging cursors, and explicitly unsuccessful transactions. The existing verification tests in `tests/backend.test.ts` (block at lines 80Ã¢â‚¬â€œ286) exercise success, mismatch, strict-send, not-found, and paging budget but not the complete transport failure contract. Affected users: maintainers who cannot detect regressions in failure-path verification behavior. Current behavior: eight failure shapes are unasserted; a future refactor could change their `status` or `reason` values silently. Expected behavior: a focused failure-contract test suite using mocked `fetch` asserts each shape with no live Horizon calls and no database credentials required.
 
 ## Acceptance criteria
 

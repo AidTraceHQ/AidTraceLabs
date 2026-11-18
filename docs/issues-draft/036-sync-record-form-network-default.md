@@ -1,10 +1,10 @@
 # Default New Records to the Selected Network
 
-**Complexity:** trivial
+**Complexity:** beginner
 
 ## Context
 
-The record form's `form` `useState` initializer in `src/App.tsx` (lines 241–255) seeds its `network` field from top-level `network` state only when the component mounts. Changing the top-level selector later does not update `form.network`, so a new record can start with a different network than the selected app context. Affected users: organization users creating records after switching networks in the same session. Current behavior: `form.network` reflects the network at mount time; subsequent top-level network changes are ignored. Expected behavior: opening a new record form always initializes `network` from the current selected network; if the app network changes while the form is open and the user has not explicitly chosen a form network, the default updates. The explicit per-record network selector and server validation are preserved. Evidence: `src/App.tsx` (form `useState` initializer, lines 241–255).
+The record form's `form` `useState` initializer in `src/App.tsx` (lines 241Ã¢â‚¬â€œ255) seeds its `network` field from top-level `network` state only when the component mounts. Changing the top-level selector later does not update `form.network`, so a new record can start with a different network than the selected app context. Affected users: organization users creating records after switching networks in the same session. Current behavior: `form.network` reflects the network at mount time; subsequent top-level network changes are ignored. Expected behavior: opening a new record form always initializes `network` from the current selected network; if the app network changes while the form is open and the user has not explicitly chosen a form network, the default updates. The explicit per-record network selector and server validation are preserved. Evidence: `src/App.tsx` (form `useState` initializer, lines 241Ã¢â‚¬â€œ255).
 
 ## Acceptance criteria
 

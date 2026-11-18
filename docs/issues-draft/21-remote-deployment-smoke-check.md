@@ -1,6 +1,6 @@
 # Add an HTTP Smoke Check for a Deployed Demo URL
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 

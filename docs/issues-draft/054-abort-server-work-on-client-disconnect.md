@@ -1,10 +1,10 @@
 # Abort Server-Side Horizon and Database Work When the Client Disconnects
 
-**Complexity:** high
+**Complexity:** advanced
 
 ## Context
 
-Nothing in the request path reacts to a client disconnecting. The verification fetch uses a fixed 10-second timeout independent of the request lifetime in `server/stellar-verification.ts` (function `getJson`, lines 131–134), and no route handler observes `request.on('close')` (confirmed by searching `server/` for request-close listeners, `AbortController`, and `abort`). If a browser navigates away or aborts a slow request to `POST /api/records` (handler at `server/records.ts`, lines 789–868), `POST /api/records/:id/verify` (lines 870–914), or `PUT /api/records/:id` (lines 916–1027), the server continues fetching Horizon pages and holding a pooled client. Affected: server capacity and Horizon request quota under abandoned requests.
+Nothing in the request path reacts to a client disconnecting. The verification fetch uses a fixed 10-second timeout independent of the request lifetime in `server/stellar-verification.ts` (function `getJson`, lines 131Ã¢â‚¬â€œ134), and no route handler observes `request.on('close')` (confirmed by searching `server/` for request-close listeners, `AbortController`, and `abort`). If a browser navigates away or aborts a slow request to `POST /api/records` (handler at `server/records.ts`, lines 789Ã¢â‚¬â€œ868), `POST /api/records/:id/verify` (lines 870Ã¢â‚¬â€œ914), or `PUT /api/records/:id` (lines 916Ã¢â‚¬â€œ1027), the server continues fetching Horizon pages and holding a pooled client. Affected: server capacity and Horizon request quota under abandoned requests.
 
 ## Acceptance criteria
 

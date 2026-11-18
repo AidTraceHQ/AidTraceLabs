@@ -1,10 +1,10 @@
 # Stabilize the Serverless Handler Import Test in the Full Suite
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The handler-export assertion in `tests/serverless.test.ts` (lines 27–30) imports `api/index.js` inside a test with a 30-second global timeout (`vitest.config.ts`, line 9). In the full suite the test timed out at 30s while 35/36 other tests passed; the file passed 3/3 in isolation with a 90s timeout. This creates a load-sensitive CI failure rather than a deterministic assertion failure. Affected users: CI and contributors running the full test suite. Current behavior: the serverless test passes in isolation but times out under full-suite worker load. Expected behavior: the test passes reliably in the full suite without raising the global timeout; the assertions that pool settings change under `VERCEL` and that the handler is callable are preserved.
+The handler-export assertion in `tests/serverless.test.ts` (lines 27Ã¢â‚¬â€œ30) imports `api/index.js` inside a test with a 30-second global timeout (`vitest.config.ts`, line 9). In the full suite the test timed out at 30s while 35/36 other tests passed; the file passed 3/3 in isolation with a 90s timeout. This creates a load-sensitive CI failure rather than a deterministic assertion failure. Affected users: CI and contributors running the full test suite. Current behavior: the serverless test passes in isolation but times out under full-suite worker load. Expected behavior: the test passes reliably in the full suite without raising the global timeout; the assertions that pool settings change under `VERCEL` and that the handler is callable are preserved.
 
 ## Acceptance criteria
 

@@ -1,10 +1,10 @@
 # Enforce Hash and Asset-Issuer Invariants in PostgreSQL
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The API validates 64-hex transaction hashes and the XLM/non-native issuer relationship in `validHash`/`validAddress` used by `validateRecord` in `server/records.ts` (function `validateRecord`, lines 133–157), but the `aid_records` table stores unconstrained `tx_hash`, `asset_code`, and `asset_issuer` text in `migrations/001_initial_schema.sql` (lines 47–68). Direct SQL imports or future write paths can persist invalid combinations that the application cannot verify consistently. Affected users: administrators and auditors relying on the invariant that all stored records are valid. Current behavior: schema constraints do not enforce these invariants; invalid data can be inserted directly. Expected behavior: a forward-only migration adds constraints for lowercase 64-hex hashes and the XLM/issuer relationship; a preflight reports counts of invalid rows without silently rewriting or deleting them.
+The API validates 64-hex transaction hashes and the XLM/non-native issuer relationship in `validHash`/`validAddress` used by `validateRecord` in `server/records.ts` (function `validateRecord`, lines 133Ã¢â‚¬â€œ157), but the `aid_records` table stores unconstrained `tx_hash`, `asset_code`, and `asset_issuer` text in `migrations/001_initial_schema.sql` (lines 47Ã¢â‚¬â€œ68). Direct SQL imports or future write paths can persist invalid combinations that the application cannot verify consistently. Affected users: administrators and auditors relying on the invariant that all stored records are valid. Current behavior: schema constraints do not enforce these invariants; invalid data can be inserted directly. Expected behavior: a forward-only migration adds constraints for lowercase 64-hex hashes and the XLM/issuer relationship; a preflight reports counts of invalid rows without silently rewriting or deleting them.
 
 ## Acceptance criteria
 

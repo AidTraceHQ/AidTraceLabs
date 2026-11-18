@@ -1,6 +1,6 @@
 # Serialize Concurrent Migration Runs
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 

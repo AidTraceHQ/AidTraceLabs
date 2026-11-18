@@ -1,10 +1,10 @@
 # Add a Favicon and Declare the Supported Color Scheme
 
-**Complexity:** trivial
+**Complexity:** beginner
 
 ## Context
 
-The document head in `index.html` (lines 1–12) declares a title, description, viewport, and `theme-color` but no icon link and no `color-scheme` hint. Two issues follow: the browser requests `/favicon.ico` on every load and the path is not served (no `public/` directory is tracked), so the tab shows a blank icon and the request returns 404. Additionally, the app supports a dark theme through `.app.dark` CSS variables in `src/index.css` (lines 55–62) but never advertises a supported color scheme, so form controls, scrollbars, and browser UI stay light even in dark mode. Affected: every visitor (branding polish) and dark-theme users on browsers that theme native widgets from `color-scheme`.
+The document head in `index.html` (lines 1Ã¢â‚¬â€œ12) declares a title, description, viewport, and `theme-color` but no icon link and no `color-scheme` hint. Two issues follow: the browser requests `/favicon.ico` on every load and the path is not served (no `public/` directory is tracked), so the tab shows a blank icon and the request returns 404. Additionally, the app supports a dark theme through `.app.dark` CSS variables in `src/index.css` (lines 55Ã¢â‚¬â€œ62) but never advertises a supported color scheme, so form controls, scrollbars, and browser UI stay light even in dark mode. Affected: every visitor (branding polish) and dark-theme users on browsers that theme native widgets from `color-scheme`.
 
 ## Acceptance criteria
 

@@ -1,10 +1,10 @@
 # Align Filtered Record Pagination with an Ordering Index
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-Every record list orders by `created_at DESC, id DESC`: `listRows` appends that ordering in `server/records.ts` (lines 449–455) and `transparencyHandler` calls it with `'r.created_at'` and `'r.id'` (the `listRows<RecordRow>` call at lines 712–719). The index intended for network/status filters is `aid_records_network_status_date_idx(network, status, disbursement_date, id)` in `migrations/001_initial_schema.sql` (line 75), which has no `created_at` column. A request such as `GET /api/transparency?network=testnet&status=verified` can use the composite index for filtering but must sort the matched rows in memory for every page, which degrades as the table grows. Affected: public and beneficiary record listings with filters.
+Every record list orders by `created_at DESC, id DESC`: `listRows` appends that ordering in `server/records.ts` (lines 449Ã¢â‚¬â€œ455) and `transparencyHandler` calls it with `'r.created_at'` and `'r.id'` (the `listRows<RecordRow>` call at lines 712Ã¢â‚¬â€œ719). The index intended for network/status filters is `aid_records_network_status_date_idx(network, status, disbursement_date, id)` in `migrations/001_initial_schema.sql` (line 75), which has no `created_at` column. A request such as `GET /api/transparency?network=testnet&status=verified` can use the composite index for filtering but must sort the matched rows in memory for every page, which degrades as the table grows. Affected: public and beneficiary record listings with filters.
 
 ## Acceptance criteria
 

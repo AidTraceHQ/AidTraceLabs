@@ -1,6 +1,6 @@
 # Use the Local Calendar Date for New Records
 
-**Complexity:** trivial
+**Complexity:** beginner
 
 ## Context
 
@@ -9,7 +9,7 @@ The form initializes its date input from a UTC ISO string, which can display the
 ## Acceptance criteria
 
 - `npx vitest run tests/date.test.ts` passes and asserts that a date input initialized from local midnight equals the local calendar date for a UTC-negative zone (e.g. `America/New_York`) and a UTC-positive zone (e.g. `Asia/Tokyo`).
-- A test that saves and then resets the form asserts the date input value is identical before and after, with no ±1 calendar-day shift.
+- A test that saves and then resets the form asserts the date input value is identical before and after, with no Ã‚Â±1 calendar-day shift.
 - No server or schema change is introduced.
 
 ## Files to touch

@@ -1,10 +1,10 @@
 # Serve Hashed Static Assets With Long-Lived Cache Headers
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-Vite emits content-hashed filenames for the built JavaScript and CSS bundles (Vite default hashed asset names from `vite.config.ts`, which sets `outDir: 'dist'` at lines 15–21), but nothing tells the browser it may cache them. `vercel.json` (lines 1–8) contains only `framework`, `buildCommand`, `outputDirectory`, and two rewrites — no `headers` block. No Express middleware sets cache headers for static assets. Result: every visit re-validates or re-downloads immutable hashed assets, and there is no rule that `index.html` must stay uncached while hashed assets may be cached forever. Affected: repeat visitors on slow connections, and operators paying for avoidable bandwidth.
+Vite emits content-hashed filenames for the built JavaScript and CSS bundles (Vite default hashed asset names from `vite.config.ts`, which sets `outDir: 'dist'` at lines 15Ã¢â‚¬â€œ21), but nothing tells the browser it may cache them. `vercel.json` (lines 1Ã¢â‚¬â€œ8) contains only `framework`, `buildCommand`, `outputDirectory`, and two rewrites Ã¢â‚¬â€ no `headers` block. No Express middleware sets cache headers for static assets. Result: every visit re-validates or re-downloads immutable hashed assets, and there is no rule that `index.html` must stay uncached while hashed assets may be cached forever. Affected: repeat visitors on slow connections, and operators paying for avoidable bandwidth.
 
 ## Acceptance criteria
 

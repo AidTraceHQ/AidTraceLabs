@@ -1,6 +1,6 @@
 # Persist the Theme Choice
 
-**Complexity:** trivial
+**Complexity:** beginner
 
 ## Context
 

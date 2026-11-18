@@ -1,10 +1,10 @@
 # Populate Structured Metadata on Audit Events
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-`audit_events` declares `metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb` in `migrations/001_initial_schema.sql` (line 112), but every audit write omits it. The `writeAudit` helper in `server/records.ts` (function `writeAudit`, lines 298–309) inserts only `(id, action, actor_wallet, subject_wallet, record_id, summary)`. The auth-side writes in `server/auth.ts` insert only `(id, action, actor_wallet, summary)` (the `audit()` helper at lines 166–172 and the inline INSERT at lines 307–311). `metadata_json` is therefore always `'{}'`. Concrete losses include the previous role on a role change (the `writeAudit` call at lines 1163–1170 interpolates the old role into a summary string only) and the verification status/ledger on verification events. Affected: admins reviewing audit history who need structured, queryable detail.
+`audit_events` declares `metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb` in `migrations/001_initial_schema.sql` (line 112), but every audit write omits it. The `writeAudit` helper in `server/records.ts` (function `writeAudit`, lines 298Ã¢â‚¬â€œ309) inserts only `(id, action, actor_wallet, subject_wallet, record_id, summary)`. The auth-side writes in `server/auth.ts` insert only `(id, action, actor_wallet, summary)` (the `audit()` helper at lines 166Ã¢â‚¬â€œ172 and the inline INSERT at lines 307Ã¢â‚¬â€œ311). `metadata_json` is therefore always `'{}'`. Concrete losses include the previous role on a role change (the `writeAudit` call at lines 1163Ã¢â‚¬â€œ1170 interpolates the old role into a summary string only) and the verification status/ledger on verification events. Affected: admins reviewing audit history who need structured, queryable detail.
 
 ## Acceptance criteria
 

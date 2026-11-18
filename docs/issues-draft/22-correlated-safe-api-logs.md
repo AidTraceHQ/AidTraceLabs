@@ -1,10 +1,10 @@
 # Add Correlated, Redacted API Error Logs
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-Unexpected API errors are logged without a request ID or structured safe fields, making hosted failures difficult to correlate while risking overly broad error serialization. Affected users: operators diagnosing API failures in hosted environments. Current behavior: errors are logged with only the raw error object; no request ID is included. Expected behavior: each request receives a correlation ID that is returned in a response header and included in the structured error log. Log lines must contain only method, route template, status, request ID, and a safe error category — never request bodies, cookies, signatures, tokens, full URLs with query strings, or database connection details. Evidence: `server/app.ts` (error handler at the `console.error('Unhandled API error:', error)` call).
+Unexpected API errors are logged without a request ID or structured safe fields, making hosted failures difficult to correlate while risking overly broad error serialization. Affected users: operators diagnosing API failures in hosted environments. Current behavior: errors are logged with only the raw error object; no request ID is included. Expected behavior: each request receives a correlation ID that is returned in a response header and included in the structured error log. Log lines must contain only method, route template, status, request ID, and a safe error category Ã¢â‚¬â€ never request bodies, cookies, signatures, tokens, full URLs with query strings, or database connection details. Evidence: `server/app.ts` (error handler at the `console.error('Unhandled API error:', error)` call).
 
 ## Acceptance criteria
 

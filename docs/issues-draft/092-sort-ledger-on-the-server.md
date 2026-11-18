@@ -1,12 +1,12 @@
 # Sort the Ledger on the Server and Bind Cursors to the Sort
 
-**Complexity:** high
+**Complexity:** advanced
 
 ## Context
 
-Partly overlaps with open issue "Cursor Pagination UI". This draft is narrowed to the server-side sort parameter and cursor-binding; UI pagination controls remain in that separate issue.
+> **Overlap note:** Server sort is closely related to open issue "Cursor Pagination UI". Narrowed: adds server `sort` param and cursor-binding; UI sort header remains a wiring-only change; pagination controls stay in "Cursor Pagination UI".
 
-Sorting is performed in the browser over the fully loaded dataset in `src/App.tsx` (sort buttons at lines 878–884, applied at lines 804–820). This cannot be correct once paging is bounded because the browser can only sort rows it holds. The list route already paginates with signed cursors bound to query filters but exposes no sort parameter, coupling "sort works" to "load everything". Affected: the long-term scalability of the public ledger.
+Sorting is performed in the browser over the fully loaded dataset in `src/App.tsx` (sort buttons at lines 878Ã¢â‚¬â€œ884, applied at lines 804Ã¢â‚¬â€œ820). This cannot be correct once paging is bounded because the browser can only sort rows it holds. The list route already paginates with signed cursors bound to query filters but exposes no sort parameter, coupling "sort works" to "load everything". Affected: the long-term scalability of the public ledger.
 
 ## Acceptance criteria
 

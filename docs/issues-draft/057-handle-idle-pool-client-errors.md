@@ -1,10 +1,10 @@
 # Handle Idle Database-Client Errors on the Connection Pool
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-The shared pool is constructed without an `error` listener in `server/db.ts` (lines 14–22, the exported `pool`), and no other module registers one either. `pg`'s `Pool` is an `EventEmitter` that emits `error` when a client that is idle in the pool loses its connection — common on Neon when a Fluid-compute instance scales down or a network path is reaped. Node's default behavior for an unhandled `error` event is to throw, so a single dropped idle connection can terminate the API process or fail an unrelated serverless invocation. The liveness endpoint returns `{ ok: true }` regardless, so a crash is not observable from the outside. Affected: production availability and operators relying on the liveness check in `docs/deployment.md`.
+The shared pool is constructed without an `error` listener in `server/db.ts` (lines 14Ã¢â‚¬â€œ22, the exported `pool`), and no other module registers one either. `pg`'s `Pool` is an `EventEmitter` that emits `error` when a client that is idle in the pool loses its connection Ã¢â‚¬â€ common on Neon when a Fluid-compute instance scales down or a network path is reaped. Node's default behavior for an unhandled `error` event is to throw, so a single dropped idle connection can terminate the API process or fail an unrelated serverless invocation. The liveness endpoint returns `{ ok: true }` regardless, so a crash is not observable from the outside. Affected: production availability and operators relying on the liveness check in `docs/deployment.md`.
 
 ## Acceptance criteria
 

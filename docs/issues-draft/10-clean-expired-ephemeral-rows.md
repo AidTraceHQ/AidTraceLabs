@@ -1,6 +1,6 @@
 # Clean Up Expired Authentication and Rate-Limit Rows
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 

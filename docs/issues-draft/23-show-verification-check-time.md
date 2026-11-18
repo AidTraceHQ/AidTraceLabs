@@ -1,6 +1,6 @@
 # Show the Last Verification Check Time
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 

@@ -1,10 +1,10 @@
 # Test Database-Backed Per-Address Rate Limits
 
-**Complexity:** high
+**Complexity:** advanced
 
 ## Context
 
-Authentication throttling uses a shared, database-backed counter in `server/auth.ts` (lines 149–164) keyed per address for challenges (line 185, 8 per 15 minutes), signature attempts (line 227, 12 per minute), record writes in `server/records.ts` (line 350, 60 per minute), and re-verification (line 873, 30 per minute). The only rate-limit test exercises the in-memory express-rate-limit IP limiter in `tests/rate-limits.test.ts` (lines 7–31); the database counter is never asserted, and the test environment neutralizes it in `tests/setup.ts` (lines 52–54). A regression in the `ON CONFLICT ... WHERE request_count < $4` upsert (lines 154–162) would pass silently. Affected: every user exposed to authentication or write abuse if throttling silently broke.
+Authentication throttling uses a shared, database-backed counter in `server/auth.ts` (lines 149Ã¢â‚¬â€œ164) keyed per address for challenges (line 185, 8 per 15 minutes), signature attempts (line 227, 12 per minute), record writes in `server/records.ts` (line 350, 60 per minute), and re-verification (line 873, 30 per minute). The only rate-limit test exercises the in-memory express-rate-limit IP limiter in `tests/rate-limits.test.ts` (lines 7Ã¢â‚¬â€œ31); the database counter is never asserted, and the test environment neutralizes it in `tests/setup.ts` (lines 52Ã¢â‚¬â€œ54). A regression in the `ON CONFLICT ... WHERE request_count < $4` upsert (lines 154Ã¢â‚¬â€œ162) would pass silently. Affected: every user exposed to authentication or write abuse if throttling silently broke.
 
 ## Acceptance criteria
 

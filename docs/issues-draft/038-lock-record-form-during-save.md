@@ -1,10 +1,10 @@
 # Prevent Record-Form Changes During Submission
 
-**Complexity:** medium
+**Complexity:** intermediate
 
 ## Context
 
-While the `saveRecord` handler in `src/App.tsx` (function `saveRecord`, lines 627–668) awaits the API, inputs and close controls in the "New disbursement" modal (`<form className="form modal-large">` at lines 1731–1889) remain enabled; only the submit button is disabled. The success handler resets from the submitted snapshot, so edits made during the request can be silently discarded. Affected users: organization and admin users who edit form fields while a save is in progress. Current behavior: form inputs and cancel/close controls remain interactive during submission; mid-flight edits are silently dropped on success. Expected behavior: the submitted snapshot is authoritative; controls are disabled or preserve edits during submission; on failure, submitted values remain for correction.
+While the `saveRecord` handler in `src/App.tsx` (function `saveRecord`, lines 627Ã¢â‚¬â€œ668) awaits the API, inputs and close controls in the "New disbursement" modal (`<form className="form modal-large">` at lines 1731Ã¢â‚¬â€œ1889) remain enabled; only the submit button is disabled. The success handler resets from the submitted snapshot, so edits made during the request can be silently discarded. Affected users: organization and admin users who edit form fields while a save is in progress. Current behavior: form inputs and cancel/close controls remain interactive during submission; mid-flight edits are silently dropped on success. Expected behavior: the submitted snapshot is authoritative; controls are disabled or preserve edits during submission; on failure, submitted values remain for correction.
 
 ## Acceptance criteria
 
