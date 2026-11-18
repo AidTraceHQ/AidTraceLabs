@@ -1,8 +1,8 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import { StrKey } from '@stellar/stellar-sdk';
 import type { PoolClient, QueryResultRow } from 'pg';
-import { csrfMatches, getSession, rateLimit } from './auth.js';
+import { csrfMatches, getSession, rateLimit, verifySep53Signature } from './auth.js';
 import { pool, withTransaction } from './db.js';
 import { noStore, requireAllowedOrigin } from './http-security.js';
 import { resolvePseudonymSecret } from './pseudonym.js';
@@ -57,6 +57,7 @@ type RecordRow = QueryResultRow & {
   status: RecordStatus;
   created_by: string;
   recipient_consent: boolean;
+  has_active_consent_acknowledgment: boolean;
   void_reason: string | null;
   voided_at: Date | string | null;
   verification_status: Verification['status'] | null;
@@ -83,8 +84,48 @@ const recordStatuses = new Set<RecordStatus>([
 ]);
 const roleValues = new Set<Role>(['donor', 'organization', 'beneficiary', 'admin']);
 const amountPattern = /^(\d+)(?:\.(\d{1,7}))?$/;
+const consentStatementVersion = 'v1';
+const consentStatement =
+  'I authorize AidTrace to publicly display my beneficiary name and wallet address, the record note and transaction hash, and this record verification destination, link, ledger, transaction time, checked source, amount, asset, issuer, and result, in addition to the standard public fields: record ID, pseudonymous beneficiary label, network, asset, amount, status, date, organization name, and verification outcome and checked fields. I understand that signing proves control of this wallet only; it does not establish my legal identity or prove informed consent.';
+const consentChallengeTtlMs = 5 * 60 * 1000;
+const consentValidityMs = 90 * 24 * 60 * 60 * 1000;
 const router = Router();
 const pseudonymSecret = resolvePseudonymSecret();
+
+function consentAcknowledgmentsEnabled(): boolean {
+  return process.env.CONSENT_ACKNOWLEDGMENTS_ENABLED === 'true';
+}
+
+function consentChallengeMessage(input: {
+  recordId: string;
+  walletAddress: string;
+  network: Network;
+  action: 'acknowledge' | 'revoke';
+  nonce: string;
+  issuedAt: Date;
+  expiresAt: Date;
+}): string {
+  return [
+    'AidTrace beneficiary publication acknowledgment ' + consentStatementVersion,
+    'Domain: ' + new URL(process.env.PUBLIC_APP_ORIGIN || 'http://localhost:5173').origin,
+    'Record ID: ' + input.recordId,
+    'Beneficiary wallet: ' + input.walletAddress,
+    'Network: ' + input.network,
+    'Action: ' + input.action,
+    'Nonce: ' + input.nonce,
+    'Issued At: ' + input.issuedAt.toISOString(),
+    'Expires: ' + input.expiresAt.toISOString(),
+    'Statement: ' + consentStatement,
+  ].join('\n');
+}
+
+router.get('/api/consent/config', noStore, (_request, response) => {
+  response.json({
+    enabled: consentAcknowledgmentsEnabled(),
+    statementVersion: consentStatementVersion,
+    statement: consentStatement,
+  });
+});
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -238,7 +279,13 @@ const recordSelect = `
   SELECT r.id, r.recipient_name, r.recipient_wallet, r.purpose, r.amount_stroops::text,
          r.asset_code, r.asset_issuer, r.network, r.tx_hash, r.disbursement_date, r.note,
          r.organization_wallet, o.display_name AS organization_name, r.created_at, r.updated_at,
-         r.status, r.created_by, r.recipient_consent, r.void_reason, r.voided_at,
+         r.status, r.created_by, r.recipient_consent,
+         EXISTS (
+           SELECT 1 FROM beneficiary_consent_acknowledgments ca
+           WHERE ca.record_id = r.id AND ca.wallet_address = r.recipient_wallet
+             AND ca.revoked_at IS NULL AND ca.expires_at > NOW()
+         ) AS has_active_consent_acknowledgment,
+         r.void_reason, r.voided_at,
          v.status AS verification_status, v.checked_at AS verification_checked_at,
          v.differences_json AS verification_differences, v.reason AS verification_reason,
          v.ledger AS verification_ledger, v.transaction_created_at AS verification_transaction_created_at,
@@ -262,28 +309,50 @@ const recordSelect = `
   ) v ON TRUE`;
 
 function publicRecord(record: AidRecord, consent: boolean): AidRecord {
-  if (consent) return record;
+  const verification = record.verification
+    ? {
+        status: record.verification.status,
+        checkedAt: record.verification.checkedAt,
+        differences: record.verification.differences,
+        sourceAccount: record.verification.sourceAccount,
+        amount: record.verification.amount,
+        asset: record.verification.asset,
+        assetIssuer: record.verification.assetIssuer,
+        reason: record.verification.reason,
+        ...(consent
+          ? {
+              ledger: record.verification.ledger,
+              createdAt: record.verification.createdAt,
+              destination: record.verification.destination,
+              link: record.verification.link,
+            }
+          : {}),
+      }
+    : undefined;
   return {
-    ...record,
-    recipient:
-      'Beneficiary-' +
-      createHmac('sha256', pseudonymSecret)
-        .update('aidtrace-beneficiary:')
-        .update(record.recipientAddress)
-        .digest('hex')
-        .slice(0, 12),
-    recipientAddress: '',
-    txHash: '',
-    note: '',
-    verification: record.verification
-      ? {
-          ...record.verification,
-          destination: undefined,
-          link: undefined,
-          createdAt: undefined,
-          ledger: undefined,
-        }
-      : undefined,
+    id: record.id,
+    recipient: consent
+      ? record.recipient
+      : 'Beneficiary-' +
+        createHmac('sha256', pseudonymSecret)
+          .update('aidtrace-beneficiary:')
+          .update(record.recipientAddress)
+          .digest('hex')
+          .slice(0, 12),
+    recipientAddress: consent ? record.recipientAddress : '',
+    purpose: '',
+    amount: record.amount,
+    asset: record.asset,
+    network: record.network,
+    txHash: consent ? record.txHash : '',
+    date: record.date,
+    note: consent ? record.note : '',
+    organization: '',
+    organizationName: record.organizationName,
+    createdAt: '',
+    status: record.status,
+    createdBy: '',
+    verification,
   };
 }
 
@@ -605,7 +674,15 @@ function optionalDateFilter(
 async function getRecord(id: string): Promise<{ record: AidRecord; consent: boolean } | null> {
   const result = await pool.query<RecordRow>(`${recordSelect} WHERE r.id = $1`, [id]);
   const row = result.rows[0];
-  return row ? { record: mapRecord(row), consent: row.recipient_consent } : null;
+  return row
+    ? {
+        record: mapRecord(row),
+        consent:
+          consentAcknowledgmentsEnabled() &&
+          row.recipient_consent &&
+          row.has_active_consent_acknowledgment,
+      }
+    : null;
 }
 
 function uniqueViolation(errorValue: unknown): boolean {
@@ -732,7 +809,14 @@ async function transparencyHandler(request: Request, response: Response): Promis
       (current.session.role === 'admin' ||
         (current.session.role === 'organization' &&
           current.session.address === record.organization));
-    return mayViewPrivateData ? record : publicRecord(record, row.recipient_consent);
+    return mayViewPrivateData
+      ? record
+      : publicRecord(
+          record,
+          consentAcknowledgmentsEnabled() &&
+            row.recipient_consent &&
+            row.has_active_consent_acknowledgment,
+        );
   });
   const summary = {
     byStatus: summaryResult.rows.map((row) => ({
@@ -762,6 +846,310 @@ async function transparencyHandler(request: Request, response: Response): Promis
 router.get('/api/transparency', noStore, publicReadIpRateLimit, (request, response) =>
   retryReadOnlyDatabase('/api/transparency', () => transparencyHandler(request, response)),
 );
+
+router.get('/api/records/:id/consent', noStore, async (request, response) => {
+  if (!consentAcknowledgmentsEnabled()) {
+    error(response, 404, 'Beneficiary acknowledgments are not enabled.');
+    return;
+  }
+  const current = await getSession(request);
+  if (!current || current.session.role !== 'beneficiary') {
+    error(response, current ? 403 : 401, 'A beneficiary wallet session is required.');
+    return;
+  }
+  const recordId = Array.isArray(request.params.id) ? request.params.id[0] : request.params.id;
+  const recordResult = await pool.query<{ recipient_wallet: string }>(
+    'SELECT recipient_wallet FROM aid_records WHERE id = $1',
+    [recordId],
+  );
+  const record = recordResult.rows[0];
+  if (!record) {
+    error(response, 404, 'Record not found.');
+    return;
+  }
+  if (record.recipient_wallet !== current.session.address) {
+    error(
+      response,
+      403,
+      'Only the beneficiary wallet for this record can view acknowledgment status.',
+    );
+    return;
+  }
+  const acknowledgment = await pool.query<{ statement_version: string; expires_at: Date }>(
+    `SELECT statement_version, expires_at
+     FROM beneficiary_consent_acknowledgments
+     WHERE record_id = $1 AND wallet_address = $2 AND revoked_at IS NULL AND expires_at > NOW()
+     ORDER BY acknowledged_at DESC
+     LIMIT 1`,
+    [recordId, current.session.address],
+  );
+  response.json({
+    acknowledgment: acknowledgment.rows[0]
+      ? {
+          active: true,
+          statementVersion: acknowledgment.rows[0].statement_version,
+          expiresAt: acknowledgment.rows[0].expires_at.toISOString(),
+        }
+      : { active: false },
+  });
+});
+
+router.post('/api/records/:id/consent/challenge', noStore, async (request, response) => {
+  if (!consentAcknowledgmentsEnabled()) {
+    error(response, 404, 'Beneficiary acknowledgments are not enabled.');
+    return;
+  }
+  if (!requireAllowedOrigin(request, response)) return;
+  const recordId = Array.isArray(request.params.id) ? request.params.id[0] : request.params.id;
+  const current = await getSession(request);
+  if (!current || current.session.role !== 'beneficiary') {
+    error(response, current ? 403 : 401, 'A beneficiary wallet session is required.');
+    return;
+  }
+  if (!csrfMatches(request.body?.csrfToken, current.session.csrfTokenHash)) {
+    error(response, 403, 'CSRF check failed. Refresh the app and retry.');
+    return;
+  }
+  if (!(await rateLimit('consent-challenge:' + current.session.address, 8, 15 * 60 * 1000))) {
+    error(response, 429, 'Too many acknowledgment requests. Wait and try again.');
+    return;
+  }
+  const recordResult = await pool.query<{
+    id: string;
+    recipient_wallet: string;
+    network: Network;
+    recipient_consent: boolean;
+  }>('SELECT id, recipient_wallet, network, recipient_consent FROM aid_records WHERE id = $1', [
+    recordId,
+  ]);
+  const record = recordResult.rows[0];
+  if (!record) {
+    error(response, 404, 'Record not found.');
+    return;
+  }
+  if (record.recipient_wallet !== current.session.address) {
+    error(response, 403, 'Only the beneficiary wallet for this record can acknowledge it.');
+    return;
+  }
+  if (!record.recipient_consent) {
+    error(response, 409, 'The organization has not requested publication acknowledgment.');
+    return;
+  }
+  const action = request.body?.action;
+  if (action !== 'acknowledge' && action !== 'revoke') {
+    error(response, 400, 'Acknowledgment action must be acknowledge or revoke.');
+    return;
+  }
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + consentChallengeTtlMs);
+  const challengeId = randomBytes(24).toString('hex');
+  const nonce = randomBytes(32).toString('hex');
+  const message = consentChallengeMessage({
+    recordId: record.id,
+    walletAddress: current.session.address,
+    network: record.network,
+    action,
+    nonce,
+    issuedAt: now,
+    expiresAt,
+  });
+  await pool.query(
+    `DELETE FROM beneficiary_consent_challenges
+     WHERE expires_at < NOW() - INTERVAL '1 day'`,
+  );
+  await pool.query(
+    `INSERT INTO beneficiary_consent_challenges
+       (challenge_id, record_id, wallet_address, network, action, nonce,
+        statement_version, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [
+      challengeId,
+      record.id,
+      current.session.address,
+      record.network,
+      action,
+      nonce,
+      consentStatementVersion,
+      expiresAt,
+    ],
+  );
+  response.json({
+    challengeId,
+    message,
+    expiresAt: expiresAt.getTime(),
+    statementVersion: consentStatementVersion,
+  });
+});
+
+router.post('/api/records/:id/consent/verify', noStore, async (request, response) => {
+  if (!consentAcknowledgmentsEnabled()) {
+    error(response, 404, 'Beneficiary acknowledgments are not enabled.');
+    return;
+  }
+  if (!requireAllowedOrigin(request, response)) return;
+  const current = await getSession(request);
+  if (!current || current.session.role !== 'beneficiary') {
+    error(response, current ? 403 : 401, 'A beneficiary wallet session is required.');
+    return;
+  }
+  if (!csrfMatches(request.body?.csrfToken, current.session.csrfTokenHash)) {
+    error(response, 403, 'CSRF check failed. Refresh the app and retry.');
+    return;
+  }
+  if (
+    typeof request.body?.challengeId !== 'string' ||
+    !/^[a-f0-9]{48}$/.test(request.body.challengeId) ||
+    typeof request.body?.signature !== 'string' ||
+    request.body.signature.length > 1000
+  ) {
+    error(response, 400, 'Invalid acknowledgment signature request.');
+    return;
+  }
+  const recordId = Array.isArray(request.params.id) ? request.params.id[0] : request.params.id;
+  const result = await withTransaction(async (client) => {
+    const challengeResult = await client.query<{
+      record_id: string;
+      wallet_address: string;
+      network: Network;
+      action: 'acknowledge' | 'revoke';
+      statement_version: string;
+      expires_at: Date;
+      used_at: Date | null;
+      nonce: string;
+    }>(
+      `SELECT record_id, wallet_address, network, action, statement_version, expires_at, used_at, nonce
+       FROM beneficiary_consent_challenges
+       WHERE challenge_id = $1 FOR UPDATE`,
+      [request.body.challengeId],
+    );
+    const challenge = challengeResult.rows[0];
+    if (
+      !challenge ||
+      challenge.record_id !== recordId ||
+      challenge.wallet_address !== current.session.address ||
+      challenge.statement_version !== consentStatementVersion
+    ) {
+      return { status: 400 as const, error: 'Acknowledgment challenge is invalid.' };
+    }
+    if (challenge.used_at) {
+      return { status: 409 as const, error: 'Acknowledgment challenge was already used.' };
+    }
+    if (challenge.expires_at.getTime() <= Date.now()) {
+      return {
+        status: 401 as const,
+        error: 'Acknowledgment challenge expired. Request a new one.',
+      };
+    }
+    const recordResult = await client.query<{
+      recipient_wallet: string;
+      network: Network;
+      recipient_consent: boolean;
+    }>(
+      'SELECT recipient_wallet, network, recipient_consent FROM aid_records WHERE id = $1 FOR UPDATE',
+      [recordId],
+    );
+    const record = recordResult.rows[0];
+    if (
+      !record ||
+      record.recipient_wallet !== current.session.address ||
+      record.network !== challenge.network
+    ) {
+      return { status: 403 as const, error: 'Only this record’s beneficiary can acknowledge it.' };
+    }
+    if (!record.recipient_consent && challenge.action === 'acknowledge') {
+      return {
+        status: 409 as const,
+        error: 'The organization publication request was withdrawn. Request a new acknowledgment.',
+      };
+    }
+    const message = consentChallengeMessage({
+      recordId,
+      walletAddress: current.session.address,
+      network: challenge.network,
+      action: challenge.action,
+      nonce: challenge.nonce,
+      issuedAt: new Date(challenge.expires_at.getTime() - consentChallengeTtlMs),
+      expiresAt: challenge.expires_at,
+    });
+    if (!verifySep53Signature(current.session.address, message, request.body.signature)) {
+      return { status: 400 as const, error: 'Beneficiary signature is invalid.' };
+    }
+    await client.query(
+      'UPDATE beneficiary_consent_challenges SET used_at = NOW() WHERE challenge_id = $1',
+      [request.body.challengeId],
+    );
+    if (challenge.action === 'acknowledge') {
+      await client.query(
+        `UPDATE beneficiary_consent_acknowledgments
+         SET revoked_at = NOW()
+         WHERE record_id = $1 AND wallet_address = $2
+           AND revoked_at IS NULL AND expires_at > NOW()`,
+        [recordId, current.session.address],
+      );
+      const expiresAt = new Date(Date.now() + consentValidityMs);
+      await client.query(
+        `INSERT INTO beneficiary_consent_acknowledgments
+           (id, record_id, wallet_address, statement_version, message_hash,
+            signature_hash, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          randomBytes(16).toString('hex'),
+          recordId,
+          current.session.address,
+          challenge.statement_version,
+          createHash('sha256').update(message).digest('hex'),
+          createHash('sha256').update(request.body.signature).digest('hex'),
+          expiresAt,
+        ],
+      );
+      await writeAudit(
+        client,
+        'beneficiary_consent_acknowledged',
+        'Beneficiary signed publication acknowledgment version ' +
+          challenge.statement_version +
+          ' for aid record ' +
+          recordId +
+          '.',
+        current.session.address,
+        recordId,
+        current.session.address,
+      );
+    } else {
+      const active = await client.query(
+        `UPDATE beneficiary_consent_acknowledgments
+         SET revoked_at = NOW(), revocation_message_hash = $3, revocation_signature_hash = $4
+         WHERE record_id = $1 AND wallet_address = $2 AND revoked_at IS NULL AND expires_at > NOW()`,
+        [
+          recordId,
+          current.session.address,
+          createHash('sha256').update(message).digest('hex'),
+          createHash('sha256').update(request.body.signature).digest('hex'),
+        ],
+      );
+      if (active.rowCount !== 1) {
+        return { status: 409 as const, error: 'There is no active acknowledgment to revoke.' };
+      }
+      await writeAudit(
+        client,
+        'beneficiary_consent_revoked',
+        'Beneficiary revoked publication acknowledgment for aid record ' + recordId + '.',
+        current.session.address,
+        recordId,
+        current.session.address,
+      );
+    }
+    return { status: 200 as const, message, action: challenge.action };
+  });
+  if (result.status !== 200) {
+    error(response, result.status, result.error);
+    return;
+  }
+  response.json({
+    ok: true,
+    action: result.action,
+    statementVersion: consentStatementVersion,
+  });
+});
 
 router.get('/api/beneficiary', noStore, async (request, response) => {
   const current = await authorize(request, response, ['beneficiary', 'admin']);
@@ -968,6 +1356,17 @@ router.put('/api/records/:id', noStore, async (request, response) => {
         ],
       );
       if (update.rowCount === 1) {
+        if (
+          !recordInput.recipientConsent ||
+          recordInput.recipientAddress !== existing.record.recipientAddress
+        ) {
+          await client.query(
+            `UPDATE beneficiary_consent_acknowledgments
+             SET revoked_at = NOW()
+             WHERE record_id = $1 AND revoked_at IS NULL AND expires_at > NOW()`,
+            [existing.record.id],
+          );
+        }
         await client.query(
           `INSERT INTO verification_results (id, aid_record_id, status, differences_json, reason, checked_at)
            VALUES ($1, $2, $3, '[]'::jsonb, $4, NOW())`,
