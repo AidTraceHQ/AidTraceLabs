@@ -51,7 +51,7 @@ jobs:
       - run: npm run lint
       - run: npm run format:check
       - run: npm run build
-      - run: npm test
+      - run: npm run test:coverage
       - run: npm run smoke
         env:
           DATABASE_URL: postgresql://aidtrace:aidtrace@localhost:5432/aidtrace_test

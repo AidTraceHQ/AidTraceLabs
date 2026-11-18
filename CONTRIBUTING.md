@@ -41,11 +41,47 @@ Use concise Conventional Commit subjects, for example `fix: separate pseudonym s
 
 - `npm run typecheck`
 - `npm run lint`
-- `npm test`
+- `npm test` (suite only, without coverage)
+- `npm run test:coverage` (backend coverage report and threshold gate)
 - `npm run build`
-- `npm run check` runs all four gates.
+- `npm run check` runs typecheck, lint, format check, tests, smoke, and build.
+  CI runs `npm run test:coverage` in place of `npm test`; run both `npm run check`
+  and `npm run test:coverage` before submitting a PR.
 
 Database-backed tests need `TEST_DATABASE_URL` pointed at a dedicated disposable/test branch. Tests use Stellar Horizon mocks unless a test explicitly documents otherwise. Do not use real funds or production records.
+
+### Coverage gate
+
+`npm run test:coverage` uses Vitest's V8 provider and the same test suite as
+`npm test`. It measures all `server/**/*.ts` files, including unimported files;
+this is backend coverage, not a frontend/UI coverage claim. The terminal summary,
+`coverage/coverage-summary.json`, and `coverage/index.html` show the results. These
+reports are local build output: do not commit them.
+
+The initial baseline on `789b410` (Node 20, PostgreSQL 16, all 36 tests passing,
+none skipped) and committed percentage floors are below. Each cell is
+**measured / minimum**; exact-path floors apply independently to each critical
+module as well as the aggregate backend floor.
+
+| Scope                            | Statements | Branches   | Functions    | Lines      |
+| -------------------------------- | ---------- | ---------- | ------------ | ---------- |
+| All server files                 | 75.48 / 75 | 68.08 / 68 | 89.23 / 89   | 78.44 / 78 |
+| `server/auth.ts`                 | 78.91 / 78 | 72.07 / 72 | 96.29 / 96   | 80.47 / 80 |
+| `server/records.ts`              | 71.45 / 71 | 67.80 / 67 | 91.93 / 91   | 75.00 / 75 |
+| `server/stellar-verification.ts` | 84.61 / 84 | 64.22 / 64 | 100.00 / 100 | 88.79 / 88 |
+
+Use the dedicated test database settings described above when measuring coverage.
+Without the database-backed tests, the measured baseline is incomplete and the
+gate fails. CI supplies a disposable PostgreSQL service. When coverage improves,
+review and raise the floors in `vitest.config.ts`; do not lower them simply to
+make a change pass, or exclude uncovered code to hide a regression.
+
+To check the failure path, temporarily raise a floor above its measured value
+(for example, set the global statements floor to 100), run
+`npm run test:coverage`, and verify a non-zero exit with a threshold error.
+A new untested branch that drops `server/auth.ts` below its own branch floor must
+also fail, even if aggregate coverage still passes. Restore any temporary edits
+and rerun the normal gate before committing.
 
 ## Scope and evidence
 
