@@ -24,13 +24,19 @@ export type Verification = {
   assetIssuer?: string;
   link?: string;
   reason?: string;
+  memo?: string;
+  memoType?: MemoType;
 };
+
+type MemoType = 'text' | 'id' | 'hash' | 'return';
 
 type HorizonTransaction = {
   successful?: boolean;
   ledger?: number;
   created_at?: string;
   source_account?: string;
+  memo_type?: string;
+  memo?: string;
 };
 
 type HorizonOperation = Record<string, unknown> & { paging_token?: string };
@@ -38,6 +44,10 @@ type HorizonOperation = Record<string, unknown> & { paging_token?: string };
 const operationPageSize = 200;
 const operationPageLimit = 20;
 const amountPattern = /^(\d+)(?:\.(\d{1,7}))?$/;
+const memoTypes: ReadonlySet<string> = new Set<MemoType>(['text', 'id', 'hash', 'return']);
+// Stellar memos are at most 28 bytes (text) or 32 bytes base64-encoded (hash/return);
+// this bound only guards storage against an unexpected Horizon response.
+const memoMaxLength = 128;
 
 function horizonUrl(network: Network): URL {
   const configured =
@@ -140,6 +150,24 @@ async function getJson<T>(url: URL): Promise<{ response: Response; data?: T }> {
   }
 }
 
+function isMemoType(value: unknown): value is MemoType {
+  return typeof value === 'string' && memoTypes.has(value);
+}
+
+/**
+ * Capture-only: the memo is reported as on-chain evidence and never affects matching.
+ * `none`, unknown types, and missing/non-string/empty values yield no memo fields.
+ * An id memo is a uint64, so it stays a string (Number loses precision past 2^53);
+ * hash/return memos keep Horizon's base64 encoding. NUL characters are removed because
+ * PostgreSQL TEXT cannot store them and the insert would otherwise fail the verification.
+ */
+function transactionMemo(transaction: HorizonTransaction): Pick<Verification, 'memo' | 'memoType'> {
+  const { memo_type: memoType } = transaction;
+  if (!isMemoType(memoType) || typeof transaction.memo !== 'string') return {};
+  const memo = transaction.memo.replaceAll('\u0000', '').slice(0, memoMaxLength);
+  return memo ? { memo, memoType } : {};
+}
+
 function explorerLink(network: Network, txHash: string): string {
   return (
     (network === 'mainnet'
@@ -212,6 +240,7 @@ export async function checkTransaction(record: AidPayment): Promise<Verification
       createdAt: transaction.created_at,
       sourceAccount: transaction.source_account,
       link,
+      ...transactionMemo(transaction),
     };
   }
   if (transaction.successful !== true) {
@@ -353,6 +382,7 @@ export async function checkTransaction(record: AidPayment): Promise<Verification
         asset: asset.code,
         assetIssuer: asset.issuer || undefined,
         link,
+        ...transactionMemo(transaction),
       };
     }
   }
@@ -380,5 +410,6 @@ export async function checkTransaction(record: AidPayment): Promise<Verification
     asset: bestCandidate?.assetCode || undefined,
     assetIssuer: bestCandidate?.assetIssuer || undefined,
     link,
+    ...transactionMemo(transaction),
   };
 }

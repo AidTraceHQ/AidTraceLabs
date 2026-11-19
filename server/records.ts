@@ -71,6 +71,8 @@ type RecordRow = QueryResultRow & {
   verification_asset_code: string | null;
   verification_asset_issuer: string | null;
   verification_link: string | null;
+  verification_memo: string | null;
+  verification_memo_type: Verification['memoType'] | null;
 };
 
 const recordStatuses = new Set<RecordStatus>([
@@ -230,6 +232,10 @@ function mapRecord(row: RecordRow): AidRecord {
       link: row.verification_link || undefined,
       reason: row.verification_reason || undefined,
     };
+    if (row.verification_memo !== null && row.verification_memo_type !== null) {
+      record.verification.memo = row.verification_memo;
+      record.verification.memoType = row.verification_memo_type;
+    }
   }
   return record;
 }
@@ -245,6 +251,7 @@ const recordSelect = `
          v.source_account AS verification_source_account, v.destination AS verification_destination,
          v.amount_stroops::text AS verification_amount_stroops, v.asset_code AS verification_asset_code,
          v.asset_issuer AS verification_asset_issuer,
+         v.memo AS verification_memo, v.memo_type AS verification_memo_type,
          CASE WHEN v.ledger IS NULL THEN NULL ELSE
            CASE WHEN r.network = 'mainnet' THEN 'https://stellar.expert/explorer/public/tx/'
                 ELSE 'https://stellar.expert/explorer/testnet/tx/' END || r.tx_hash
@@ -254,7 +261,7 @@ const recordSelect = `
   LEFT JOIN LATERAL (
     SELECT vr.status, vr.checked_at, vr.differences_json, vr.reason, vr.ledger,
            vr.transaction_created_at, vr.source_account, vr.destination, vr.amount_stroops,
-           vr.asset_code, vr.asset_issuer
+           vr.asset_code, vr.asset_issuer, vr.memo, vr.memo_type
     FROM verification_results vr
     WHERE vr.aid_record_id = r.id
     ORDER BY vr.checked_at DESC, vr.id DESC
@@ -282,6 +289,8 @@ function publicRecord(record: AidRecord, consent: boolean): AidRecord {
           link: undefined,
           createdAt: undefined,
           ledger: undefined,
+          memo: undefined,
+          memoType: undefined,
         }
       : undefined,
   };
@@ -650,8 +659,8 @@ async function storeVerification(
     `INSERT INTO verification_results
        (id, aid_record_id, status, differences_json, reason, ledger,
         transaction_created_at, source_account, destination, amount_stroops,
-        asset_code, asset_issuer, checked_at, cache_expires_at)
-     VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11, $12, NOW(),
+        asset_code, asset_issuer, memo, memo_type, checked_at, cache_expires_at)
+     VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(),
              CASE WHEN $3 IN ('verified', 'mismatch') THEN NOW() + INTERVAL '1 hour' END)`,
     [
       randomBytes(16).toString('hex'),
@@ -666,6 +675,8 @@ async function storeVerification(
       amountStroops,
       assetCode,
       result.assetIssuer || null,
+      result.memo && result.memoType ? result.memo : null,
+      result.memo && result.memoType ? result.memoType : null,
     ],
   );
   await client.query(
