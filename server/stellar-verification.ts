@@ -1,7 +1,7 @@
 import { URL } from 'node:url';
 
 type Network = 'testnet' | 'mainnet';
-type AidPayment = {
+export type AidPayment = {
   network: Network;
   txHash: string;
   organizationWallet: string;
@@ -127,10 +127,15 @@ function operationSource(operation: HorizonOperation, transaction: HorizonTransa
   );
 }
 
-async function getJson<T>(url: URL): Promise<{ response: Response; data?: T }> {
+async function getJson<T>(
+  url: URL,
+  signal?: AbortSignal,
+): Promise<{ response: Response; data?: T }> {
   const response = await fetch(url, {
     headers: { Accept: 'application/json' },
-    signal: AbortSignal.timeout(10_000),
+    signal: signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+      : AbortSignal.timeout(10_000),
   });
   if (!response.ok) return { response };
   try {
@@ -148,7 +153,10 @@ function explorerLink(network: Network, txHash: string): string {
   );
 }
 
-export async function checkTransaction(record: AidPayment): Promise<Verification> {
+export async function checkTransaction(
+  record: AidPayment,
+  options: { signal?: AbortSignal } = {},
+): Promise<Verification> {
   const checkedAt = new Date().toISOString();
   if (!record.txHash) {
     return {
@@ -174,7 +182,7 @@ export async function checkTransaction(record: AidPayment): Promise<Verification
   let transactionResponse: Response;
   let transaction: HorizonTransaction | undefined;
   try {
-    const result = await getJson<HorizonTransaction>(transactionUrl);
+    const result = await getJson<HorizonTransaction>(transactionUrl, options.signal);
     transactionResponse = result.response;
     transaction = result.data;
   } catch {
@@ -237,7 +245,10 @@ export async function checkTransaction(record: AidPayment): Promise<Verification
     let response: Response;
     let pageRecords: HorizonOperation[] | undefined;
     try {
-      const result = await getJson<{ _embedded?: { records?: HorizonOperation[] } }>(operationsUrl);
+      const result = await getJson<{ _embedded?: { records?: HorizonOperation[] } }>(
+        operationsUrl,
+        options.signal,
+      );
       response = result.response;
       pageRecords = result.data?._embedded?.records;
     } catch {

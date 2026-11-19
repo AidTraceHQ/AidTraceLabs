@@ -12,6 +12,7 @@ All API responses are configured with `Cache-Control: no-store`. Error responses
 | `POST /api/auth/logout`            | Optional session, Origin; CSRF when signed in | Revoke current session and clear cookie.                        |
 | `POST /api/auth/logout-everywhere` | Authenticated, CSRF                           | Revoke every session for the wallet.                            |
 | `GET /api/transparency`            | Public; optional session changes projection   | Filter and page public records and summary/facets.              |
+| `GET /api/records/:id`             | Public; optional session changes projection   | Return one record with the same privacy projection as the list. |
 | `GET /api/beneficiary`             | Beneficiary or admin                          | Return records scoped to the session wallet and filters.        |
 | `POST /api/records`                | Organization or admin, CSRF                   | Create a record and begin verification when a hash is supplied. |
 | `PUT /api/records/:id`             | Owning organization or admin, CSRF            | Edit an allowed record.                                         |
