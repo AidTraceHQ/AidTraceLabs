@@ -99,6 +99,7 @@ type AuditItem = {
   recordId?: string;
   createdAt: string;
 };
+type OrganizationProfile = { address: string; displayName: string };
 const horizon: Record<Network, string> = {
   testnet: 'https://horizon-testnet.stellar.org',
   mainnet: 'https://horizon.stellar.org',
@@ -190,9 +191,9 @@ export default function App() {
   const locale = navigator.language || 'en-US';
   const [session, setSession] = useState<Session | null>(null);
   const [network, setNetwork] = useState<Network>(readNetworkPreference);
-  const [page, setPage] = useState<'transparency' | 'activity' | 'beneficiary' | 'admin'>(
-    'transparency',
-  );
+  const [page, setPage] = useState<
+    'transparency' | 'activity' | 'beneficiary' | 'organization' | 'admin'
+  >('transparency');
   const [records, setRecords] = useState<AidRecord[]>([]);
   const [organizationOptions, setOrganizationOptions] = useState<string[]>([]);
   const [assetOptions, setAssetOptions] = useState<string[]>([]);
@@ -205,6 +206,9 @@ export default function App() {
   const [roles, setRoles] = useState<
     { address: string; role: Role; updatedAt: string; updatedBy: string }[]
   >([]);
+  const [organizationProfile, setOrganizationProfile] = useState<OrganizationProfile | null>(null);
+  const [organizationDisplayName, setOrganizationDisplayName] = useState('');
+  const [profileBusy, setProfileBusy] = useState(false);
   const [balance, setBalance] = useState('0');
   const [loading, setLoading] = useState(true);
   const [activityLoading, setActivityLoading] = useState(false);
@@ -254,6 +258,7 @@ export default function App() {
   const pageSize = 10;
   const transparencyRequestId = useRef(0);
   const auditRequestId = useRef(0);
+  const organizationProfileRequestId = useRef(0);
 
   const notify = useCallback((text: string) => {
     setToast(text);
@@ -352,6 +357,42 @@ export default function App() {
       if (requestId === auditRequestId.current) setError(messageOf(e));
     }
   }, [session, auditAction, auditSearch, auditAddress, auditRecordId]);
+  const loadOrganizationProfile = useCallback(async () => {
+    if (!session || session.role !== 'organization') return;
+    const requestId = ++organizationProfileRequestId.current;
+    setOrganizationProfile(null);
+    setOrganizationDisplayName('');
+    try {
+      const result = await api.get<{ profile: OrganizationProfile }>(
+        '/api/organizations/' + encodeURIComponent(session.address) + '/profile',
+      );
+      if (requestId === organizationProfileRequestId.current) {
+        setOrganizationProfile(result.data.profile);
+        setOrganizationDisplayName(result.data.profile.displayName);
+      }
+    } catch (e) {
+      if (requestId === organizationProfileRequestId.current) setError(messageOf(e));
+    }
+  }, [session]);
+  async function saveOrganizationProfile(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session || session.role !== 'organization') return;
+    setProfileBusy(true);
+    try {
+      const result = await api.put<{ profile: OrganizationProfile }>(
+        '/api/organizations/' + encodeURIComponent(session.address) + '/profile',
+        { csrfToken: session.csrfToken, displayName: organizationDisplayName },
+      );
+      setOrganizationProfile(result.data.profile);
+      setOrganizationDisplayName(result.data.profile.displayName);
+      await loadTransparency();
+      notify('Organization display name updated.');
+    } catch (e) {
+      setError(messageOf(e));
+    } finally {
+      setProfileBusy(false);
+    }
+  }
   const restoreSession = useCallback(async () => {
     try {
       const r = await api.get<{ session: Session | null }>('/api/me');
@@ -378,6 +419,9 @@ export default function App() {
   useEffect(() => {
     if (page === 'beneficiary' && session) void loadBeneficiaryRecords();
   }, [page, session, loadBeneficiaryRecords]);
+  useEffect(() => {
+    if (page === 'organization') void loadOrganizationProfile();
+  }, [page, loadOrganizationProfile]);
   async function loadRoles() {
     try {
       const r = await api.getAllPages<{
@@ -1084,6 +1128,14 @@ export default function App() {
               My Activity
             </button>
           )}
+          {session?.role === 'organization' && (
+            <button
+              className={`tab${page === 'organization' ? ' active' : ''}`}
+              onClick={() => setPage('organization')}
+            >
+              Organization Profile
+            </button>
+          )}
           {session && (session.role === 'beneficiary' || session.role === 'admin') && (
             <button
               className={`tab${page === 'beneficiary' ? ' active' : ''}`}
@@ -1494,6 +1546,42 @@ export default function App() {
                 <p>There are no matching payments for this wallet and network.</p>
               </div>
             )}
+          </section>
+        )}
+
+        {page === 'organization' && session?.role === 'organization' && (
+          <section className="panel">
+            <div className="section-head">
+              <div>
+                <p className="eyebrow">ORGANIZATION PROFILE</p>
+                <h2>Public display name</h2>
+                <p>
+                  This name appears on your existing and future public aid records. Your wallet
+                  address remains the organization identity.
+                </p>
+              </div>
+            </div>
+            <form className="role-form" onSubmit={saveOrganizationProfile}>
+              <label>
+                Display name
+                <input
+                  value={organizationDisplayName}
+                  onChange={(event) => setOrganizationDisplayName(event.target.value)}
+                  maxLength={80}
+                  required
+                />
+              </label>
+              <span className="muted">
+                Current profile: {organizationProfile?.displayName || 'Loading…'}
+              </span>
+              <button
+                className="button primary"
+                type="submit"
+                disabled={profileBusy || !organizationProfile}
+              >
+                {profileBusy ? 'Saving…' : 'Save display name'}
+              </button>
+            </form>
           </section>
         )}
 

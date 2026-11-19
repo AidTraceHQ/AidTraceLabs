@@ -319,6 +319,10 @@ async function ensureOrganization(client: PoolClient, address: string) {
   );
 }
 
+function normalizeOrganizationName(value: string) {
+  return value.normalize('NFKC').trim().replace(/\s+/g, ' ');
+}
+
 function error(response: Response, status: number, message: string) {
   response.status(status).json({ error: message });
 }
@@ -816,6 +820,103 @@ router.get('/api/beneficiary', noStore, async (request, response) => {
     createdAt: item.createdAt,
     id: item.id,
   }));
+});
+
+router.get('/api/organizations/:address/profile', noStore, async (request, response) => {
+  const current = await authorize(request, response, ['organization']);
+  if (!current) return;
+  const address = Array.isArray(request.params.address)
+    ? request.params.address[0]
+    : request.params.address;
+  if (address !== current.session.address) {
+    error(response, 403, 'You can only view your own organization profile.');
+    return;
+  }
+  const result = await pool.query<{ wallet_address: string; display_name: string }>(
+    'SELECT wallet_address, display_name FROM organizations WHERE wallet_address = $1',
+    [address],
+  );
+  const profile = result.rows[0];
+  if (!profile) {
+    error(response, 404, 'Organization profile not found.');
+    return;
+  }
+  response.json({
+    profile: { address: profile.wallet_address, displayName: profile.display_name },
+  });
+});
+
+router.put('/api/organizations/:address/profile', noStore, async (request, response) => {
+  const current = await authorize(request, response, ['organization'], true);
+  if (!current) return;
+  const address = Array.isArray(request.params.address)
+    ? request.params.address[0]
+    : request.params.address;
+  if (address !== current.session.address) {
+    error(response, 403, 'You can only update your own organization profile.');
+    return;
+  }
+  const body = isObject(request.body) ? request.body : {};
+  if (typeof body.displayName !== 'string') {
+    error(response, 400, 'A display name is required.');
+    return;
+  }
+  const displayName = normalizeOrganizationName(body.displayName);
+  if (!displayName || displayName.length > 80) {
+    error(response, 400, 'Display name must contain 1 to 80 characters.');
+    return;
+  }
+  const normalizedName = displayName.toLowerCase();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const duplicate = await client.query(
+      `SELECT 1
+       FROM organizations
+       WHERE wallet_address <> $1
+         AND (
+           normalized_name = $2
+           OR lower(regexp_replace(btrim(display_name), '[[:space:]]+', ' ', 'g')) = $2
+         )
+       LIMIT 1`,
+      [address, normalizedName],
+    );
+    if (duplicate.rowCount) {
+      await client.query('ROLLBACK');
+      error(response, 409, 'That organization display name is already in use.');
+      return;
+    }
+    const updated = await client.query(
+      `UPDATE organizations
+       SET display_name = $2, normalized_name = $3, updated_at = NOW()
+       WHERE wallet_address = $1`,
+      [address, displayName, normalizedName],
+    );
+    if (updated.rowCount !== 1) {
+      await client.query('ROLLBACK');
+      error(response, 404, 'Organization profile not found.');
+      return;
+    }
+    await writeAudit(
+      client,
+      'organization_profile_updated',
+      'Updated organization display name.',
+      current.session.address,
+      undefined,
+      current.session.address,
+    );
+    await client.query('COMMIT');
+  } catch (errorValue) {
+    await client.query('ROLLBACK');
+    if (uniqueViolation(errorValue)) {
+      error(response, 409, 'That organization display name is already in use.');
+      return;
+    }
+    throw errorValue;
+  } finally {
+    client.release();
+  }
+  response.json({ profile: { address, displayName } });
 });
 
 router.post('/api/records', noStore, async (request, response) => {
