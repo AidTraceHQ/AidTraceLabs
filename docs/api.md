@@ -11,6 +11,7 @@ All API responses are configured with `Cache-Control: no-store`. Error responses
 | `POST /api/auth/logout`            | Optional session, Origin; CSRF when signed in | Revoke current session and clear cookie.                        |
 | `POST /api/auth/logout-everywhere` | Authenticated, CSRF                           | Revoke every session for the wallet.                            |
 | `GET /api/transparency`            | Public; optional session changes projection   | Filter and page public records and summary/facets.              |
+| `GET /api/records/:id`             | Public; optional session changes projection   | Return one record with the same privacy projection as the list. |
 | `GET /api/beneficiary`             | Beneficiary or admin                          | Return records scoped to the session wallet and filters.        |
 | `POST /api/records`                | Organization or admin, CSRF                   | Create a record and begin verification when a hash is supplied. |
 | `PUT /api/records/:id`             | Owning organization or admin, CSRF            | Edit an allowed record.                                         |
@@ -26,5 +27,8 @@ The transparency query accepts `q`, `organization`, `asset`, `network`, `status`
 List responses include `nextCursor` and `hasMore`. `GET /api/transparency` also includes `total`, the number of records matching the bound filters, independent of `limit` and `cursor`.
 
 Authentication challenge inputs are `{ address, network }`. Signature verification accepts `{ challengeId, address, network, signature }`. Record write fields are validated server-side; mutating request bodies include `csrfToken`.
+
+Record responses may include a `verification` object with the latest check's evidence. When Horizon reports a transaction memo, `verification.memo` holds its value and `verification.memoType` holds one of `text`, `id`, `hash`, or `return`; both are omitted when the transaction has no memo (`none`) or the result did not reach a transaction (`not-found`, `pending`, `unverified`). An `id` memo is a uint64 returned as a decimal string, and `hash`/`return` memos keep Horizon's base64 encoding. The memo is capture-only evidence for reconciliation and never affects whether a record is `verified` or `mismatch`. Consent-off public projections omit both fields, like the other withheld verification details.
+Every record in list, single-record, create, edit, verify and void responses includes `version`, a positive integer that starts at `1`. Each successful `PUT /api/records/:id` and `POST /api/records/:id/void` increases it by one; verification checks do not change it. `PUT /api/records/:id` accepts an optional `expectedVersion`: send the `version` the edit started from. A value that is not a positive integer returns `400`. If the record's current `version` differs, the edit is rejected with `409` and `{ "error": "Record changed concurrently. Refresh before editing." }`, and nothing is changed. Without `expectedVersion`, the server checks against the version it read at the start of the same request, so the edit succeeds unless another write lands during that request.
 
 See the route handlers in `server/auth.ts` and `server/records.ts` for exact schemas and response fields. Contract-level integration tests are in `tests/backend.test.ts`.
