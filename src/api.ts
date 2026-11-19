@@ -121,6 +121,8 @@ async function getAllPages<TItem>(
 
 export const api = {
   get: <T>(path: string) => request<T>('GET', path),
+  getRecord: <T>(id: string) =>
+    request<{ record: T }>('GET', '/api/records/' + encodeURIComponent(id)),
   getAllPages,
   post: <T = unknown>(path: string, body?: unknown) => request<T>('POST', path, body),
   put: <T = unknown>(path: string, body?: unknown) => request<T>('PUT', path, body),

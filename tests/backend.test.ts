@@ -1044,6 +1044,19 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(publicResponse.body.records[0].txHash).toBe('');
     expect(publicResponse.body.records[0].note).toBe('');
 
+    const singlePublicResponse = await request(app).get(
+      '/api/records/' + encodeURIComponent(privateRecord.body.record.id),
+    );
+    expect(singlePublicResponse.status).toBe(200);
+    expect(singlePublicResponse.body.record).toEqual(publicResponse.body.records[0]);
+    expect(singlePublicResponse.body.record.recipientAddress).toBe('');
+    expect(singlePublicResponse.body.record.txHash).toBe('');
+    expect(singlePublicResponse.body.record.note).toBe('');
+
+    const missingRecord = await request(app).get('/api/records/not-a-record');
+    expect(missingRecord.status).toBe(404);
+    expect(missingRecord.body).toEqual({ error: 'Record not found.' });
+
     const ownerResponse = await request(app)
       .get('/api/transparency')
       .query({ q: privacyTerm })
