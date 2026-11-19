@@ -13,9 +13,10 @@ export class ApiError extends Error {
 }
 
 type CollectionKey = 'records' | 'roles' | 'entries';
-type PageEnvelope = {
+export type PageEnvelope = {
   hasMore?: boolean;
   nextCursor?: string | null;
+  total?: number;
   facets?: { organizations?: string[]; assets?: string[]; actions?: string[] };
   summary?: {
     byStatus?: {

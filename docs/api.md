@@ -23,6 +23,8 @@ All API responses are configured with `Cache-Control: no-store`. Error responses
 
 The transparency query accepts `q`, `organization`, `asset`, `network`, `status`, `from`, `to`, `limit`, and `cursor`. Admin roles accept `role`, `q`, `limit`, and `cursor`; audit accepts `action`, `address`, `recordId`, `q`, `limit`, and `cursor`. The API validates filters and binds signed cursors to their query filters.
 
+List responses include `nextCursor` and `hasMore`. `GET /api/transparency` also includes `total`, the number of records matching the bound filters, independent of `limit` and `cursor`.
+
 Authentication challenge inputs are `{ address, network }`. Signature verification accepts `{ challengeId, address, network, signature }`. Record write fields are validated server-side; mutating request bodies include `csrfToken`.
 
 See the route handlers in `server/auth.ts` and `server/records.ts` for exact schemas and response fields. Contract-level integration tests are in `tests/backend.test.ts`.

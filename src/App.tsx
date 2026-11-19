@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ApiError, api } from './api';
+import { ApiError, api, type PageEnvelope } from './api';
 import { getNetwork, isConnected, requestAccess, signMessage } from '@stellar/freighter-api';
 import {
   networkPassphrase,
@@ -208,6 +208,7 @@ export default function App() {
   const [organizationOptions, setOrganizationOptions] = useState<string[]>([]);
   const [assetOptions, setAssetOptions] = useState<string[]>([]);
   const [ledgerTotals, setLedgerTotals] = useState<LedgerTotal[]>([]);
+  const [ledgerTotal, setLedgerTotal] = useState(0);
   const [beneficiaryRecords, setBeneficiaryRecords] = useState<AidRecord[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [audit, setAudit] = useState<AuditItem[]>([]);
@@ -288,15 +289,15 @@ export default function App() {
     if (statusFilter !== 'all') params.set('status', statusFilter);
     if (fromDate) params.set('from', fromDate);
     if (toDate) params.set('to', toDate);
-    const query = params.toString();
+    params.set('limit', String(pageSize));
     setLoading(true);
     try {
-      const result = await api.getAllPages<AidRecord>(
-        '/api/transparency' + (query ? '?' + query : ''),
-        'records',
+      const result = await api.get<PageEnvelope & { records?: AidRecord[] }>(
+        '/api/transparency?' + params.toString(),
       );
       if (requestId === transparencyRequestId.current) {
         setRecords(result.data.records || []);
+        setLedgerTotal(typeof result.data.total === 'number' ? result.data.total : 0);
         setOrganizationOptions(result.data.facets?.organizations || []);
         setAssetOptions(result.data.facets?.assets || []);
         setLedgerTotals(result.data.summary?.byStatus || []);
@@ -989,32 +990,50 @@ export default function App() {
       setSortDir('asc');
     }
   }
-  function exportCsv() {
-    const columns = [
-      'recipient',
-      'recipientAddress',
-      'purpose',
-      'amount',
-      'asset',
-      'network',
-      'txHash',
-      'date',
-      'organization',
-      'status',
-    ];
-    const escape = (value: unknown) => '"' + String(value ?? '').replace(/"/g, '""') + '"';
-    const csv = [
-      columns.join(','),
-      ...filteredAid.map((record) =>
-        columns.map((column) => escape(record[column as keyof AidRecord])).join(','),
-      ),
-    ].join('\r\n');
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'aidtrace-records.csv';
-    link.click();
-    URL.revokeObjectURL(url);
+  async function exportCsv() {
+    const params = new URLSearchParams();
+    if (search.trim()) params.set('q', search.trim());
+    if (orgFilter !== 'all') params.set('organization', orgFilter);
+    if (assetFilter !== 'all') params.set('asset', assetFilter);
+    if (networkFilter !== 'all') params.set('network', networkFilter);
+    if (statusFilter !== 'all') params.set('status', statusFilter);
+    if (fromDate) params.set('from', fromDate);
+    if (toDate) params.set('to', toDate);
+    const query = params.toString();
+    try {
+      const result = await api.getAllPages<AidRecord>(
+        '/api/transparency' + (query ? '?' + query : ''),
+        'records',
+      );
+      const rows = result.data.records || [];
+      const columns = [
+        'recipient',
+        'recipientAddress',
+        'purpose',
+        'amount',
+        'asset',
+        'network',
+        'txHash',
+        'date',
+        'organization',
+        'status',
+      ];
+      const escape = (value: unknown) => '"' + String(value ?? '').replace(/"/g, '""') + '"';
+      const csv = [
+        columns.join(','),
+        ...rows.map((record) =>
+          columns.map((column) => escape(record[column as keyof AidRecord])).join(','),
+        ),
+      ].join('\r\n');
+      const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'aidtrace-records.csv';
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(messageOf(e));
+    }
   }
 
   return (
@@ -1199,8 +1218,8 @@ export default function App() {
                 </button>
                 <button
                   className="button secondary compact"
-                  onClick={exportCsv}
-                  disabled={!filteredAid.length}
+                  onClick={() => void exportCsv()}
+                  disabled={!ledgerTotal}
                 >
                   <ArrowDownToLine size={14} />
                   Export CSV
@@ -1397,8 +1416,8 @@ export default function App() {
             )}
             <div className="pagination">
               <span>
-                {filteredAid.length
-                  ? `Showing ${(pageNumber - 1) * pageSize + 1}–${Math.min(pageNumber * pageSize, filteredAid.length)} of ${filteredAid.length}`
+                {ledgerTotal
+                  ? `Showing 1–${Math.min(records.length, ledgerTotal)} of ${ledgerTotal}`
                   : 'No records'}
               </span>
               <div>
