@@ -8,6 +8,7 @@ import {
   waitForFreighter,
 } from './freighter';
 import { readNetworkPreference, writeNetworkPreference } from './network-preference';
+import { createToastScheduler } from './toast';
 import {
   Activity,
   ArrowDownToLine,
@@ -253,10 +254,9 @@ export default function App() {
   const pageSize = 10;
   const transparencyRequestId = useRef(0);
 
-  const notify = useCallback((text: string) => {
-    setToast(text);
-    window.setTimeout(() => setToast(''), 3600);
-  }, []);
+  const toastScheduler = useMemo(() => createToastScheduler(setToast), []);
+  const notify = useCallback((text: string) => toastScheduler.show(text), [toastScheduler]);
+  useEffect(() => () => toastScheduler.cancel(), [toastScheduler]);
   const loadTransparency = useCallback(async () => {
     const requestId = ++transparencyRequestId.current;
     const params = new URLSearchParams();
