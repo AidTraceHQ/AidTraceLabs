@@ -80,6 +80,34 @@ describe('Freighter signed challenge creates a secure session', () => {
 describe('On-chain verification distinguishes matching and mismatching payments', () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  function paymentRecord(txHash: string, organization: string, recipient: string) {
+    return {
+      network: 'testnet' as const,
+      txHash,
+      organizationWallet: organization,
+      recipientWallet: recipient,
+      amountStroops: '10000000',
+      assetCode: 'XLM',
+      assetIssuer: null,
+    };
+  }
+
+  function stubHorizon(
+    transaction: Record<string, unknown>,
+    pageFor: (cursor: string | null) => { records?: unknown; status?: number },
+  ) {
+    return vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith('/operations')) {
+        return new Response(JSON.stringify(transaction), { status: 200 });
+      }
+      const page = pageFor(url.searchParams.get('cursor'));
+      return new Response(JSON.stringify({ _embedded: { records: page.records ?? [] } }), {
+        status: page.status ?? 200,
+      });
+    });
+  }
+
   it('requires one operation to match the organization source and all payment fields', async () => {
     const organization = Keypair.random().publicKey();
     const recipient = Keypair.random().publicKey();
@@ -363,6 +391,188 @@ describe('On-chain verification distinguishes matching and mismatching payments'
     const notFound = await checkTransaction(record);
     expect(notFound.status).toBe('not-found');
     expect(notFound).not.toHaveProperty('memo');
+  });
+
+  it('verifies one eligible operation among several and ignores lookalike non-payment operations', async () => {
+    const organization = Keypair.random().publicKey();
+    const recipient = Keypair.random().publicKey();
+    const other = Keypair.random().publicKey();
+    const record = paymentRecord('e'.repeat(64), organization, recipient);
+    const matching = {
+      type: 'payment',
+      from: organization,
+      to: recipient,
+      amount: '1',
+      asset_type: 'native',
+    };
+    const lookalike = {
+      type: 'manage_data',
+      from: organization,
+      to: recipient,
+      amount: '1',
+      asset_type: 'native',
+    };
+    let operations: Record<string, unknown>[] = [];
+    vi.stubGlobal(
+      'fetch',
+      stubHorizon({ successful: true }, () => ({ records: operations })),
+    );
+
+    operations = [lookalike];
+    expect((await checkTransaction(record)).status).toBe('mismatch');
+
+    operations = [
+      lookalike,
+      {
+        type: 'set_options',
+        from: organization,
+        to: recipient,
+        amount: '1',
+        asset_type: 'native',
+      },
+      { type: 'create_account', funder: other, account: other, starting_balance: '1' },
+      {
+        type: 'path_payment_strict_receive',
+        from: other,
+        to: other,
+        amount: '1',
+        asset_type: 'native',
+      },
+      {
+        type: 'path_payment_strict_send',
+        from: other,
+        to: other,
+        destination_amount: '1',
+        destination_asset_type: 'native',
+      },
+      matching,
+    ];
+    const result = await checkTransaction(record);
+    expect(result.status).toBe('verified');
+    expect(result).toMatchObject({ destination: recipient, amount: '1', asset: 'XLM' });
+  });
+
+  it('rejects near-matches that only combine fields from separate operations', async () => {
+    const organization = Keypair.random().publicKey();
+    const recipient = Keypair.random().publicKey();
+    const other = Keypair.random().publicKey();
+    const record = paymentRecord('f'.repeat(64), organization, recipient);
+    vi.stubGlobal(
+      'fetch',
+      stubHorizon({ successful: true }, () => ({
+        records: [
+          { type: 'payment', from: organization, to: recipient, amount: '2', asset_type: 'native' },
+          { type: 'payment', from: other, to: other, amount: '1', asset_type: 'native' },
+        ],
+      })),
+    );
+
+    const result = await checkTransaction(record);
+    expect(result.status).toBe('mismatch');
+    expect(result.differences).toContain(
+      'No single payment operation matches all recorded fields.',
+    );
+    expect(result.amount).toBe('2');
+  });
+
+  it('verifies the first of repeated matching payments', async () => {
+    const organization = Keypair.random().publicKey();
+    const recipient = Keypair.random().publicKey();
+    const other = Keypair.random().publicKey();
+    const record = paymentRecord('0'.repeat(64), organization, recipient);
+    const matching = {
+      type: 'payment',
+      from: organization,
+      to: recipient,
+      amount: '1',
+      asset_type: 'native',
+    };
+    vi.stubGlobal(
+      'fetch',
+      stubHorizon({ successful: true }, () => ({
+        records: [
+          { type: 'set_options', from: organization },
+          matching,
+          { type: 'create_account', funder: other, account: other, starting_balance: '1' },
+          matching,
+        ],
+      })),
+    );
+
+    const result = await checkTransaction(record);
+    expect(result.status).toBe('verified');
+    expect(result.differences).toEqual([]);
+    expect(result.destination).toBe(recipient);
+  });
+
+  it('follows the cursor when the matching operation is last on a full page', async () => {
+    const organization = Keypair.random().publicKey();
+    const recipient = Keypair.random().publicKey();
+    const other = Keypair.random().publicKey();
+    const record = paymentRecord('1'.repeat(64), organization, recipient);
+    const firstPage = Array.from({ length: 200 }, (_, index) => ({
+      type: 'payment',
+      from: organization,
+      to: index === 199 ? recipient : other,
+      amount: '1',
+      asset_type: 'native',
+      paging_token: String(index + 1),
+    }));
+    const fetchMock = stubHorizon({ successful: true }, (cursor) => ({
+      records: cursor ? [{ type: 'set_options', from: organization }] : firstPage,
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await checkTransaction(record);
+    expect(result.status).toBe('verified');
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        new URL(String(input)).pathname.endsWith('/operations'),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it('keeps incomplete operation reads pending even when an earlier operation matched', async () => {
+    const organization = Keypair.random().publicKey();
+    const recipient = Keypair.random().publicKey();
+    const record = paymentRecord('2'.repeat(64), organization, recipient);
+    const matching = {
+      type: 'payment',
+      from: organization,
+      to: recipient,
+      amount: '1',
+      asset_type: 'native',
+    };
+    const fullPage = Array.from({ length: 200 }, (_, index) => ({
+      ...matching,
+      paging_token: String(index + 1),
+    }));
+
+    vi.stubGlobal(
+      'fetch',
+      stubHorizon({ successful: true }, () => ({
+        records: [...fullPage.slice(0, -1), { ...matching }],
+      })),
+    );
+    const missingCursor = await checkTransaction(record);
+    expect(missingCursor.status).toBe('pending');
+    expect(missingCursor.reason).toContain('pagination');
+
+    vi.stubGlobal(
+      'fetch',
+      stubHorizon({ successful: true }, (cursor) =>
+        cursor ? { status: 500 } : { records: fullPage },
+      ),
+    );
+    const failedPage = await checkTransaction(record);
+    expect(failedPage.status).toBe('pending');
+    expect(failedPage.differences).toEqual([]);
+
+    vi.stubGlobal(
+      'fetch',
+      stubHorizon({ successful: true }, () => ({ records: { unexpected: true } })),
+    );
+    expect((await checkTransaction(record)).status).toBe('pending');
   });
 });
 
