@@ -1,5 +1,4 @@
 import { createHash, createHmac } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { Keypair } from '@stellar/stellar-sdk';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -266,6 +265,105 @@ describe('On-chain verification distinguishes matching and mismatching payments'
     expect((await checkTransaction(record)).status).toBe('pending');
     expect(calls).toBe(20);
   });
+
+  it('captures the transaction memo as evidence without changing the matching result', async () => {
+    const organization = Keypair.random().publicKey();
+    const recipient = Keypair.random().publicKey();
+    const record = {
+      network: 'testnet' as const,
+      txHash: 'd'.repeat(64),
+      organizationWallet: organization,
+      recipientWallet: recipient,
+      amountStroops: '10000000',
+      assetCode: 'XLM',
+      assetIssuer: null,
+    };
+    let transaction: Record<string, unknown> = {};
+    let operations: Record<string, unknown>[] = [];
+    const matching = [
+      { type: 'payment', from: organization, to: recipient, amount: '1', asset_type: 'native' },
+    ];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = new URL(String(input));
+        const body = url.pathname.endsWith('/operations')
+          ? { _embedded: { records: operations } }
+          : transaction;
+        return new Response(JSON.stringify(body), { status: 200 });
+      }),
+    );
+    const base = { successful: true, source_account: organization, ledger: 5 };
+    operations = matching;
+
+    transaction = { ...base, memo_type: 'text', memo: 'AID-2026-0042' };
+    const text = await checkTransaction(record);
+    expect(text.status).toBe('verified');
+    expect(text).toMatchObject({ memo: 'AID-2026-0042', memoType: 'text' });
+
+    // uint64 beyond Number.MAX_SAFE_INTEGER must survive exactly as a string.
+    const largeId = '18446744073709551615';
+    transaction = { ...base, memo_type: 'id', memo: largeId };
+    const id = await checkTransaction(record);
+    expect(id.status).toBe('verified');
+    expect(id.memoType).toBe('id');
+    expect(id.memo).toBe(largeId);
+    expect(typeof id.memo).toBe('string');
+
+    const base64Hash = Buffer.alloc(32, 0xab).toString('base64');
+    transaction = { ...base, memo_type: 'hash', memo: base64Hash };
+    expect(await checkTransaction(record)).toMatchObject({
+      status: 'verified',
+      memo: base64Hash,
+      memoType: 'hash',
+    });
+
+    transaction = { ...base, memo_type: 'return', memo: base64Hash };
+    expect(await checkTransaction(record)).toMatchObject({ memo: base64Hash, memoType: 'return' });
+
+    for (const noMemo of [
+      { ...base, memo_type: 'none' },
+      { ...base },
+      { ...base, memo_type: 'unknown', memo: 'ignored' },
+      { ...base, memo_type: 'id', memo: 42 },
+      { ...base, memo_type: 'text', memo: '' },
+      { ...base, memo_type: 'text', memo: '\u0000\u0000' },
+    ]) {
+      transaction = noMemo;
+      const result = await checkTransaction(record);
+      expect(result.status).toBe('verified');
+      expect(result).not.toHaveProperty('memo');
+      expect(result).not.toHaveProperty('memoType');
+    }
+
+    transaction = { ...base, memo_type: 'text', memo: 'x'.repeat(500) };
+    expect((await checkTransaction(record)).memo).toHaveLength(128);
+
+    // PostgreSQL TEXT rejects NUL, so it is stripped before the memo can reach storage.
+    transaction = { ...base, memo_type: 'text', memo: 'AID\u0000-0042' };
+    expect((await checkTransaction(record)).memo).toBe('AID-0042');
+
+    operations = [{ ...matching[0], to: Keypair.random().publicKey() }];
+    transaction = { ...base, memo_type: 'text', memo: 'AID-2026-0042' };
+    const mismatch = await checkTransaction(record);
+    expect(mismatch.status).toBe('mismatch');
+    expect(mismatch).toMatchObject({ memo: 'AID-2026-0042', memoType: 'text' });
+
+    transaction = { ...base, successful: false, memo_type: 'text', memo: 'AID-2026-0042' };
+    expect(await checkTransaction(record)).toMatchObject({
+      status: 'mismatch',
+      memo: 'AID-2026-0042',
+      memoType: 'text',
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 404 })),
+    );
+    const notFound = await checkTransaction(record);
+    expect(notFound.status).toBe('not-found');
+    expect(notFound).not.toHaveProperty('memo');
+  });
 });
 
 const integration = describe.skipIf(!process.env.TEST_DATABASE_URL);
@@ -276,6 +374,36 @@ integration('Database-backed wallet, records, and authorization flows', () => {
   let admin: Keypair;
 
   afterEach(() => vi.unstubAllGlobals());
+
+  async function expectAuditEvent(
+    action: string,
+    actorWallet: string,
+    expected: { subjectWallet?: string; recordId?: string } = {},
+  ) {
+    const subjectWallet = expected.subjectWallet ?? null;
+    const recordId = expected.recordId ?? null;
+    const result = await pool.query<{
+      action: string;
+      actor_wallet: string;
+      subject_wallet: string | null;
+      record_id: string | null;
+    }>(
+      `SELECT action, actor_wallet, subject_wallet, record_id
+       FROM audit_events
+       WHERE action = $1 AND actor_wallet = $2
+         AND subject_wallet IS NOT DISTINCT FROM $3
+         AND record_id IS NOT DISTINCT FROM $4
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [action, actorWallet, subjectWallet, recordId],
+    );
+    expect(result.rows[0], `Missing ${action} audit event for ${actorWallet}`).toEqual({
+      action,
+      actor_wallet: actorWallet,
+      subject_wallet: subjectWallet,
+      record_id: recordId,
+    });
+  }
 
   async function login(wallet: Keypair) {
     const address = wallet.publicKey();
@@ -445,6 +573,17 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       await client.query('ROLLBACK');
       client.release();
     }
+  });
+
+  it('should have an index for wallet_roles sorting by updated_at DESC and wallet_address DESC', async () => {
+    const result = await pool.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes WHERE tablename = 'wallet_roles'`,
+    );
+    expect(
+      result.rows.some(({ indexdef }) =>
+        indexdef.includes('btree (updated_at DESC, wallet_address DESC)'),
+      ),
+    ).toBe(true);
   });
 
   it('creates a single-use wallet session, enforces CSRF, expires challenges, and logs out', async () => {
@@ -670,6 +809,191 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       txHash: verifiedHash,
     });
     expect(duplicate.status).toBe(409);
+  }, 120_000);
+
+  it('stores the transaction memo and withholds it from consent-off public views', async () => {
+    const adminSession = await login(admin);
+    const organization = Keypair.random();
+    const otherOrganization = Keypair.random();
+    const recipient = Keypair.random();
+    await assignRole(adminSession, organization, 'organization');
+    await assignRole(adminSession, otherOrganization, 'organization');
+    const session = await login(organization);
+    const otherSession = await login(otherOrganization);
+    const term = 'memo-' + Keypair.random().publicKey().slice(-8);
+    const memo = 'AID-' + Keypair.random().publicKey().slice(-12);
+    const privateHash = createHash('sha256')
+      .update(term + '-private')
+      .digest('hex');
+    const consentHash = createHash('sha256')
+      .update(term + '-consent')
+      .digest('hex');
+    const largeId = '18446744073709551615';
+    const transactions = new Map<string, Record<string, unknown>>();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = new URL(String(input));
+        const segments = url.pathname.split('/').filter(Boolean);
+        const hash = segments[segments.indexOf('transactions') + 1] || '';
+        const transaction = transactions.get(hash);
+        if (!transaction) return new Response('{}', { status: 404 });
+        const records = url.pathname.endsWith('/operations')
+          ? [
+              {
+                type: 'payment',
+                from: organization.publicKey(),
+                to: recipient.publicKey(),
+                amount: '1.25',
+                asset_type: 'native',
+              },
+            ]
+          : undefined;
+        return new Response(JSON.stringify(records ? { _embedded: { records } } : transaction), {
+          status: 200,
+        });
+      }),
+    );
+
+    // Created while Horizon returns 404, so the explicit verify call below is not cached.
+    const created = await createRecord(session, recipient, term + ' private', {
+      txHash: privateHash,
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.record.status).toBe('not-found');
+    expect(created.body.record.verification).not.toHaveProperty('memo');
+    const recordId = created.body.record.id;
+
+    transactions.set(privateHash, {
+      successful: true,
+      source_account: organization.publicKey(),
+      ledger: 11,
+      created_at: '2026-01-15T00:00:00Z',
+      memo_type: 'text',
+      memo,
+    });
+    const verified = await request(app)
+      .post('/api/records/' + recordId + '/verify')
+      .set('Origin', origin)
+      .set('Cookie', session.cookie)
+      .send({ csrfToken: session.csrfToken });
+    expect(verified.status).toBe(200);
+    expect(verified.body.record.status).toBe('verified');
+    expect(verified.body.record.verification).toMatchObject({ memo, memoType: 'text' });
+
+    const stored = await pool.query<{ memo: string | null; memo_type: string | null }>(
+      `SELECT memo, memo_type FROM verification_results
+       WHERE aid_record_id = $1 ORDER BY checked_at DESC, id DESC LIMIT 1`,
+      [recordId],
+    );
+    expect(stored.rows[0]).toEqual({ memo, memo_type: 'text' });
+
+    const findRecord = (body: { records: { id: string }[] }) =>
+      body.records.find((record) => record.id === recordId) as
+        { verification?: Record<string, unknown> } | undefined;
+
+    const ownerView = await request(app)
+      .get('/api/transparency')
+      .query({ q: term })
+      .set('Cookie', session.cookie);
+    expect(ownerView.status).toBe(200);
+    expect(findRecord(ownerView.body)?.verification).toMatchObject({ memo, memoType: 'text' });
+
+    const adminView = await request(app)
+      .get('/api/transparency')
+      .query({ q: term })
+      .set('Cookie', adminSession.cookie);
+    expect(findRecord(adminView.body)?.verification).toMatchObject({ memo, memoType: 'text' });
+
+    for (const publicView of [
+      await request(app).get('/api/transparency').query({ q: term }),
+      await request(app)
+        .get('/api/transparency')
+        .query({ q: term })
+        .set('Cookie', otherSession.cookie),
+    ]) {
+      expect(publicView.status).toBe(200);
+      const publicRecord = findRecord(publicView.body);
+      expect(publicRecord?.verification?.status).toBe('verified');
+      expect(publicRecord?.verification).not.toHaveProperty('memo');
+      expect(publicRecord?.verification).not.toHaveProperty('memoType');
+      expect(JSON.stringify(publicView.body)).not.toContain(memo);
+    }
+
+    await assignRole(adminSession, recipient, 'beneficiary');
+    const beneficiarySession = await login(recipient);
+    const beneficiaryView = await request(app)
+      .get('/api/beneficiary')
+      .query({ q: term })
+      .set('Cookie', beneficiarySession.cookie);
+    expect(beneficiaryView.status).toBe(200);
+    expect(findRecord(beneficiaryView.body)?.verification).toMatchObject({
+      memo,
+      memoType: 'text',
+    });
+
+    // With consent the public projection includes the full record, memo included; a uint64 id
+    // memo above 2^53 round-trips through the TEXT column unchanged.
+    transactions.set(consentHash, {
+      successful: true,
+      source_account: organization.publicKey(),
+      memo_type: 'id',
+      memo: largeId,
+    });
+    const consented = await createRecord(session, recipient, term + ' consented', {
+      txHash: consentHash,
+      consent: true,
+    });
+    expect(consented.status).toBe(201);
+    expect(consented.body.record.verification).toMatchObject({ memo: largeId, memoType: 'id' });
+    const consentedPublic = await request(app)
+      .get('/api/transparency')
+      .query({ q: term + ' consented' });
+    expect(consentedPublic.body.records[0].verification).toMatchObject({
+      memo: largeId,
+      memoType: 'id',
+    });
+  }, 120_000);
+
+  it('returns a filter-bounded total on transparency pages without walking every record', async () => {
+    const adminSession = await login(admin);
+    const organization = Keypair.random();
+    await assignRole(adminSession, organization, 'organization');
+    const session = await login(organization);
+    const recipient = Keypair.random();
+    const token = 'bounded-total-' + Date.now();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 404 })),
+    );
+    for (let index = 0; index < 3; index += 1) {
+      const created = await createRecord(session, recipient, `${token} case ${index}`, {
+        txHash: createHash('sha256').update(`${token}-${index}`).digest('hex'),
+      });
+      expect(created.status).toBe(201);
+    }
+
+    const pageOne = await request(app).get('/api/transparency').query({ q: token, limit: '1' });
+    expect(pageOne.status).toBe(200);
+    expect(pageOne.body.records).toHaveLength(1);
+    expect(pageOne.body.total).toBe(3);
+    expect(pageOne.body.hasMore).toBe(true);
+    expect(typeof pageOne.body.nextCursor).toBe('string');
+
+    const pageTwo = await request(app)
+      .get('/api/transparency')
+      .query({ q: token, limit: '1', cursor: pageOne.body.nextCursor });
+    expect(pageTwo.status).toBe(200);
+    expect(pageTwo.body.records).toHaveLength(1);
+    expect(pageTwo.body.total).toBe(3);
+    expect(pageTwo.body.records[0].id).not.toBe(pageOne.body.records[0].id);
+
+    const tight = await request(app)
+      .get('/api/transparency')
+      .query({ q: `${token} case 1`, limit: '1' });
+    expect(tight.status).toBe(200);
+    expect(tight.body.total).toBe(1);
+    expect(tight.body.hasMore).toBe(false);
   }, 120_000);
 
   it('paginates and filters public records while redacting beneficiary identifiers by default', async () => {

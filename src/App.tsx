@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, api, resetCursorStack } from './api';
 import { getNetwork, isConnected, requestAccess, signMessage } from '@stellar/freighter-api';
 import {
@@ -73,6 +73,8 @@ type AidRecord = {
     assetIssuer?: string;
     link?: string;
     reason?: string;
+    memo?: string;
+    memoType?: 'text' | 'id' | 'hash' | 'return';
   };
   voidReason?: string;
   voidedAt?: string;
@@ -189,6 +191,50 @@ const SkeletonRows = ({ columns = 6 }: { columns?: number }) => (
   </>
 );
 
+const focusable = 'a[href], button:enabled, input:enabled, select:enabled, textarea:enabled';
+
+// While a dialog is open, focus stays inside it, Escape closes it, and the page behind it is
+// inert. On close, focus moves to the returnTo element, or else to the active section tab.
+function useDialogFocus(
+  open: boolean,
+  dialogRef: React.RefObject<HTMLElement | null>,
+  onClose: () => void,
+  returnTo: string,
+) {
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current;
+    if (!open || !dialog) return;
+    const background = document.querySelectorAll('.app > :not(.backdrop)');
+    for (const el of background) el.setAttribute('inert', '');
+    (dialog.querySelector<HTMLElement>(focusable) ?? dialog).focus();
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !event.isComposing) onClose();
+      const current = document.activeElement;
+      // Date inputs use Tab to move between their month, day, and year parts.
+      const isDate = current instanceof HTMLInputElement && current.type === 'date';
+      if (event.key !== 'Tab' || isDate) return;
+      // Step through the dialog's own controls, because Safari skips links on Tab by default.
+      event.preventDefault();
+      const items = Array.from(dialog.querySelectorAll<HTMLElement>(focusable));
+      const index = items.indexOf(current as HTMLElement);
+      const last = items.length - 1;
+      const next = event.shiftKey ? (index > 0 ? index - 1 : last) : index < last ? index + 1 : 0;
+      (items[next] ?? dialog).focus();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      // Remove inert first, because inert elements cannot take focus.
+      for (const el of background) el.removeAttribute('inert');
+      const target =
+        document.querySelector<HTMLElement>(returnTo) ??
+        document.querySelector<HTMLElement>('.tab.active');
+      target?.focus();
+    };
+  }, [open, dialogRef, onClose, returnTo]);
+}
+
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [network, setNetwork] = useState<Network>(readNetworkPreference);
@@ -269,6 +315,15 @@ export default function App() {
   const rolesCursorRef = useRef<string | null>(null);
   const auditRequestInFlight = useRef(false);
   const rolesRequestInFlight = useRef(false);
+  const formDialogRef = useRef<HTMLDivElement>(null);
+  const detailDialogRef = useRef<HTMLElement>(null);
+  const closeForm = useCallback(() => setShowForm(false), []);
+  const closeDetail = useCallback(() => {
+    setSelected(null);
+    setRecordConflictId(null);
+  }, []);
+  useDialogFocus(showForm, formDialogRef, closeForm, '#add-record');
+  useDialogFocus(!!selected, detailDialogRef, closeDetail, `[data-record-id="${selected?.id}"]`);
 
   const notify = useCallback((text: string) => {
     setToast(text);
@@ -351,6 +406,8 @@ export default function App() {
     try {
       setSelected(await getLatestRecord(recordId));
       setRecordConflictId(null);
+      // The Reload latest button removes itself, so keep focus in the dialog.
+      detailDialogRef.current?.focus();
       setError('');
     } catch (e) {
       setError(messageOf(e));
@@ -1206,7 +1263,11 @@ export default function App() {
                   Export CSV
                 </button>
                 {canManageRecords && (
-                  <button className="button primary compact" onClick={() => setShowForm(true)}>
+                  <button
+                    className="button primary compact"
+                    id="add-record"
+                    onClick={() => setShowForm(true)}
+                  >
                     <Plus size={14} />
                     Add record
                   </button>
@@ -1375,7 +1436,11 @@ export default function App() {
                           </span>
                         </td>
                         <td>
-                          <button className="text-button" onClick={() => setSelected(record)}>
+                          <button
+                            className="text-button"
+                            data-record-id={record.id}
+                            onClick={() => setSelected(record)}
+                          >
                             View <ArrowUpRight size={13} />
                           </button>
                         </td>
@@ -1626,7 +1691,11 @@ export default function App() {
                           </span>
                         </td>
                         <td>
-                          <button className="text-button" onClick={() => setSelected(record)}>
+                          <button
+                            className="text-button"
+                            data-record-id={record.id}
+                            onClick={() => setSelected(record)}
+                          >
                             View <ArrowUpRight size={13} />
                           </button>
                         </td>
@@ -1884,16 +1953,23 @@ export default function App() {
       {showForm && (
         <div
           className="backdrop"
-          role="presentation"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="record-form-heading"
+          ref={formDialogRef}
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setShowForm(false);
+            if (event.target === event.currentTarget) {
+              // Stop the mousedown default action from moving the restored focus to <body>.
+              event.preventDefault();
+              closeForm();
+            }
           }}
         >
           <form className="form modal-large" onSubmit={saveRecord}>
             <div className="modal-head">
               <div>
                 <p className="eyebrow">PUBLISH AID RECORD</p>
-                <h2>New disbursement</h2>
+                <h2 id="record-form-heading">New disbursement</h2>
                 <p className="muted">
                   Beneficiary details, notes and transaction links are pseudonymous on the public
                   ledger by default.
@@ -1903,7 +1979,7 @@ export default function App() {
                 className="icon-button"
                 type="button"
                 aria-label="Close form"
-                onClick={() => setShowForm(false)}
+                onClick={closeForm}
               >
                 <X size={17} />
               </button>
@@ -2041,7 +2117,7 @@ export default function App() {
               asset can be verified on-chain.
             </p>
             <div className="form-actions">
-              <button className="button secondary" type="button" onClick={() => setShowForm(false)}>
+              <button className="button secondary" type="button" onClick={closeForm}>
                 Cancel
               </button>
               <button className="button primary" disabled={busy} type="submit">
@@ -2059,8 +2135,8 @@ export default function App() {
           role="presentation"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) {
-              setSelected(null);
-              setRecordConflictId(null);
+              event.preventDefault();
+              closeDetail();
             }
           }}
         >
@@ -2069,6 +2145,8 @@ export default function App() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="record-heading"
+            ref={detailDialogRef}
+            tabIndex={-1}
           >
             <div className="modal-head">
               <div>
@@ -2076,14 +2154,7 @@ export default function App() {
                 <h2 id="record-heading">{selected.recipient}</h2>
                 <p className="muted">{selected.purpose}</p>
               </div>
-              <button
-                className="icon-button"
-                aria-label="Close details"
-                onClick={() => {
-                  setSelected(null);
-                  setRecordConflictId(null);
-                }}
-              >
+              <button className="icon-button" aria-label="Close details" onClick={closeDetail}>
                 <X size={17} />
               </button>
             </div>
@@ -2165,6 +2236,14 @@ export default function App() {
                 <div>
                   <dt>Verification note</dt>
                   <dd>{selected.verification.reason}</dd>
+                </div>
+              )}
+              {selected.verification?.memo && selected.verification.memoType && (
+                <div>
+                  <dt>Memo</dt>
+                  <dd>
+                    {selected.verification.memoType}: {selected.verification.memo}
+                  </dd>
                 </div>
               )}
               {selected.voidReason && (
