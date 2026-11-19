@@ -250,9 +250,12 @@ export default function App() {
   const [roleValue, setRoleValue] = useState<Role>('organization');
   const [auditAction, setAuditAction] = useState('all');
   const [auditSearch, setAuditSearch] = useState('');
+  const [auditAddress, setAuditAddress] = useState('');
+  const [auditRecordId, setAuditRecordId] = useState('');
   const [voidReason, setVoidReason] = useState('');
   const pageSize = 10;
   const transparencyRequestId = useRef(0);
+  const auditRequestId = useRef(0);
 
   const notify = useCallback((text: string) => {
     setToast(text);
@@ -331,21 +334,26 @@ export default function App() {
   }
   const loadAudit = useCallback(async () => {
     if (!session || session.role !== 'admin') return;
+    const requestId = ++auditRequestId.current;
     const params = new URLSearchParams();
     if (auditAction !== 'all') params.set('action', auditAction);
     if (auditSearch.trim()) params.set('q', auditSearch.trim());
+    if (auditAddress.trim()) params.set('address', auditAddress.trim());
+    if (auditRecordId.trim()) params.set('recordId', auditRecordId.trim());
     const query = params.toString();
     try {
       const r = await api.getAllPages<AuditItem>(
         '/api/audit' + (query ? '?' + query : ''),
         'entries',
       );
-      setAudit(r.data.entries || []);
-      setAuditActionOptions(r.data.facets?.actions || []);
+      if (requestId === auditRequestId.current) {
+        setAudit(r.data.entries || []);
+        setAuditActionOptions(r.data.facets?.actions || []);
+      }
     } catch (e) {
-      setError(messageOf(e));
+      if (requestId === auditRequestId.current) setError(messageOf(e));
     }
-  }, [session, auditAction, auditSearch]);
+  }, [session, auditAction, auditSearch, auditAddress, auditRecordId]);
   const restoreSession = useCallback(async () => {
     try {
       const r = await api.get<{ session: Session | null }>('/api/me');
@@ -844,12 +852,14 @@ export default function App() {
       audit.filter(
         (a) =>
           (auditAction === 'all' || a.action === auditAction) &&
+          (!auditAddress.trim() || a.address === auditAddress.trim()) &&
+          (!auditRecordId.trim() || a.recordId === auditRecordId.trim()) &&
           [a.summary, a.address, a.recordId || '']
             .join(' ')
             .toLowerCase()
             .includes(auditSearch.toLowerCase()),
       ),
-    [audit, auditAction, auditSearch],
+    [audit, auditAction, auditSearch, auditAddress, auditRecordId],
   );
   const verified = records.filter((r) => r.status === 'verified' && !r.voidedAt);
   const pageCount = Math.max(1, Math.ceil(filteredAid.length / pageSize));
@@ -1671,6 +1681,56 @@ export default function App() {
                   <option key={action}>{action}</option>
                 ))}
               </select>
+              <label className="search">
+                <Search size={15} />
+                <input
+                  aria-label="Filter audit address"
+                  placeholder="Wallet address"
+                  value={auditAddress}
+                  onChange={(event) => setAuditAddress(event.target.value)}
+                />
+              </label>
+              {auditAddress && (
+                <button
+                  className="button secondary compact"
+                  type="button"
+                  onClick={() => setAuditAddress('')}
+                >
+                  Clear address
+                </button>
+              )}
+              <label className="search">
+                <Search size={15} />
+                <input
+                  aria-label="Filter audit record ID"
+                  placeholder="Record ID"
+                  value={auditRecordId}
+                  onChange={(event) => setAuditRecordId(event.target.value)}
+                />
+              </label>
+              {auditRecordId && (
+                <button
+                  className="button secondary compact"
+                  type="button"
+                  onClick={() => setAuditRecordId('')}
+                >
+                  Clear record ID
+                </button>
+              )}
+              {(auditAction !== 'all' || auditSearch || auditAddress || auditRecordId) && (
+                <button
+                  className="button secondary compact"
+                  type="button"
+                  onClick={() => {
+                    setAuditAction('all');
+                    setAuditSearch('');
+                    setAuditAddress('');
+                    setAuditRecordId('');
+                  }}
+                >
+                  Reset filters
+                </button>
+              )}
             </div>
             <div className="table-wrap">
               <table>
