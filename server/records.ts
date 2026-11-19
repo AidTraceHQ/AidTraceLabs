@@ -36,6 +36,7 @@ type AidRecord = {
   voidReason?: string;
   voidedAt?: string;
   updatedAt?: string;
+  version: number;
 };
 
 type RecordRow = QueryResultRow & {
@@ -59,6 +60,7 @@ type RecordRow = QueryResultRow & {
   recipient_consent: boolean;
   void_reason: string | null;
   voided_at: Date | string | null;
+  version: number;
   verification_status: Verification['status'] | null;
   verification_checked_at: Date | string | null;
   verification_differences: string[] | null;
@@ -130,6 +132,10 @@ function validNetwork(value: unknown): value is Network {
 
 function validAddress(value: unknown): value is string {
   return typeof value === 'string' && StrKey.isValidEd25519PublicKey(value);
+}
+
+function validVersion(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1;
 }
 
 function validHash(value: unknown): value is string {
@@ -212,6 +218,7 @@ function mapRecord(row: RecordRow): AidRecord {
     updatedAt: timestamp(row.updated_at),
     voidReason: row.void_reason || undefined,
     voidedAt: timestamp(row.voided_at),
+    version: row.version,
   };
   if (row.verification_status && row.verification_checked_at) {
     record.verification = {
@@ -238,7 +245,7 @@ const recordSelect = `
   SELECT r.id, r.recipient_name, r.recipient_wallet, r.purpose, r.amount_stroops::text,
          r.asset_code, r.asset_issuer, r.network, r.tx_hash, r.disbursement_date, r.note,
          r.organization_wallet, o.display_name AS organization_name, r.created_at, r.updated_at,
-         r.status, r.created_by, r.recipient_consent, r.void_reason, r.voided_at,
+         r.status, r.created_by, r.recipient_consent, r.void_reason, r.voided_at, r.version,
          v.status AS verification_status, v.checked_at AS verification_checked_at,
          v.differences_json AS verification_differences, v.reason AS verification_reason,
          v.ledger AS verification_ledger, v.transaction_created_at AS verification_transaction_created_at,
@@ -716,6 +723,7 @@ async function storeVerification(
       result.assetIssuer || null,
     ],
   );
+  // Verification refreshes do not bump `version`, so they never invalidate an open edit.
   await client.query(
     `UPDATE aid_records
      SET status = CASE WHEN voided_at IS NULL THEN $2 ELSE 'voided' END, updated_at = NOW()
@@ -819,6 +827,28 @@ async function transparencyHandler(request: Request, response: Response): Promis
 
 router.get('/api/transparency', noStore, publicReadIpRateLimit, (request, response) =>
   retryReadOnlyDatabase('/api/transparency', () => transparencyHandler(request, response)),
+);
+
+router.get('/api/records/:id', noStore, publicReadIpRateLimit, (request, response) =>
+  retryReadOnlyDatabase('/api/records/:id', async () => {
+    const recordId = Array.isArray(request.params.id) ? request.params.id[0] : request.params.id;
+    const result = await getRecord(recordId || '');
+    if (!result) {
+      error(response, 404, 'Record not found.');
+      return;
+    }
+    const current = await getSession(request);
+    const mayViewPrivateData =
+      current &&
+      (current.session.role === 'admin' ||
+        (current.session.role === 'organization' &&
+          current.session.address === result.record.organization) ||
+        (current.session.role === 'beneficiary' &&
+          current.session.address === result.record.recipientAddress));
+    response.json({
+      record: mayViewPrivateData ? result.record : publicRecord(result.record, result.consent),
+    });
+  }),
 );
 
 router.get('/api/beneficiary', noStore, async (request, response) => {
@@ -996,6 +1026,13 @@ router.put('/api/records/:id', noStore, async (request, response) => {
     error(response, 400, 'Invalid record fields.');
     return;
   }
+  const expectedVersionInput = isObject(request.body) ? request.body.expectedVersion : undefined;
+  if (expectedVersionInput !== undefined && !validVersion(expectedVersionInput)) {
+    error(response, 400, 'expectedVersion must be a positive integer.');
+    return;
+  }
+  // Without a client-supplied version, guard against changes between this read and the write.
+  const expectedVersion = expectedVersionInput ?? existing.record.version;
   const initialStatus: RecordStatus = recordInput.txHash ? 'pending' : 'unverified';
   try {
     const result = await withTransaction(async (client) => {
@@ -1004,9 +1041,9 @@ router.put('/api/records/:id', noStore, async (request, response) => {
          SET recipient_name = $2, recipient_wallet = $3, purpose = $4, amount_stroops = $5,
              asset_code = $6, asset_issuer = $7, network = $8, tx_hash = $9,
              disbursement_date = $10, note = $11, recipient_consent = $12,
-             status = $13, updated_at = NOW()
+             status = $13, updated_at = NOW(), version = version + 1
          WHERE id = $1 AND organization_wallet = $14 AND voided_at IS NULL
-           AND date_trunc('milliseconds', updated_at) IS NOT DISTINCT FROM $15`,
+           AND version = $15::bigint`,
         [
           existing.record.id,
           recordInput.recipient,
@@ -1022,7 +1059,7 @@ router.put('/api/records/:id', noStore, async (request, response) => {
           recordInput.recipientConsent,
           initialStatus,
           existing.record.organization,
-          existing.record.updatedAt ? new Date(existing.record.updatedAt) : null,
+          expectedVersion,
         ],
       );
       if (update.rowCount === 1) {
@@ -1113,7 +1150,8 @@ router.post('/api/records/:id/void', noStore, async (request, response) => {
   const result = await withTransaction(async (client) => {
     const update = await client.query(
       `UPDATE aid_records
-       SET status = 'voided', void_reason = $2, voided_by = $3, voided_at = $4, updated_at = NOW()
+       SET status = 'voided', void_reason = $2, voided_by = $3, voided_at = $4, updated_at = NOW(),
+           version = version + 1
        WHERE id = $1 AND organization_wallet = $5 AND voided_at IS NULL`,
       [existing.record.id, reason, current.session.address, voidedAt, existing.record.organization],
     );
