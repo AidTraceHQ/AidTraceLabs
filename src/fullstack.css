@@ -115,6 +115,9 @@
   border-color: #e2defd;
   color: #6255a6;
 }
+.receipt-download {
+  justify-self: start;
+}
 @media (max-width: 700px) {
   .role-form {
     grid-template-columns: 1fr;
