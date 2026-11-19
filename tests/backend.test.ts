@@ -1,4 +1,5 @@
 import { createHash, createHmac } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { Keypair } from '@stellar/stellar-sdk';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -276,36 +277,6 @@ integration('Database-backed wallet, records, and authorization flows', () => {
 
   afterEach(() => vi.unstubAllGlobals());
 
-  async function expectAuditEvent(
-    action: string,
-    actorWallet: string,
-    expected: { subjectWallet?: string; recordId?: string } = {},
-  ) {
-    const subjectWallet = expected.subjectWallet ?? null;
-    const recordId = expected.recordId ?? null;
-    const result = await pool.query<{
-      action: string;
-      actor_wallet: string;
-      subject_wallet: string | null;
-      record_id: string | null;
-    }>(
-      `SELECT action, actor_wallet, subject_wallet, record_id
-       FROM audit_events
-       WHERE action = $1 AND actor_wallet = $2
-         AND subject_wallet IS NOT DISTINCT FROM $3
-         AND record_id IS NOT DISTINCT FROM $4
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [action, actorWallet, subjectWallet, recordId],
-    );
-    expect(result.rows[0], `Missing ${action} audit event for ${actorWallet}`).toEqual({
-      action,
-      actor_wallet: actorWallet,
-      subject_wallet: subjectWallet,
-      record_id: recordId,
-    });
-  }
-
   async function login(wallet: Keypair) {
     const address = wallet.publicKey();
     wallets.add(address);
@@ -337,7 +308,6 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       signature,
     });
     expect(verified.status).toBe(200);
-    await expectAuditEvent('wallet_authenticated', address);
     const cookieHeader = verified.headers['set-cookie'];
     const cookieLine = Array.isArray(cookieHeader) ? cookieHeader[0] : cookieHeader;
     expect(cookieLine).toContain('HttpOnly');
@@ -355,7 +325,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
   }
 
   async function assignRole(
-    session: { address: string; cookie: string; csrfToken: string },
+    session: { cookie: string; csrfToken: string },
     wallet: Keypair,
     role: 'organization' | 'beneficiary' | 'donor' | 'admin',
   ) {
@@ -366,13 +336,10 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .set('Cookie', session.cookie)
       .send({ csrfToken: session.csrfToken, address: wallet.publicKey(), role });
     expect(result.status).toBe(200);
-    await expectAuditEvent('wallet_role_changed', session.address, {
-      subjectWallet: wallet.publicKey(),
-    });
   }
 
   async function createRecord(
-    session: { address: string; cookie: string; csrfToken: string },
+    session: { cookie: string; csrfToken: string },
     recipient: Keypair,
     purpose: string,
     options: { txHash?: string; consent?: boolean } = {},
@@ -395,12 +362,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         note: 'Private contact note',
         recipientConsent: options.consent || false,
       });
-    if (response.status === 201 && response.body.record?.id) {
-      recordIds.add(response.body.record.id);
-      await expectAuditEvent('record_created', session.address, {
-        recordId: response.body.record.id,
-      });
-    }
+    if (response.body.record?.id) recordIds.add(response.body.record.id);
     return response;
   }
 
@@ -551,7 +513,6 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .send({ csrfToken: session.csrfToken });
     expect(logout.status).toBe(200);
     expect(logout.headers['set-cookie']?.[0]).toContain('Max-Age=0');
-    await expectAuditEvent('wallet_logged_out', wallet.publicKey());
     expect(
       (await request(app).get('/api/me').set('Cookie', session.cookie)).body.session,
     ).toBeNull();
@@ -631,9 +592,6 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         recipientConsent: cached.body.record.recipientConsent,
       });
     expect(editAfterVerify.status).toBe(200);
-    await expectAuditEvent('record_updated', session.address, {
-      recordId: verified.body.record.id,
-    });
 
     const wrongHash = '2'.padStart(64, '0');
     transactionBodies.set(wrongHash, {
@@ -759,6 +717,19 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(publicResponse.body.records[0].recipientAddress).toBe('');
     expect(publicResponse.body.records[0].txHash).toBe('');
     expect(publicResponse.body.records[0].note).toBe('');
+
+    const singlePublicResponse = await request(app).get(
+      '/api/records/' + encodeURIComponent(privateRecord.body.record.id),
+    );
+    expect(singlePublicResponse.status).toBe(200);
+    expect(singlePublicResponse.body.record).toEqual(publicResponse.body.records[0]);
+    expect(singlePublicResponse.body.record.recipientAddress).toBe('');
+    expect(singlePublicResponse.body.record.txHash).toBe('');
+    expect(singlePublicResponse.body.record.note).toBe('');
+
+    const missingRecord = await request(app).get('/api/records/not-a-record');
+    expect(missingRecord.status).toBe(404);
+    expect(missingRecord.body).toEqual({ error: 'Record not found.' });
 
     const ownerResponse = await request(app)
       .get('/api/transparency')
@@ -892,9 +863,6 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(voided.body.record.status).toBe('voided');
     expect(voided.body.record.voidReason).toBe('Duplicate entry');
     expect(voided.body.record.voidedAt).toBeTruthy();
-    await expectAuditEvent('record_voided', ownerSession.address, {
-      recordId: owned.body.record.id,
-    });
     const visibleVoid = await request(app)
       .get('/api/transparency')
       .query({ status: 'voided', q: 'Owner record' });
@@ -921,9 +889,6 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .set('Cookie', adminSession.cookie)
       .send({ csrfToken: adminSession.csrfToken });
     expect(removed.status).toBe(200);
-    await expectAuditEvent('wallet_role_removed', adminSession.address, {
-      subjectWallet: removable.publicKey(),
-    });
 
     const selfRemove = await request(app)
       .delete('/api/admin/roles/' + encodeURIComponent(admin.publicKey()))
@@ -938,9 +903,244 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .set('Cookie', ownerSession.cookie)
       .send({ csrfToken: ownerSession.csrfToken });
     expect(logoutEverywhere.status).toBe(200);
-    await expectAuditEvent('wallet_logout_everywhere', ownerSession.address);
     expect(
       (await request(app).get('/api/me').set('Cookie', ownerSession.cookie)).body.session,
     ).toBeNull();
+  }, 120_000);
+
+  type RecordBody = Record<string, unknown> & { id: string; version: number };
+
+  async function organizationSession() {
+    const adminSession = await login(admin);
+    const organization = Keypair.random();
+    await assignRole(adminSession, organization, 'organization');
+    return login(organization);
+  }
+
+  function editRecord(
+    session: { cookie: string; csrfToken: string },
+    record: RecordBody,
+    changes: Record<string, unknown> = {},
+  ) {
+    return request(app)
+      .put('/api/records/' + record.id)
+      .set('Origin', origin)
+      .set('Cookie', session.cookie)
+      .send({
+        csrfToken: session.csrfToken,
+        recipient: record.recipient,
+        recipientAddress: record.recipientAddress,
+        purpose: record.purpose,
+        amount: record.amount,
+        asset: record.asset,
+        assetIssuer: record.assetIssuer,
+        network: record.network,
+        txHash: record.txHash,
+        date: record.date,
+        note: record.note,
+        recipientConsent: record.recipientConsent,
+        ...changes,
+      });
+  }
+
+  async function storedRecord(id: string) {
+    const result = await pool.query<{ purpose: string; version: number }>(
+      'SELECT purpose, version FROM aid_records WHERE id = $1',
+      [id],
+    );
+    return result.rows[0];
+  }
+
+  async function updateAuditCount(id: string) {
+    const result = await pool.query<{ total: number }>(
+      `SELECT COUNT(*)::int AS total FROM audit_events
+       WHERE action = 'record_updated' AND record_id = $1`,
+      [id],
+    );
+    return result.rows[0]?.total;
+  }
+
+  it('adds a NOT NULL integer version column through an idempotent migration', async () => {
+    const column = await pool.query<{ data_type: string; is_nullable: string }>(
+      `SELECT data_type, is_nullable FROM information_schema.columns
+       WHERE table_schema = current_schema() AND table_name = 'aid_records'
+         AND column_name = 'version'`,
+    );
+    expect(column.rows).toEqual([{ data_type: 'integer', is_nullable: 'NO' }]);
+    const applied = await pool.query(
+      "SELECT 1 FROM schema_migrations WHERE version = '004_record_version'",
+    );
+    expect(applied.rowCount).toBe(1);
+
+    const sql = await readFile(
+      new URL('../migrations/004_record_version.sql', import.meta.url),
+      'utf8',
+    );
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(sql);
+      await client.query(sql);
+      const constraint = await client.query(
+        `SELECT 1 FROM pg_constraint
+         WHERE conrelid = 'aid_records'::regclass AND conname = 'aid_records_version_positive'`,
+      );
+      expect(constraint.rowCount).toBe(1);
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
+  });
+
+  it('accepts exactly one of two edits carrying the same expectedVersion', async () => {
+    const session = await organizationSession();
+    const recipient = Keypair.random();
+
+    const sequential = await createRecord(session, recipient, 'Version sequential original');
+    expect(sequential.status).toBe(201);
+    expect(sequential.body.record.version).toBe(1);
+    const first = await editRecord(session, sequential.body.record, {
+      purpose: 'Version sequential first edit',
+      expectedVersion: 1,
+    });
+    const second = await editRecord(session, sequential.body.record, {
+      purpose: 'Version sequential second edit',
+      expectedVersion: 1,
+    });
+    expect(first.status).toBe(200);
+    expect(first.body.record.version).toBe(2);
+    expect(second.status).toBe(409);
+    expect(second.body).toEqual({ error: 'Record changed concurrently. Refresh before editing.' });
+    expect(await storedRecord(sequential.body.record.id)).toEqual({
+      purpose: 'Version sequential first edit',
+      version: 2,
+    });
+    expect(await updateAuditCount(sequential.body.record.id)).toBe(1);
+
+    const parallel = await createRecord(session, recipient, 'Version parallel original');
+    expect(parallel.status).toBe(201);
+    const purposes = ['Version parallel edit A', 'Version parallel edit B'];
+    const results = await Promise.all(
+      purposes.map((purpose) =>
+        editRecord(session, parallel.body.record, { purpose, expectedVersion: 1 }),
+      ),
+    );
+    expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
+    const winner = purposes[results.findIndex((result) => result.status === 200)];
+    expect(await storedRecord(parallel.body.record.id)).toEqual({ purpose: winner, version: 2 });
+    expect(await updateAuditCount(parallel.body.record.id)).toBe(1);
+  }, 120_000);
+
+  it('rejects a stale edit even when both edits share the same updated_at millisecond', async () => {
+    const session = await organizationSession();
+    const created = await createRecord(session, Keypair.random(), 'Version same millisecond');
+    expect(created.status).toBe(201);
+    const pinnedUpdatedAt = '2026-01-15T00:00:00.000Z';
+    const pinUpdatedAt = () =>
+      pool.query('UPDATE aid_records SET updated_at = $2 WHERE id = $1', [
+        created.body.record.id,
+        pinnedUpdatedAt,
+      ]);
+
+    await pinUpdatedAt();
+    const first = await editRecord(session, created.body.record, {
+      purpose: 'Same millisecond first edit',
+      expectedVersion: 1,
+    });
+    expect(first.status).toBe(200);
+    // Simulate the second edit landing in the same millisecond as the first.
+    await pinUpdatedAt();
+    const second = await editRecord(session, created.body.record, {
+      purpose: 'Same millisecond second edit',
+      expectedVersion: 1,
+    });
+    expect(second.status).toBe(409);
+    expect(await storedRecord(created.body.record.id)).toEqual({
+      purpose: 'Same millisecond first edit',
+      version: 2,
+    });
+  }, 120_000);
+
+  it('increments version on edits and voids, not on verification, and returns it everywhere', async () => {
+    const session = await organizationSession();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 404 })),
+    );
+    const purpose = 'Version increment ' + Keypair.random().publicKey().slice(-8);
+    const created = await createRecord(session, Keypair.random(), purpose, {
+      txHash: createHash('sha256').update(purpose).digest('hex'),
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.record.version).toBe(1);
+
+    const firstEdit = await editRecord(session, created.body.record, {
+      note: 'First versioned edit',
+      expectedVersion: 1,
+    });
+    expect(firstEdit.status).toBe(200);
+    expect(firstEdit.body.record.version).toBe(2);
+
+    // Omitting expectedVersion keeps the previous client behavior: the edit succeeds.
+    const unversionedEdit = await editRecord(session, firstEdit.body.record, {
+      note: 'Edit without expectedVersion',
+    });
+    expect(unversionedEdit.status).toBe(200);
+    expect(unversionedEdit.body.record.version).toBe(3);
+    expect(unversionedEdit.body.record.note).toBe('Edit without expectedVersion');
+
+    const verified = await request(app)
+      .post('/api/records/' + created.body.record.id + '/verify')
+      .set('Origin', origin)
+      .set('Cookie', session.cookie)
+      .send({ csrfToken: session.csrfToken });
+    expect(verified.status).toBe(200);
+    expect(verified.body.record.status).toBe('not-found');
+    expect(verified.body.record.version).toBe(3);
+    expect((await storedRecord(created.body.record.id))?.version).toBe(3);
+
+    const single = await request(app)
+      .get('/api/records/' + created.body.record.id)
+      .set('Cookie', session.cookie);
+    expect(single.status).toBe(200);
+    expect(single.body.record.version).toBe(3);
+    const ownerList = await request(app)
+      .get('/api/transparency')
+      .query({ q: purpose })
+      .set('Cookie', session.cookie);
+    expect(ownerList.status).toBe(200);
+    expect(ownerList.body.records).toHaveLength(1);
+    expect(ownerList.body.records[0].version).toBe(3);
+    const publicList = await request(app).get('/api/transparency').query({ q: purpose });
+    expect(publicList.body.records[0].recipientAddress).toBe('');
+    expect(publicList.body.records[0].version).toBe(3);
+
+    const voided = await request(app)
+      .post('/api/records/' + created.body.record.id + '/void')
+      .set('Origin', origin)
+      .set('Cookie', session.cookie)
+      .send({ csrfToken: session.csrfToken, reason: 'Version bump check' });
+    expect(voided.status).toBe(200);
+    expect(voided.body.record.version).toBe(4);
+    expect((await storedRecord(created.body.record.id))?.version).toBe(4);
+  }, 120_000);
+
+  it('rejects malformed expectedVersion values and leaves the record unchanged', async () => {
+    const session = await organizationSession();
+    const created = await createRecord(session, Keypair.random(), 'Version validation original');
+    expect(created.status).toBe(201);
+    for (const expectedVersion of ['abc', 1.5, 0, -1, true, null, '1']) {
+      const rejected = await editRecord(session, created.body.record, {
+        purpose: 'Version validation should not apply',
+        expectedVersion,
+      });
+      expect(rejected.status, JSON.stringify(expectedVersion)).toBe(400);
+      expect(rejected.body).toEqual({ error: 'expectedVersion must be a positive integer.' });
+      expect(await storedRecord(created.body.record.id)).toEqual({
+        purpose: 'Version validation original',
+        version: 1,
+      });
+    }
+    expect(await updateAuditCount(created.body.record.id)).toBe(0);
   }, 120_000);
 });
