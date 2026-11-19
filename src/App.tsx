@@ -8,7 +8,7 @@ import {
   waitForFreighter,
 } from './freighter';
 import { readNetworkPreference, writeNetworkPreference } from './network-preference';
-import { readThemePreference, writeThemePreference, type Theme } from './theme-preference';
+import { buildCsvExportQuery, recordsToCsv } from './csv';
 import {
   Activity,
   ArrowDownToLine,
@@ -1036,40 +1036,21 @@ export default function App() {
     }
   }
   async function exportCsv() {
-    const params = new URLSearchParams();
-    if (search.trim()) params.set('q', search.trim());
-    if (orgFilter !== 'all') params.set('organization', orgFilter);
-    if (assetFilter !== 'all') params.set('asset', assetFilter);
-    if (networkFilter !== 'all') params.set('network', networkFilter);
-    if (statusFilter !== 'all') params.set('status', statusFilter);
-    if (fromDate) params.set('from', fromDate);
-    if (toDate) params.set('to', toDate);
-    const query = params.toString();
+    const query = buildCsvExportQuery({
+      search,
+      orgFilter,
+      assetFilter,
+      networkFilter,
+      statusFilter,
+      fromDate,
+      toDate,
+    });
     try {
       const result = await api.getAllPages<AidRecord>(
         '/api/transparency' + (query ? '?' + query : ''),
         'records',
       );
-      const rows = result.data.records || [];
-      const columns = [
-        'recipient',
-        'recipientAddress',
-        'purpose',
-        'amount',
-        'asset',
-        'network',
-        'txHash',
-        'date',
-        'organization',
-        'status',
-      ];
-      const escape = (value: unknown) => '"' + String(value ?? '').replace(/"/g, '""') + '"';
-      const csv = [
-        columns.join(','),
-        ...rows.map((record) =>
-          columns.map((column) => escape(record[column as keyof AidRecord])).join(','),
-        ),
-      ].join('\r\n');
+      const csv = recordsToCsv(result.data.records || []);
       const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
       const link = document.createElement('a');
       link.href = url;
