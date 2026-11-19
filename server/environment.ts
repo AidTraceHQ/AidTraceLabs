@@ -27,6 +27,28 @@ export function integerEnvironmentVariable(
   return value;
 }
 
+export type RateLimitStoreKind = 'postgres' | 'memory';
+
+/**
+ * Where the per-IP rate-limit counters live. `postgres` (the default) shares them across every
+ * instance through the `rate_limits` table; `memory` keeps them per process and is only accepted
+ * outside production and outside Vercel, where separate instances would not share counters.
+ */
+export function rateLimitStoreKind(
+  environment: NodeJS.ProcessEnv = process.env,
+): RateLimitStoreKind {
+  const raw = environment.RATE_LIMIT_STORE?.trim().toLowerCase() || 'postgres';
+  if (raw !== 'postgres' && raw !== 'memory') {
+    throw new Error('RATE_LIMIT_STORE must be "postgres" or "memory".');
+  }
+  if (raw === 'memory' && (environment.NODE_ENV === 'production' || environment.VERCEL)) {
+    throw new Error(
+      'RATE_LIMIT_STORE=memory does not share limits across instances; use "postgres" in production and on Vercel.',
+    );
+  }
+  return raw;
+}
+
 export function validateEnvironment(environment: NodeJS.ProcessEnv = process.env): void {
   const missing: string[] = [];
 
@@ -65,6 +87,8 @@ export function validateEnvironment(environment: NodeJS.ProcessEnv = process.env
   integerEnvironmentVariable('AUTH_RATE_LIMIT_WINDOW_MS', 15 * 60 * 1000, 1, environment);
   integerEnvironmentVariable('AUTH_RATE_LIMIT_MAX', 20, 1, environment);
   integerEnvironmentVariable('TRUST_PROXY_HOPS', 0, 0, environment);
+  rateLimitStoreKind(environment);
+  integerEnvironmentVariable('RATE_LIMIT_STORE_TIMEOUT_MS', 2000, 1, environment);
 
   const publicAppOrigin = environment.PUBLIC_APP_ORIGIN;
   if (publicAppOrigin) {
