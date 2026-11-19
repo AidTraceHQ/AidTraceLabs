@@ -19,7 +19,7 @@ The Vite development server listens on port 5173 and proxies `/api` to port 3001
 
 ## Data Model
 
-All application tables use PostgreSQL. Migration `001_initial_schema.sql` creates the tables and indexes below. The migration runner separately creates `schema_migrations` to track applied files. Migration `002_unique_network_tx_hash.sql` normalizes transaction hashes and adds the unique network/hash constraint. No foreign key declares `ON DELETE CASCADE`; PostgreSQL's default referential behavior applies.
+All application tables use PostgreSQL. Migration `001_initial_schema.sql` creates the tables and indexes below. The migration runner separately creates `schema_migrations` to track applied files. Migration `002_unique_network_tx_hash.sql` normalizes transaction hashes and adds the unique network/hash constraint. Migration `003_wallet_roles_updated_index.sql` adds an index for the admin role-list ordering. No foreign key declares `ON DELETE CASCADE`; PostgreSQL's default referential behavior applies.
 
 ### `schema_migrations`
 
@@ -51,7 +51,7 @@ Indexes: primary-key index on `wallet_address`.
 | `updated_by`     | `TEXT`        | `NOT NULL`; foreign key to `users.wallet_address`                    |
 | `updated_at`     | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()`                                             |
 
-Wallets without a row are treated as donors. Index: `wallet_roles_role_wallet_idx(role, wallet_address)`.
+Wallets without a row are treated as donors. Indexes: `wallet_roles_role_wallet_idx(role, wallet_address)` for role filters and `wallet_roles_updated_wallet_idx(updated_at DESC, wallet_address DESC)` for the admin role-list ordering.
 
 ### `organizations`
 
@@ -248,7 +248,7 @@ Verified and mismatch results may be cached for one hour. Pending and other stat
 - Set `DATABASE_URL` for the runtime pool. The migration command uses `DATABASE_URL_UNPOOLED` when supplied, otherwise `DATABASE_URL`; use a direct (non-pooled) endpoint for migration where available. Remote connection examples should use `sslmode=verify-full`.
 - Configure distinct 32-byte-minimum `SESSION_SECRET` and `PSEUDONYM_SECRET`; exact `PUBLIC_APP_ORIGIN` and `CORS_ALLOWED_ORIGINS`; `PORT`; network-specific Horizon URLs; and optionally `DEFAULT_STELLAR_NETWORK`. Bootstrap the first admin by setting a public Stellar `ADMIN_WALLET` and running `npm run db:seed-admin`; there is no public bootstrap route.
 - Integration tests use `TEST_DATABASE_URL` and require `TEST_DATABASE_BRANCH=test`, `TEST_DATABASE_URL_UNPOOLED`, and `PRODUCTION_DATABASE_HOST`. The test setup rejects a test endpoint that matches the production hostname or runtime endpoint. Use Neon dev for local runtime and a separate Neon test branch for integration tests; never target production.
-- `npm run db:migrate` applies ordered `NNN_name.sql` migrations and records versions in `schema_migrations`. Migration 002 checks for case-insensitive duplicate hashes before creating the unique index and aborts without applying that migration if duplicates exist.
+- `npm run db:migrate` applies ordered `NNN_name.sql` migrations and records versions in `schema_migrations`. Migration 002 checks for case-insensitive duplicate hashes before creating the unique index and aborts without applying that migration if duplicates exist. Migration 003 adds the `wallet_roles` ordering index used by admin role listings.
 - For production, serve the built Vite assets behind HTTPS with Express behind the same-origin `/api` proxy where possible. The cookie is Secure and SameSite=Lax. A cross-site deployment requires a separate cookie/CORS review.
 - Configure PostgreSQL access restrictions, least-privilege app/migration identities, backup retention, and tested restore procedures before production operation. No production deployment, backup/restore exercise, or browser-level Freighter cookie verification is claimed by this design.
 
