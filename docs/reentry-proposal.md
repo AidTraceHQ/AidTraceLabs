@@ -51,11 +51,11 @@ endpoint). No schema change, no new endpoint.
 
 ## Comparison
 
-| | Constraint change | New endpoint | Preserves void | Audit clarity |
-|---|---|---|---|---|
-| A — reopen | None | Yes | Yes | Good — single record, clear timeline |
-| B — partial index | Replace constraint | None | Yes | Moderate — two records for one payment |
-| C — in-place correction | None | None | Yes | Weak — edits overwrite intent |
+| Option                  | Constraint change  | New endpoint | Preserves void | Audit clarity                          |
+| ----------------------- | ------------------ | ------------ | -------------- | -------------------------------------- |
+| A — reopen              | None               | Yes          | Yes            | Good — single record, clear timeline   |
+| B — partial index       | Replace constraint | None         | Yes            | Moderate — two records for one payment |
+| C — in-place correction | None               | None         | Yes            | Weak — edits overwrite intent          |
 
 **Option C** breaks the purpose of voiding: if a record can be corrected in
 place after being voided, the void carries no useful meaning. It also offers no
@@ -128,10 +128,10 @@ recordId, subject)`, which inserts into `audit_events` with fields:
 
 **Option A** would write the following events:
 
-| Event | `action` | `actor_wallet` | `subject_wallet` | `record_id` | `summary` |
-|---|---|---|---|---|---|
-| Void (existing) | `record_voided` | voiding wallet | — | record id | `"Voided aid record <id>."` |
-| Reopen | `record_reopened` | admin/org wallet | — | record id | `"Reopened aid record <id>."` |
+| Event           | `action`          | `actor_wallet`   | `subject_wallet` | `record_id` | `summary`                     |
+| --------------- | ----------------- | ---------------- | ---------------- | ----------- | ----------------------------- |
+| Void (existing) | `record_voided`   | voiding wallet   | —                | record id   | `"Voided aid record <id>."`   |
+| Reopen          | `record_reopened` | admin/org wallet | —                | record id   | `"Reopened aid record <id>."` |
 
 The reopen event maps cleanly onto the existing `writeAudit` signature — no new
 fields are needed. The full timeline (created → voided → reopened) is
