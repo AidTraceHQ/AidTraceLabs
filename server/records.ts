@@ -330,6 +330,54 @@ function error(response: Response, status: number, message: string) {
   response.status(status).json({ error: message });
 }
 
+const forbiddenRoleMessage = 'Your wallet role is not permitted to perform this action.';
+const lastAdminMessage = 'At least one active admin must remain.';
+// Transaction-scoped advisory lock key shared by every role mutation handler.
+const walletRoleMutationLockKey = 52_000_001;
+
+/**
+ * Serializes role mutations and enforces that at least one admin remains.
+ *
+ * Must be the first statement after BEGIN in every role mutation, before any
+ * per-target lock or write. It takes a transaction-scoped advisory lock, so
+ * role handlers run one at a time, and then locks every current admin row in
+ * wallet-address order, so writers outside these handlers that change an admin
+ * row are waited for and re-checked under READ COMMITTED.
+ *
+ * When `targetLosesAdmin` is true and the target is currently an admin, it
+ * rejects the change with 409 if no other admin would remain, and with 403 if
+ * the caller is no longer an admin. On rejection it rolls back and responds;
+ * the caller must return without writing.
+ */
+async function assertAdminRemains(
+  client: PoolClient,
+  response: Response,
+  callerAddress: string,
+  targetAddress: string,
+  targetLosesAdmin: boolean,
+): Promise<boolean> {
+  await client.query('SELECT pg_advisory_xact_lock($1)', [walletRoleMutationLockKey]);
+  const locked = await client.query<{ wallet_address: string }>(
+    `SELECT wallet_address FROM wallet_roles
+     WHERE role = 'admin'
+     ORDER BY wallet_address
+     FOR UPDATE`,
+  );
+  const admins = new Set(locked.rows.map((row) => row.wallet_address));
+  if (!targetLosesAdmin || !admins.has(targetAddress)) return true;
+  if (admins.size < 2) {
+    await client.query('ROLLBACK');
+    error(response, 409, lastAdminMessage);
+    return false;
+  }
+  if (!admins.has(callerAddress)) {
+    await client.query('ROLLBACK');
+    error(response, 403, forbiddenRoleMessage);
+    return false;
+  }
+  return true;
+}
+
 async function authorize(
   request: Request,
   response: Response,
@@ -342,7 +390,7 @@ async function authorize(
     return null;
   }
   if (allowedRoles && !allowedRoles.includes(current.session.role)) {
-    error(response, 403, 'Your wallet role is not permitted to perform this action.');
+    error(response, 403, forbiddenRoleMessage);
     return null;
   }
   if (
@@ -1192,6 +1240,16 @@ router.post('/api/admin/roles', noStore, async (request, response) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    if (
+      !(await assertAdminRemains(
+        client,
+        response,
+        current.session.address,
+        address,
+        role !== 'admin',
+      ))
+    )
+      return;
     await client.query(
       'INSERT INTO users (wallet_address) VALUES ($1) ON CONFLICT (wallet_address) DO NOTHING',
       [address],
@@ -1244,6 +1302,8 @@ router.delete('/api/admin/roles/:address', noStore, async (request, response) =>
   let oldRole: Role | undefined;
   try {
     await client.query('BEGIN');
+    if (!(await assertAdminRemains(client, response, current.session.address, address, true)))
+      return;
     const old = await client.query<{ role: Role }>(
       'SELECT role FROM wallet_roles WHERE wallet_address = $1 FOR UPDATE',
       [address],
