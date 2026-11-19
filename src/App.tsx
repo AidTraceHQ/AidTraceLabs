@@ -289,13 +289,8 @@ export default function App() {
     }
   }, [search, orgFilter, assetFilter, networkFilter, statusFilter, fromDate, toDate]);
   async function getLatestRecord(recordId: string): Promise<AidRecord> {
-    const path = session?.role === 'beneficiary' ? '/api/beneficiary' : '/api/transparency';
-    const result = await api.getAllPages<AidRecord>(
-      path + '?q=' + encodeURIComponent(recordId),
-      'records',
-    );
-    const latest = result.data.records?.find((record) => record.id === recordId);
-    if (!latest) throw new Error('The latest record is no longer available.');
+    const result = await api.getRecord<AidRecord>(recordId);
+    const latest = result.data.record;
     setRecords((previous) => previous.map((record) => (record.id === recordId ? latest : record)));
     setBeneficiaryRecords((previous) =>
       previous.map((record) => (record.id === recordId ? latest : record)),
@@ -694,12 +689,11 @@ export default function App() {
         '/api/records/' + encodeURIComponent(record.id) + '/verify',
         { csrfToken: session?.csrfToken },
       );
-      await loadTransparency();
       await refreshRecordAfterAction(record.id, r.data.record);
       notify('Verification check completed: ' + labelStatus(r.data.record.status));
     } catch (e) {
       setError(messageOf(e));
-      await loadTransparency();
+      setRecords((previous) => previous.map((item) => (item.id === record.id ? record : item)));
     }
   }
   async function voidRecord(record: AidRecord) {
@@ -749,7 +743,6 @@ export default function App() {
         },
       );
       await refreshRecordAfterAction(selected.id, r.data.record);
-      await loadTransparency();
       notify('Record updated and audit-logged.');
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
