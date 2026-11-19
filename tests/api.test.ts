@@ -48,6 +48,54 @@ describe('API URL configuration', () => {
       message: 'PUT /api/records/record-id failed (409): Record changed concurrently.',
     });
   });
+
+  it('restarts paginated audit queries without carrying the previous cursor into new filters', async () => {
+    vi.stubGlobal('window', { location: { origin: 'http://localhost:5173' } });
+    const requestedUrls: URL[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), 'http://localhost:5173');
+        requestedUrls.push(url);
+        const firstPageForQuery = !url.searchParams.has('cursor');
+        return new Response(
+          JSON.stringify({
+            entries: [],
+            hasMore:
+              firstPageForQuery &&
+              requestedUrls.filter(
+                (item) =>
+                  item.searchParams.get('address') === url.searchParams.get('address') &&
+                  item.searchParams.get('recordId') === url.searchParams.get('recordId'),
+              ).length === 1,
+            nextCursor: firstPageForQuery ? 'page-two' : null,
+          }),
+          { status: 200 },
+        );
+      }),
+    );
+
+    await api.getAllPages('/api/audit?address=GADDRESS', 'entries');
+    await api.getAllPages('/api/audit?recordId=record-123', 'entries');
+    await api.getAllPages('/api/audit?address=GADDRESS&recordId=record-123', 'entries');
+
+    expect(requestedUrls.map((url) => url.searchParams.get('cursor'))).toEqual([
+      null,
+      'page-two',
+      null,
+      'page-two',
+      null,
+      'page-two',
+    ]);
+    expect(requestedUrls[0]?.searchParams.get('address')).toBe('GADDRESS');
+    expect(requestedUrls[1]?.searchParams.get('address')).toBe('GADDRESS');
+    expect(requestedUrls[2]?.searchParams.get('recordId')).toBe('record-123');
+    expect(requestedUrls[3]?.searchParams.get('recordId')).toBe('record-123');
+    expect(requestedUrls[4]?.searchParams.get('address')).toBe('GADDRESS');
+    expect(requestedUrls[4]?.searchParams.get('recordId')).toBe('record-123');
+    expect(requestedUrls[5]?.searchParams.get('address')).toBe('GADDRESS');
+    expect(requestedUrls[5]?.searchParams.get('recordId')).toBe('record-123');
+  });
 });
 
 describe('api.getPage cursor pagination', () => {
