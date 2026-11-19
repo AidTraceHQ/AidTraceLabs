@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ApiError, api, type PageEnvelope } from './api';
+import { ApiError, api, resetCursorStack } from './api';
 import { getNetwork, isConnected, requestAccess, signMessage } from '@stellar/freighter-api';
 import {
   networkPassphrase,
@@ -75,9 +75,12 @@ type AidRecord = {
     assetIssuer?: string;
     link?: string;
     reason?: string;
+    memo?: string;
+    memoType?: 'text' | 'id' | 'hash' | 'return';
   };
   voidReason?: string;
   voidedAt?: string;
+  version: number;
 };
 type ActivityItem = {
   id: string;
@@ -199,10 +202,17 @@ export default function App() {
   const [assetOptions, setAssetOptions] = useState<string[]>([]);
   const [ledgerTotals, setLedgerTotals] = useState<LedgerTotal[]>([]);
   const [ledgerTotal, setLedgerTotal] = useState(0);
+  const [ledgerCursors, setLedgerCursors] = useState<Array<string | null>>(resetCursorStack());
+  const [ledgerCursorIndex, setLedgerCursorIndex] = useState(0);
+  const [ledgerHasMore, setLedgerHasMore] = useState(false);
+  const [ledgerPageLoading, setLedgerPageLoading] = useState(false);
   const [beneficiaryRecords, setBeneficiaryRecords] = useState<AidRecord[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [audit, setAudit] = useState<AuditItem[]>([]);
   const [auditActionOptions, setAuditActionOptions] = useState<string[]>([]);
+  const [auditCursor, setAuditCursor] = useState<string | null>(null);
+  const [auditHasMore, setAuditHasMore] = useState(false);
+  const [auditLoading, setAuditLoading] = useState(false);
   const [roles, setRoles] = useState<
     { address: string; role: Role; updatedAt: string; updatedBy: string }[]
   >([]);
@@ -231,7 +241,6 @@ export default function App() {
   const [activityStream, setActivityStream] = useState<
     'connecting' | 'live' | 'polling' | 'offline'
   >('offline');
-  const [pageNumber, setPageNumber] = useState(1);
   const [selected, setSelected] = useState<AidRecord | null>(null);
   const [recordConflictId, setRecordConflictId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -264,35 +273,60 @@ export default function App() {
     setToast(text);
     window.setTimeout(() => setToast(''), 3600);
   }, []);
-  const loadTransparency = useCallback(async () => {
-    const requestId = ++transparencyRequestId.current;
-    const params = new URLSearchParams();
-    if (search.trim()) params.set('q', search.trim());
-    if (orgFilter !== 'all') params.set('organization', orgFilter);
-    if (assetFilter !== 'all') params.set('asset', assetFilter);
-    if (networkFilter !== 'all') params.set('network', networkFilter);
-    if (statusFilter !== 'all') params.set('status', statusFilter);
-    if (fromDate) params.set('from', fromDate);
-    if (toDate) params.set('to', toDate);
-    params.set('limit', String(pageSize));
-    setLoading(true);
-    try {
-      const result = await api.get<PageEnvelope & { records?: AidRecord[] }>(
-        '/api/transparency?' + params.toString(),
-      );
-      if (requestId === transparencyRequestId.current) {
+  const fetchLedgerPage = useCallback(
+    async (index: number, cursors: Array<string | null>) => {
+      const requestId = ++transparencyRequestId.current;
+      const params = new URLSearchParams();
+      if (search.trim()) params.set('q', search.trim());
+      if (orgFilter !== 'all') params.set('organization', orgFilter);
+      if (assetFilter !== 'all') params.set('asset', assetFilter);
+      if (networkFilter !== 'all') params.set('network', networkFilter);
+      if (statusFilter !== 'all') params.set('status', statusFilter);
+      if (fromDate) params.set('from', fromDate);
+      if (toDate) params.set('to', toDate);
+      const query = params.toString();
+      const cursor = cursors[index] ?? null;
+      if (index === 0) setLoading(true);
+      else setLedgerPageLoading(true);
+      try {
+        const result = await api.getPage<AidRecord>(
+          '/api/transparency' + (query ? '?' + query : ''),
+          'records',
+          { limit: pageSize, cursor, seenCursors: ledgerSeenCursors.current },
+        );
+        if (requestId !== transparencyRequestId.current) return;
+        const next = typeof result.data.nextCursor === 'string' ? result.data.nextCursor : null;
         setRecords(result.data.records || []);
         setLedgerTotal(typeof result.data.total === 'number' ? result.data.total : 0);
+        setLedgerHasMore(result.data.hasMore === true);
         setOrganizationOptions(result.data.facets?.organizations || []);
         setAssetOptions(result.data.facets?.assets || []);
         setLedgerTotals(result.data.summary?.byStatus || []);
+        setLedgerCursorIndex(index);
+        setLedgerCursors(() => {
+          const stack = cursors.slice(0, index + 1);
+          if (next) stack.push(next);
+          return stack;
+        });
+      } catch (e) {
+        if (requestId === transparencyRequestId.current) setError(messageOf(e));
+      } finally {
+        if (requestId === transparencyRequestId.current) {
+          setLoading(false);
+          setLedgerPageLoading(false);
+        }
       }
-    } catch (e) {
-      if (requestId === transparencyRequestId.current) setError(messageOf(e));
-    } finally {
-      if (requestId === transparencyRequestId.current) setLoading(false);
-    }
-  }, [search, orgFilter, assetFilter, networkFilter, statusFilter, fromDate, toDate]);
+    },
+    [search, orgFilter, assetFilter, networkFilter, statusFilter, fromDate, toDate],
+  );
+  const loadTransparency = useCallback(async () => {
+    ledgerSeenCursors.current.clear();
+    const cursors = resetCursorStack();
+    setLedgerCursors(cursors);
+    setLedgerCursorIndex(0);
+    setLedgerHasMore(false);
+    await fetchLedgerPage(0, cursors);
+  }, [fetchLedgerPage]);
   async function getLatestRecord(recordId: string): Promise<AidRecord> {
     const result = await api.getRecord<AidRecord>(recordId);
     const latest = result.data.record;
@@ -403,18 +437,53 @@ export default function App() {
       setError(messageOf(e));
     }
   }, []);
+  const loadRoles = useCallback(async (options: { append?: boolean } = {}) => {
+    if (rolesRequestInFlight.current) return;
+    rolesRequestInFlight.current = true;
+    setRolesLoading(true);
+    const append = options.append === true;
+    if (!append) {
+      rolesSeenCursors.current.clear();
+      rolesCursorRef.current = null;
+      setRolesCursor(null);
+      setRolesHasMore(false);
+    }
+    try {
+      const r = await api.getPage<{
+        address: string;
+        role: Role;
+        updatedAt: string;
+        updatedBy: string;
+      }>('/api/admin/roles', 'roles', {
+        limit: 20,
+        cursor: append ? rolesCursorRef.current : null,
+        seenCursors: rolesSeenCursors.current,
+      });
+      const nextRoles = r.data.roles || [];
+      const next = typeof r.data.nextCursor === 'string' ? r.data.nextCursor : null;
+      setRoles((previous) => (append ? [...previous, ...nextRoles] : nextRoles));
+      setRolesHasMore(r.data.hasMore === true);
+      rolesCursorRef.current = next;
+      setRolesCursor(next);
+    } catch (e) {
+      setError(messageOf(e));
+    } finally {
+      rolesRequestInFlight.current = false;
+      setRolesLoading(false);
+    }
+  }, []);
   useEffect(() => {
     void restoreSession();
   }, [restoreSession]);
   useEffect(() => {
     const timer = window.setTimeout(() => void loadTransparency(), 200);
     return () => window.clearTimeout(timer);
-  }, [loadTransparency]);
+  }, [loadTransparency, sortBy, sortDir]);
   useEffect(() => {
-    if (session?.role === 'admin') {
-      void loadAudit();
-      void loadRoles();
-    }
+    if (session?.role === 'admin') void loadRoles();
+  }, [session, loadRoles]);
+  useEffect(() => {
+    if (session?.role === 'admin') void loadAudit();
   }, [session, loadAudit]);
   useEffect(() => {
     if (page === 'beneficiary' && session) void loadBeneficiaryRecords();
@@ -784,12 +853,15 @@ export default function App() {
           date: selected.date,
           note: selected.note,
           recipientConsent: selected.recipientConsent === true,
+          // The version this form was loaded with; a newer edit elsewhere makes the server reply 409.
+          expectedVersion: selected.version,
         },
       );
       await refreshRecordAfterAction(selected.id, r.data.record);
       notify('Record updated and audit-logged.');
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
+        // Keep the typed input in the form; the user chooses when to reload the latest version.
         setRecordConflictId(selected.id);
         return;
       }
@@ -904,8 +976,13 @@ export default function App() {
     [audit, auditAction, auditSearch, auditAddress, auditRecordId],
   );
   const verified = records.filter((r) => r.status === 'verified' && !r.voidedAt);
-  const pageCount = Math.max(1, Math.ceil(filteredAid.length / pageSize));
-  const visibleAid = filteredAid.slice((pageNumber - 1) * pageSize, pageNumber * pageSize);
+  const pageCount = Math.max(1, Math.ceil((ledgerTotal || filteredAid.length) / pageSize));
+  const visibleAid = filteredAid;
+  const ledgerRangeStart = ledgerCursorIndex * pageSize + (visibleAid.length ? 1 : 0);
+  const ledgerRangeEnd = ledgerCursorIndex * pageSize + visibleAid.length;
+  const canGoLedgerPrevious = ledgerCursorIndex > 0 && !ledgerPageLoading;
+  const canGoLedgerNext =
+    !ledgerPageLoading && typeof ledgerCursors[ledgerCursorIndex + 1] === 'string';
   const verifiedTotals = ledgerTotals.filter((total) => total.status === 'verified');
   const otherStatusTotals = ledgerTotals
     .filter((total) => total.status !== 'verified')
@@ -918,9 +995,6 @@ export default function App() {
       (session.role === 'organization' && selected.organization === session.address));
   const selectedDifferences = selected?.verification?.differences || [];
   const selectedMismatchDetails = selected ? mismatchDetails(selected) : [];
-  useEffect(() => {
-    setPageNumber(1);
-  }, [search, orgFilter, assetFilter, networkFilter, statusFilter, fromDate, toDate]);
 
   function sortRecords(field: string) {
     if (sortBy === field) setSortDir((current) => (current === 'asc' ? 'desc' : 'asc'));
@@ -1225,10 +1299,7 @@ export default function App() {
                   aria-label="Search records"
                   placeholder="Search purpose, organization or record"
                   value={search}
-                  onChange={(event) => {
-                    setSearch(event.target.value);
-                    setPageNumber(1);
-                  }}
+                  onChange={(event) => setSearch(event.target.value)}
                 />
               </label>
               <select
@@ -1374,28 +1445,38 @@ export default function App() {
             <div className="pagination">
               <span>
                 {ledgerTotal
-                  ? `Showing 1–${Math.min(records.length, ledgerTotal)} of ${ledgerTotal}`
+                  ? `Showing ${ledgerRangeStart}–${ledgerRangeEnd} of ${ledgerTotal}`
                   : 'No records'}
               </span>
-              <div>
+              <div className="pagination-actions">
                 <button
                   className="button secondary compact"
-                  disabled={pageNumber <= 1}
-                  onClick={() => setPageNumber((value) => Math.max(1, value - 1))}
+                  disabled={!canGoLedgerPrevious}
+                  onClick={() => void fetchLedgerPage(ledgerCursorIndex - 1, ledgerCursors)}
                 >
                   Previous
                 </button>
                 <span>
-                  Page {pageNumber} of {pageCount}
+                  Page {ledgerCursorIndex + 1} of {pageCount}
+                  {ledgerPageLoading ? ' · Loading…' : ''}
                 </span>
                 <button
                   className="button secondary compact"
-                  disabled={pageNumber >= pageCount}
-                  onClick={() => setPageNumber((value) => Math.min(pageCount, value + 1))}
+                  disabled={!canGoLedgerNext}
+                  onClick={() => void fetchLedgerPage(ledgerCursorIndex + 1, ledgerCursors)}
                 >
                   Next
                 </button>
+                {error && !loading && (
+                  <button
+                    className="button secondary compact pagination-retry"
+                    onClick={() => void fetchLedgerPage(ledgerCursorIndex, ledgerCursors)}
+                  >
+                    Retry
+                  </button>
+                )}
               </div>
+              {!ledgerHasMore && visibleAid.length > 0 && <p className="list-end">End of list</p>}
             </div>
             <p className="panel-foot">
               A transaction hash alone does not establish impact. Review the on-chain evidence and
@@ -1663,12 +1744,12 @@ export default function App() {
               <article>
                 <span>Explicit role assignments</span>
                 <b>{roles.length}</b>
-                <small>Cursor-paginated assignments</small>
+                <small>Loaded so far</small>
               </article>
               <article>
                 <span>Recent audit events</span>
                 <b>{audit.length}</b>
-                <small>Cursor-paginated audit history</small>
+                <small>Loaded so far</small>
               </article>
               <article>
                 <span>Connected as</span>
@@ -1746,6 +1827,28 @@ export default function App() {
                   ))}
                 </tbody>
               </table>
+            </div>
+            <div className="list-pager">
+              {rolesHasMore ? (
+                <button
+                  className="button secondary compact load-more"
+                  disabled={rolesLoading}
+                  onClick={() => void loadRoles({ append: true })}
+                >
+                  {rolesLoading ? 'Loading…' : 'Load more'}
+                </button>
+              ) : (
+                roles.length > 0 && <p className="list-end">End of list</p>
+              )}
+              {error && roles.length > 0 && (
+                <button
+                  className="button secondary compact pagination-retry"
+                  disabled={rolesLoading}
+                  onClick={() => void loadRoles({ append: rolesCursor !== null })}
+                >
+                  Retry
+                </button>
+              )}
             </div>
             <div className="toolbar">
               <label className="search">
@@ -1842,13 +1945,35 @@ export default function App() {
                 </tbody>
               </table>
             </div>
-            {!filteredAudit.length && (
+            {!filteredAudit.length && !auditLoading && (
               <div className="empty-state">
                 <FileClock size={22} />
                 <b>No audit events found</b>
                 <p>Audit events will appear here as users interact with AidTrace.</p>
               </div>
             )}
+            <div className="list-pager">
+              {auditHasMore ? (
+                <button
+                  className="button secondary compact load-more"
+                  disabled={auditLoading}
+                  onClick={() => void loadAudit({ append: true })}
+                >
+                  {auditLoading ? 'Loading…' : 'Load more'}
+                </button>
+              ) : (
+                filteredAudit.length > 0 && <p className="list-end">End of list</p>
+              )}
+              {error && filteredAudit.length > 0 && (
+                <button
+                  className="button secondary compact pagination-retry"
+                  disabled={auditLoading}
+                  onClick={() => void loadAudit({ append: auditCursor !== null })}
+                >
+                  Retry
+                </button>
+              )}
+            </div>
           </section>
         )}
 
@@ -2178,6 +2303,14 @@ export default function App() {
                 <div>
                   <dt>{getMessage('verificationNote', locale)}</dt>
                   <dd>{selected.verification.reason}</dd>
+                </div>
+              )}
+              {selected.verification?.memo && selected.verification.memoType && (
+                <div>
+                  <dt>Memo</dt>
+                  <dd>
+                    {selected.verification.memoType}: {selected.verification.memo}
+                  </dd>
                 </div>
               )}
               {selected.voidReason && (
