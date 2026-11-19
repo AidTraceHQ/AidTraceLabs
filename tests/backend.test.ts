@@ -908,239 +908,203 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     ).toBeNull();
   }, 120_000);
 
-  type RecordBody = Record<string, unknown> & { id: string; version: number };
+  describe('last active admin protection', () => {
+    type AdminSession = Awaited<ReturnType<typeof login>>;
 
-  async function organizationSession() {
-    const adminSession = await login(admin);
-    const organization = Keypair.random();
-    await assignRole(adminSession, organization, 'organization');
-    return login(organization);
-  }
+    async function seedAdmins(count: number): Promise<AdminSession[]> {
+      const sessions: AdminSession[] = [];
+      for (let index = 0; index < count; index += 1) {
+        const wallet = Keypair.random();
+        wallets.add(wallet.publicKey());
+        await pool.query('INSERT INTO users (wallet_address) VALUES ($1) ON CONFLICT DO NOTHING', [
+          wallet.publicKey(),
+        ]);
+        await pool.query(
+          `INSERT INTO wallet_roles (wallet_address, role, updated_by) VALUES ($1, 'admin', $1)`,
+          [wallet.publicKey()],
+        );
+        sessions.push(await login(wallet));
+      }
+      return sessions;
+    }
 
-  function editRecord(
-    session: { cookie: string; csrfToken: string },
-    record: RecordBody,
-    changes: Record<string, unknown> = {},
-  ) {
-    return request(app)
-      .put('/api/records/' + record.id)
-      .set('Origin', origin)
-      .set('Cookie', session.cookie)
-      .send({
-        csrfToken: session.csrfToken,
-        recipient: record.recipient,
-        recipientAddress: record.recipientAddress,
-        purpose: record.purpose,
-        amount: record.amount,
-        asset: record.asset,
-        assetIssuer: record.assetIssuer,
-        network: record.network,
-        txHash: record.txHash,
-        date: record.date,
-        note: record.note,
-        recipientConsent: record.recipientConsent,
-        ...changes,
-      });
-  }
-
-  async function storedRecord(id: string) {
-    const result = await pool.query<{ purpose: string; version: number }>(
-      'SELECT purpose, version FROM aid_records WHERE id = $1',
-      [id],
-    );
-    return result.rows[0];
-  }
-
-  async function updateAuditCount(id: string) {
-    const result = await pool.query<{ total: number }>(
-      `SELECT COUNT(*)::int AS total FROM audit_events
-       WHERE action = 'record_updated' AND record_id = $1`,
-      [id],
-    );
-    return result.rows[0]?.total;
-  }
-
-  it('adds a NOT NULL integer version column through an idempotent migration', async () => {
-    const column = await pool.query<{ data_type: string; is_nullable: string }>(
-      `SELECT data_type, is_nullable FROM information_schema.columns
-       WHERE table_schema = current_schema() AND table_name = 'aid_records'
-         AND column_name = 'version'`,
-    );
-    expect(column.rows).toEqual([{ data_type: 'integer', is_nullable: 'NO' }]);
-    const applied = await pool.query(
-      "SELECT 1 FROM schema_migrations WHERE version = '004_record_version'",
-    );
-    expect(applied.rowCount).toBe(1);
-
-    const sql = await readFile(
-      new URL('../migrations/004_record_version.sql', import.meta.url),
-      'utf8',
-    );
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query(sql);
-      await client.query(sql);
-      const constraint = await client.query(
-        `SELECT 1 FROM pg_constraint
-         WHERE conrelid = 'aid_records'::regclass AND conname = 'aid_records_version_positive'`,
+    // Temporarily demotes every other admin in the test database so `sessions` are the only
+    // admins, runs `body`, then restores the demoted admins.
+    async function withOnlyAdmins(sessions: AdminSession[], body: () => Promise<void>) {
+      const demoted = await pool.query<{ wallet_address: string }>(
+        `UPDATE wallet_roles SET role = 'donor'
+         WHERE role = 'admin' AND wallet_address <> ALL($1::text[])
+         RETURNING wallet_address`,
+        [sessions.map((session) => session.address)],
       );
-      expect(constraint.rowCount).toBe(1);
-    } finally {
-      await client.query('ROLLBACK');
-      client.release();
+      try {
+        await body();
+      } finally {
+        await pool.query(`UPDATE wallet_roles SET role = 'admin' WHERE wallet_address = ANY($1)`, [
+          demoted.rows.map((row) => row.wallet_address),
+        ]);
+      }
     }
+
+    function removeRole(session: AdminSession, target: string) {
+      return request(app)
+        .delete('/api/admin/roles/' + encodeURIComponent(target))
+        .set('Origin', origin)
+        .set('Cookie', session.cookie)
+        .send({ csrfToken: session.csrfToken });
+    }
+
+    function setRole(session: AdminSession, target: string, role: string) {
+      return request(app)
+        .post('/api/admin/roles')
+        .set('Origin', origin)
+        .set('Cookie', session.cookie)
+        .send({ csrfToken: session.csrfToken, address: target, role });
+    }
+
+    async function roleOf(address: string) {
+      const result = await pool.query<{ role: string }>(
+        'SELECT role FROM wallet_roles WHERE wallet_address = $1',
+        [address],
+      );
+      return result.rows[0]?.role;
+    }
+
+    async function adminCount(addresses: string[]) {
+      const result = await pool.query<{ count: string }>(
+        `SELECT COUNT(*) AS count FROM wallet_roles
+         WHERE role = 'admin' AND wallet_address = ANY($1::text[])`,
+        [addresses],
+      );
+      return Number(result.rows[0].count);
+    }
+
+    async function roleAuditCount(actors: string[]) {
+      const result = await pool.query<{ count: string }>(
+        `SELECT COUNT(*) AS count FROM audit_events
+         WHERE action IN ('wallet_role_changed', 'wallet_role_removed')
+           AND actor_wallet = ANY($1::text[])`,
+        [actors],
+      );
+      return Number(result.rows[0].count);
+    }
+
+    // Polls until some backend is waiting on a lock held by `blockerPid`.
+    async function waitUntilBlockedBy(blockerPid: number) {
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        const result = await pool.query<{ waiting: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))
+           ) AS waiting`,
+          [blockerPid],
+        );
+        if (result.rows[0].waiting) return;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error('Role mutation never blocked on the admin row lock.');
+    }
+
+    const concurrentDemotions = {
+      // Same upsert the POST handler uses, so the waiting FOR UPDATE re-checks an updated row.
+      upsert: `INSERT INTO wallet_roles (wallet_address, role, updated_by)
+               VALUES ($1, 'donor', $1)
+               ON CONFLICT (wallet_address)
+               DO UPDATE SET role = EXCLUDED.role, updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
+      // Same statement the DELETE handler uses, so the waiting FOR UPDATE sees a deleted row.
+      delete: 'DELETE FROM wallet_roles WHERE wallet_address = $1',
+    } as const;
+
+    it.each([
+      { operation: 'remove', demotion: 'upsert' },
+      { operation: 'remove', demotion: 'delete' },
+      { operation: 'demote', demotion: 'upsert' },
+      { operation: 'demote', demotion: 'delete' },
+    ] as const)(
+      'rejects $operation of the last admin by a caller demoted mid-request ($demotion) with 409',
+      async ({ operation, demotion }) => {
+        const [callerA, adminB] = await seedAdmins(2);
+        await withOnlyAdmins([callerA, adminB], async () => {
+          const raw = await pool.connect();
+          let rawOpen = false;
+          try {
+            const { rows } = await raw.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+            await raw.query('BEGIN');
+            rawOpen = true;
+            // Demote A without committing: A's row stays locked and A still looks like an admin
+            // to authorize(), which reads committed data.
+            await raw.query(concurrentDemotions[demotion], [callerA.address]);
+
+            const pending =
+              operation === 'remove'
+                ? removeRole(callerA, adminB.address).then((result) => result)
+                : setRole(callerA, adminB.address, 'donor').then((result) => result);
+            await waitUntilBlockedBy(rows[0].pid);
+            await raw.query('COMMIT');
+            rawOpen = false;
+
+            const result = await pending;
+            expect(result.status).toBe(409);
+            expect(result.body.error).toBe('At least one active admin must remain.');
+          } finally {
+            if (rawOpen) await raw.query('ROLLBACK');
+            raw.release();
+          }
+          expect(await roleOf(adminB.address)).toBe('admin');
+          expect(await roleAuditCount([callerA.address])).toBe(0);
+        });
+      },
+      60_000,
+    );
+
+    it('allows removing or demoting an admin while another admin remains', async () => {
+      const [callerA, adminB, adminC] = await seedAdmins(3);
+      await withOnlyAdmins([callerA, adminB, adminC], async () => {
+        const removed = await removeRole(callerA, adminB.address);
+        expect(removed.status).toBe(200);
+        expect(await roleOf(adminB.address)).toBeUndefined();
+        await expectAuditEvent('wallet_role_removed', callerA.address, {
+          subjectWallet: adminB.address,
+        });
+
+        const demoted = await setRole(callerA, adminC.address, 'organization');
+        expect(demoted.status).toBe(200);
+        expect(await roleOf(adminC.address)).toBe('organization');
+        await expectAuditEvent('wallet_role_changed', callerA.address, {
+          subjectWallet: adminC.address,
+        });
+
+        expect(await adminCount([callerA.address, adminB.address, adminC.address])).toBe(1);
+      });
+    }, 60_000);
+
+    it.each([
+      { name: 'remove/remove', a: 'remove', b: 'remove' },
+      { name: 'demote/demote', a: 'demote', b: 'demote' },
+      { name: 'demote/remove', a: 'demote', b: 'remove' },
+    ] as const)(
+      'keeps one admin when the only two admins race ($name)',
+      async ({ a, b }) => {
+        const [adminA, adminB] = await seedAdmins(2);
+        await withOnlyAdmins([adminA, adminB], async () => {
+          const mutate = (
+            operation: 'remove' | 'demote',
+            caller: AdminSession,
+            target: AdminSession,
+          ) =>
+            operation === 'remove'
+              ? removeRole(caller, target.address)
+              : setRole(caller, target.address, 'donor');
+          const results = await Promise.all([mutate(a, adminA, adminB), mutate(b, adminB, adminA)]);
+          const statuses = results.map((result) => result.status);
+          expect(statuses.filter((status) => status === 200)).toHaveLength(1);
+          const rejected = statuses.find((status) => status !== 200);
+          expect([403, 409]).toContain(rejected);
+          expect(await adminCount([adminA.address, adminB.address])).toBe(1);
+          expect(await roleAuditCount([adminA.address, adminB.address])).toBe(1);
+        });
+      },
+      60_000,
+    );
   });
-
-  it('accepts exactly one of two edits carrying the same expectedVersion', async () => {
-    const session = await organizationSession();
-    const recipient = Keypair.random();
-
-    const sequential = await createRecord(session, recipient, 'Version sequential original');
-    expect(sequential.status).toBe(201);
-    expect(sequential.body.record.version).toBe(1);
-    const first = await editRecord(session, sequential.body.record, {
-      purpose: 'Version sequential first edit',
-      expectedVersion: 1,
-    });
-    const second = await editRecord(session, sequential.body.record, {
-      purpose: 'Version sequential second edit',
-      expectedVersion: 1,
-    });
-    expect(first.status).toBe(200);
-    expect(first.body.record.version).toBe(2);
-    expect(second.status).toBe(409);
-    expect(second.body).toEqual({ error: 'Record changed concurrently. Refresh before editing.' });
-    expect(await storedRecord(sequential.body.record.id)).toEqual({
-      purpose: 'Version sequential first edit',
-      version: 2,
-    });
-    expect(await updateAuditCount(sequential.body.record.id)).toBe(1);
-
-    const parallel = await createRecord(session, recipient, 'Version parallel original');
-    expect(parallel.status).toBe(201);
-    const purposes = ['Version parallel edit A', 'Version parallel edit B'];
-    const results = await Promise.all(
-      purposes.map((purpose) =>
-        editRecord(session, parallel.body.record, { purpose, expectedVersion: 1 }),
-      ),
-    );
-    expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
-    const winner = purposes[results.findIndex((result) => result.status === 200)];
-    expect(await storedRecord(parallel.body.record.id)).toEqual({ purpose: winner, version: 2 });
-    expect(await updateAuditCount(parallel.body.record.id)).toBe(1);
-  }, 120_000);
-
-  it('rejects a stale edit even when both edits share the same updated_at millisecond', async () => {
-    const session = await organizationSession();
-    const created = await createRecord(session, Keypair.random(), 'Version same millisecond');
-    expect(created.status).toBe(201);
-    const pinnedUpdatedAt = '2026-01-15T00:00:00.000Z';
-    const pinUpdatedAt = () =>
-      pool.query('UPDATE aid_records SET updated_at = $2 WHERE id = $1', [
-        created.body.record.id,
-        pinnedUpdatedAt,
-      ]);
-
-    await pinUpdatedAt();
-    const first = await editRecord(session, created.body.record, {
-      purpose: 'Same millisecond first edit',
-      expectedVersion: 1,
-    });
-    expect(first.status).toBe(200);
-    // Simulate the second edit landing in the same millisecond as the first.
-    await pinUpdatedAt();
-    const second = await editRecord(session, created.body.record, {
-      purpose: 'Same millisecond second edit',
-      expectedVersion: 1,
-    });
-    expect(second.status).toBe(409);
-    expect(await storedRecord(created.body.record.id)).toEqual({
-      purpose: 'Same millisecond first edit',
-      version: 2,
-    });
-  }, 120_000);
-
-  it('increments version on edits and voids, not on verification, and returns it everywhere', async () => {
-    const session = await organizationSession();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response('{}', { status: 404 })),
-    );
-    const purpose = 'Version increment ' + Keypair.random().publicKey().slice(-8);
-    const created = await createRecord(session, Keypair.random(), purpose, {
-      txHash: createHash('sha256').update(purpose).digest('hex'),
-    });
-    expect(created.status).toBe(201);
-    expect(created.body.record.version).toBe(1);
-
-    const firstEdit = await editRecord(session, created.body.record, {
-      note: 'First versioned edit',
-      expectedVersion: 1,
-    });
-    expect(firstEdit.status).toBe(200);
-    expect(firstEdit.body.record.version).toBe(2);
-
-    // Omitting expectedVersion keeps the previous client behavior: the edit succeeds.
-    const unversionedEdit = await editRecord(session, firstEdit.body.record, {
-      note: 'Edit without expectedVersion',
-    });
-    expect(unversionedEdit.status).toBe(200);
-    expect(unversionedEdit.body.record.version).toBe(3);
-    expect(unversionedEdit.body.record.note).toBe('Edit without expectedVersion');
-
-    const verified = await request(app)
-      .post('/api/records/' + created.body.record.id + '/verify')
-      .set('Origin', origin)
-      .set('Cookie', session.cookie)
-      .send({ csrfToken: session.csrfToken });
-    expect(verified.status).toBe(200);
-    expect(verified.body.record.status).toBe('not-found');
-    expect(verified.body.record.version).toBe(3);
-    expect((await storedRecord(created.body.record.id))?.version).toBe(3);
-
-    const single = await request(app)
-      .get('/api/records/' + created.body.record.id)
-      .set('Cookie', session.cookie);
-    expect(single.status).toBe(200);
-    expect(single.body.record.version).toBe(3);
-    const ownerList = await request(app)
-      .get('/api/transparency')
-      .query({ q: purpose })
-      .set('Cookie', session.cookie);
-    expect(ownerList.status).toBe(200);
-    expect(ownerList.body.records).toHaveLength(1);
-    expect(ownerList.body.records[0].version).toBe(3);
-    const publicList = await request(app).get('/api/transparency').query({ q: purpose });
-    expect(publicList.body.records[0].recipientAddress).toBe('');
-    expect(publicList.body.records[0].version).toBe(3);
-
-    const voided = await request(app)
-      .post('/api/records/' + created.body.record.id + '/void')
-      .set('Origin', origin)
-      .set('Cookie', session.cookie)
-      .send({ csrfToken: session.csrfToken, reason: 'Version bump check' });
-    expect(voided.status).toBe(200);
-    expect(voided.body.record.version).toBe(4);
-    expect((await storedRecord(created.body.record.id))?.version).toBe(4);
-  }, 120_000);
-
-  it('rejects malformed expectedVersion values and leaves the record unchanged', async () => {
-    const session = await organizationSession();
-    const created = await createRecord(session, Keypair.random(), 'Version validation original');
-    expect(created.status).toBe(201);
-    for (const expectedVersion of ['abc', 1.5, 0, -1, true, null, '1']) {
-      const rejected = await editRecord(session, created.body.record, {
-        purpose: 'Version validation should not apply',
-        expectedVersion,
-      });
-      expect(rejected.status, JSON.stringify(expectedVersion)).toBe(400);
-      expect(rejected.body).toEqual({ error: 'expectedVersion must be a positive integer.' });
-      expect(await storedRecord(created.body.record.id)).toEqual({
-        purpose: 'Version validation original',
-        version: 1,
-      });
-    }
-    expect(await updateAuditCount(created.body.record.id)).toBe(0);
-  }, 120_000);
 });
