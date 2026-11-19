@@ -8,6 +8,7 @@ import {
   waitForFreighter,
 } from './freighter';
 import { readNetworkPreference, writeNetworkPreference } from './network-preference';
+import { formatReceipt } from './receipt';
 import {
   Activity,
   ArrowDownToLine,
@@ -261,16 +262,12 @@ export default function App() {
   const [roleValue, setRoleValue] = useState<Role>('organization');
   const [auditAction, setAuditAction] = useState('all');
   const [auditSearch, setAuditSearch] = useState('');
+  const [auditAddress, setAuditAddress] = useState('');
+  const [auditRecordId, setAuditRecordId] = useState('');
   const [voidReason, setVoidReason] = useState('');
   const pageSize = 10;
   const transparencyRequestId = useRef(0);
-  const ledgerSeenCursors = useRef(new Set<string>());
-  const auditSeenCursors = useRef(new Set<string>());
-  const rolesSeenCursors = useRef(new Set<string>());
-  const auditCursorRef = useRef<string | null>(null);
-  const rolesCursorRef = useRef<string | null>(null);
-  const auditRequestInFlight = useRef(false);
-  const rolesRequestInFlight = useRef(false);
+  const auditRequestId = useRef(0);
 
   const notify = useCallback((text: string) => {
     setToast(text);
@@ -372,49 +369,28 @@ export default function App() {
     setNetwork(value);
     writeNetworkPreference(value);
   }
-  const loadAudit = useCallback(
-    async (options: { append?: boolean } = {}) => {
-      if (!session || session.role !== 'admin') return;
-      if (auditRequestInFlight.current) return;
-      auditRequestInFlight.current = true;
-      setAuditLoading(true);
-      const params = new URLSearchParams();
-      if (auditAction !== 'all') params.set('action', auditAction);
-      if (auditSearch.trim()) params.set('q', auditSearch.trim());
-      const query = params.toString();
-      const append = options.append === true;
-      if (!append) {
-        auditSeenCursors.current.clear();
-        auditCursorRef.current = null;
-        setAuditCursor(null);
-        setAuditHasMore(false);
-      }
-      try {
-        const r = await api.getPage<AuditItem>(
-          '/api/audit' + (query ? '?' + query : ''),
-          'entries',
-          {
-            limit: 20,
-            cursor: append ? auditCursorRef.current : null,
-            seenCursors: auditSeenCursors.current,
-          },
-        );
-        const entries = r.data.entries || [];
-        const next = typeof r.data.nextCursor === 'string' ? r.data.nextCursor : null;
-        setAudit((previous) => (append ? [...previous, ...entries] : entries));
+  const loadAudit = useCallback(async () => {
+    if (!session || session.role !== 'admin') return;
+    const requestId = ++auditRequestId.current;
+    const params = new URLSearchParams();
+    if (auditAction !== 'all') params.set('action', auditAction);
+    if (auditSearch.trim()) params.set('q', auditSearch.trim());
+    if (auditAddress.trim()) params.set('address', auditAddress.trim());
+    if (auditRecordId.trim()) params.set('recordId', auditRecordId.trim());
+    const query = params.toString();
+    try {
+      const r = await api.getAllPages<AuditItem>(
+        '/api/audit' + (query ? '?' + query : ''),
+        'entries',
+      );
+      if (requestId === auditRequestId.current) {
+        setAudit(r.data.entries || []);
         setAuditActionOptions(r.data.facets?.actions || []);
-        setAuditHasMore(r.data.hasMore === true);
-        auditCursorRef.current = next;
-        setAuditCursor(next);
-      } catch (e) {
-        setError(messageOf(e));
-      } finally {
-        auditRequestInFlight.current = false;
-        setAuditLoading(false);
       }
-    },
-    [session, auditAction, auditSearch],
-  );
+    } catch (e) {
+      if (requestId === auditRequestId.current) setError(messageOf(e));
+    }
+  }, [session, auditAction, auditSearch, auditAddress, auditRecordId]);
   const restoreSession = useCallback(async () => {
     try {
       const r = await api.get<{ session: Session | null }>('/api/me');
@@ -938,12 +914,14 @@ export default function App() {
       audit.filter(
         (a) =>
           (auditAction === 'all' || a.action === auditAction) &&
+          (!auditAddress.trim() || a.address === auditAddress.trim()) &&
+          (!auditRecordId.trim() || a.recordId === auditRecordId.trim()) &&
           [a.summary, a.address, a.recordId || '']
             .join(' ')
             .toLowerCase()
             .includes(auditSearch.toLowerCase()),
       ),
-    [audit, auditAction, auditSearch],
+    [audit, auditAction, auditSearch, auditAddress, auditRecordId],
   );
   const verified = records.filter((r) => r.status === 'verified' && !r.voidedAt);
   const pageCount = Math.max(1, Math.ceil((ledgerTotal || filteredAid.length) / pageSize));
@@ -1017,6 +995,16 @@ export default function App() {
     } catch (e) {
       setError(messageOf(e));
     }
+  }
+
+  function downloadReceipt(record: AidRecord) {
+    const text = formatReceipt(record);
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `aidtrace-receipt-${record.id.slice(0, 8).replace(/[^a-zA-Z0-9-]/g, '') || 'record'}.txt`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   return (
@@ -1786,6 +1774,56 @@ export default function App() {
                   <option key={action}>{action}</option>
                 ))}
               </select>
+              <label className="search">
+                <Search size={15} />
+                <input
+                  aria-label="Filter audit address"
+                  placeholder="Wallet address"
+                  value={auditAddress}
+                  onChange={(event) => setAuditAddress(event.target.value)}
+                />
+              </label>
+              {auditAddress && (
+                <button
+                  className="button secondary compact"
+                  type="button"
+                  onClick={() => setAuditAddress('')}
+                >
+                  Clear address
+                </button>
+              )}
+              <label className="search">
+                <Search size={15} />
+                <input
+                  aria-label="Filter audit record ID"
+                  placeholder="Record ID"
+                  value={auditRecordId}
+                  onChange={(event) => setAuditRecordId(event.target.value)}
+                />
+              </label>
+              {auditRecordId && (
+                <button
+                  className="button secondary compact"
+                  type="button"
+                  onClick={() => setAuditRecordId('')}
+                >
+                  Clear record ID
+                </button>
+              )}
+              {(auditAction !== 'all' || auditSearch || auditAddress || auditRecordId) && (
+                <button
+                  className="button secondary compact"
+                  type="button"
+                  onClick={() => {
+                    setAuditAction('all');
+                    setAuditSearch('');
+                    setAuditAddress('');
+                    setAuditRecordId('');
+                  }}
+                >
+                  Reset filters
+                </button>
+              )}
             </div>
             <div className="table-wrap">
               <table>
@@ -2212,6 +2250,14 @@ export default function App() {
               </div>
             )}
             <div className="detail-actions">
+              <button
+                className="button secondary compact receipt-download"
+                type="button"
+                onClick={() => downloadReceipt(selected)}
+              >
+                <ArrowDownToLine size={14} />
+                Download receipt
+              </button>
               {selected.txHash && (
                 <a
                   className="explorer-link"
