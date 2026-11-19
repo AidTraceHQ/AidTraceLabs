@@ -73,6 +73,8 @@ type RecordRow = QueryResultRow & {
   verification_asset_code: string | null;
   verification_asset_issuer: string | null;
   verification_link: string | null;
+  verification_memo: string | null;
+  verification_memo_type: Verification['memoType'] | null;
 };
 
 const recordStatuses = new Set<RecordStatus>([
@@ -237,6 +239,10 @@ function mapRecord(row: RecordRow): AidRecord {
       link: row.verification_link || undefined,
       reason: row.verification_reason || undefined,
     };
+    if (row.verification_memo !== null && row.verification_memo_type !== null) {
+      record.verification.memo = row.verification_memo;
+      record.verification.memoType = row.verification_memo_type;
+    }
   }
   return record;
 }
@@ -252,6 +258,7 @@ const recordSelect = `
          v.source_account AS verification_source_account, v.destination AS verification_destination,
          v.amount_stroops::text AS verification_amount_stroops, v.asset_code AS verification_asset_code,
          v.asset_issuer AS verification_asset_issuer,
+         v.memo AS verification_memo, v.memo_type AS verification_memo_type,
          CASE WHEN v.ledger IS NULL THEN NULL ELSE
            CASE WHEN r.network = 'mainnet' THEN 'https://stellar.expert/explorer/public/tx/'
                 ELSE 'https://stellar.expert/explorer/testnet/tx/' END || r.tx_hash
@@ -261,7 +268,7 @@ const recordSelect = `
   LEFT JOIN LATERAL (
     SELECT vr.status, vr.checked_at, vr.differences_json, vr.reason, vr.ledger,
            vr.transaction_created_at, vr.source_account, vr.destination, vr.amount_stroops,
-           vr.asset_code, vr.asset_issuer
+           vr.asset_code, vr.asset_issuer, vr.memo, vr.memo_type
     FROM verification_results vr
     WHERE vr.aid_record_id = r.id
     ORDER BY vr.checked_at DESC, vr.id DESC
@@ -289,6 +296,8 @@ function publicRecord(record: AidRecord, consent: boolean): AidRecord {
           link: undefined,
           createdAt: undefined,
           ledger: undefined,
+          memo: undefined,
+          memoType: undefined,
         }
       : undefined,
   };
@@ -330,6 +339,54 @@ function error(response: Response, status: number, message: string) {
   response.status(status).json({ error: message });
 }
 
+const forbiddenRoleMessage = 'Your wallet role is not permitted to perform this action.';
+const lastAdminMessage = 'At least one active admin must remain.';
+// Transaction-scoped advisory lock key shared by every role mutation handler.
+const walletRoleMutationLockKey = 52_000_001;
+
+/**
+ * Serializes role mutations and enforces that at least one admin remains.
+ *
+ * Must be the first statement after BEGIN in every role mutation, before any
+ * per-target lock or write. It takes a transaction-scoped advisory lock, so
+ * role handlers run one at a time, and then locks every current admin row in
+ * wallet-address order, so writers outside these handlers that change an admin
+ * row are waited for and re-checked under READ COMMITTED.
+ *
+ * When `targetLosesAdmin` is true and the target is currently an admin, it
+ * rejects the change with 409 if no other admin would remain, and with 403 if
+ * the caller is no longer an admin. On rejection it rolls back and responds;
+ * the caller must return without writing.
+ */
+async function assertAdminRemains(
+  client: PoolClient,
+  response: Response,
+  callerAddress: string,
+  targetAddress: string,
+  targetLosesAdmin: boolean,
+): Promise<boolean> {
+  await client.query('SELECT pg_advisory_xact_lock($1)', [walletRoleMutationLockKey]);
+  const locked = await client.query<{ wallet_address: string }>(
+    `SELECT wallet_address FROM wallet_roles
+     WHERE role = 'admin'
+     ORDER BY wallet_address
+     FOR UPDATE`,
+  );
+  const admins = new Set(locked.rows.map((row) => row.wallet_address));
+  if (!targetLosesAdmin || !admins.has(targetAddress)) return true;
+  if (admins.size < 2) {
+    await client.query('ROLLBACK');
+    error(response, 409, lastAdminMessage);
+    return false;
+  }
+  if (!admins.has(callerAddress)) {
+    await client.query('ROLLBACK');
+    error(response, 403, forbiddenRoleMessage);
+    return false;
+  }
+  return true;
+}
+
 async function authorize(
   request: Request,
   response: Response,
@@ -342,7 +399,7 @@ async function authorize(
     return null;
   }
   if (allowedRoles && !allowedRoles.includes(current.session.role)) {
-    error(response, 403, 'Your wallet role is not permitted to perform this action.');
+    error(response, 403, forbiddenRoleMessage);
     return null;
   }
   if (
@@ -657,8 +714,8 @@ async function storeVerification(
     `INSERT INTO verification_results
        (id, aid_record_id, status, differences_json, reason, ledger,
         transaction_created_at, source_account, destination, amount_stroops,
-        asset_code, asset_issuer, checked_at, cache_expires_at)
-     VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11, $12, NOW(),
+        asset_code, asset_issuer, memo, memo_type, checked_at, cache_expires_at)
+     VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(),
              CASE WHEN $3 IN ('verified', 'mismatch') THEN NOW() + INTERVAL '1 hour' END)`,
     [
       randomBytes(16).toString('hex'),
@@ -673,6 +730,8 @@ async function storeVerification(
       amountStroops,
       assetCode,
       result.assetIssuer || null,
+      result.memo && result.memoType ? result.memo : null,
+      result.memo && result.memoType ? result.memoType : null,
     ],
   );
   // Verification refreshes do not bump `version`, so they never invalidate an open edit.
@@ -1192,6 +1251,16 @@ router.post('/api/admin/roles', noStore, async (request, response) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    if (
+      !(await assertAdminRemains(
+        client,
+        response,
+        current.session.address,
+        address,
+        role !== 'admin',
+      ))
+    )
+      return;
     await client.query(
       'INSERT INTO users (wallet_address) VALUES ($1) ON CONFLICT (wallet_address) DO NOTHING',
       [address],
@@ -1244,6 +1313,8 @@ router.delete('/api/admin/roles/:address', noStore, async (request, response) =>
   let oldRole: Role | undefined;
   try {
     await client.query('BEGIN');
+    if (!(await assertAdminRemains(client, response, current.session.address, address, true)))
+      return;
     const old = await client.query<{ role: Role }>(
       'SELECT role FROM wallet_roles WHERE wallet_address = $1 FOR UPDATE',
       [address],
