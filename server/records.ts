@@ -773,6 +773,28 @@ router.get('/api/transparency', noStore, publicReadIpRateLimit, (request, respon
   retryReadOnlyDatabase('/api/transparency', () => transparencyHandler(request, response)),
 );
 
+router.get('/api/records/:id', noStore, publicReadIpRateLimit, (request, response) =>
+  retryReadOnlyDatabase('/api/records/:id', async () => {
+    const recordId = Array.isArray(request.params.id) ? request.params.id[0] : request.params.id;
+    const result = await getRecord(recordId || '');
+    if (!result) {
+      error(response, 404, 'Record not found.');
+      return;
+    }
+    const current = await getSession(request);
+    const mayViewPrivateData =
+      current &&
+      (current.session.role === 'admin' ||
+        (current.session.role === 'organization' &&
+          current.session.address === result.record.organization) ||
+        (current.session.role === 'beneficiary' &&
+          current.session.address === result.record.recipientAddress));
+    response.json({
+      record: mayViewPrivateData ? result.record : publicRecord(result.record, result.consent),
+    });
+  }),
+);
+
 router.get('/api/beneficiary', noStore, async (request, response) => {
   const current = await authorize(request, response, ['beneficiary', 'admin']);
   if (!current) return;
