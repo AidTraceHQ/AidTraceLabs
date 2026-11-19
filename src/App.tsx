@@ -76,6 +76,7 @@ type AidRecord = {
   };
   voidReason?: string;
   voidedAt?: string;
+  version: number;
 };
 type ActivityItem = {
   id: string;
@@ -733,12 +734,15 @@ export default function App() {
           date: selected.date,
           note: selected.note,
           recipientConsent: selected.recipientConsent === true,
+          // The version this form was loaded with; a newer edit elsewhere makes the server reply 409.
+          expectedVersion: selected.version,
         },
       );
       await refreshRecordAfterAction(selected.id, r.data.record);
       notify('Record updated and audit-logged.');
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
+        // Keep the typed input in the form; the user chooses when to reload the latest version.
         setRecordConflictId(selected.id);
         return;
       }
