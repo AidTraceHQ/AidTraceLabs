@@ -37,6 +37,12 @@ type HorizonOperation = Record<string, unknown> & { paging_token?: string };
 
 const operationPageSize = 200;
 const operationPageLimit = 20;
+const horizonRequestTimeoutMs = 10_000;
+// Overall budget for one verification, kept well under typical reverse-proxy and
+// serverless function limits so the calling request can still respond.
+export const defaultVerificationDeadlineMs = 8_000;
+const deadlineReason =
+  'Verification did not finish within its time limit because Horizon was slow. Retry verification.';
 const amountPattern = /^(\d+)(?:\.(\d{1,7}))?$/;
 
 function horizonUrl(network: Network): URL {
@@ -127,15 +133,21 @@ function operationSource(operation: HorizonOperation, transaction: HorizonTransa
   );
 }
 
-async function getJson<T>(url: URL): Promise<{ response: Response; data?: T }> {
+// Each request aborts at its own timeout or at the overall verification deadline,
+// whichever comes first. The signal also covers reading the response body.
+async function getJson<T>(
+  url: URL,
+  deadline: AbortSignal,
+): Promise<{ response: Response; data?: T }> {
   const response = await fetch(url, {
     headers: { Accept: 'application/json' },
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.any([AbortSignal.timeout(horizonRequestTimeoutMs), deadline]),
   });
   if (!response.ok) return { response };
   try {
     return { response, data: (await response.json()) as T };
-  } catch {
+  } catch (error) {
+    if (deadline.aborted) throw error;
     return { response };
   }
 }
@@ -148,8 +160,18 @@ function explorerLink(network: Network, txHash: string): string {
   );
 }
 
-export async function checkTransaction(record: AidPayment): Promise<Verification> {
+export async function checkTransaction(
+  record: AidPayment,
+  { deadlineMs = defaultVerificationDeadlineMs }: { deadlineMs?: number } = {},
+): Promise<Verification> {
   const checkedAt = new Date().toISOString();
+  const deadline = AbortSignal.timeout(deadlineMs);
+  const deadlinePassed = (): Verification => ({
+    status: 'pending',
+    checkedAt,
+    differences: [],
+    reason: deadlineReason,
+  });
   if (!record.txHash) {
     return {
       status: 'unverified',
@@ -174,10 +196,11 @@ export async function checkTransaction(record: AidPayment): Promise<Verification
   let transactionResponse: Response;
   let transaction: HorizonTransaction | undefined;
   try {
-    const result = await getJson<HorizonTransaction>(transactionUrl);
+    const result = await getJson<HorizonTransaction>(transactionUrl, deadline);
     transactionResponse = result.response;
     transaction = result.data;
   } catch {
+    if (deadline.aborted) return deadlinePassed();
     return {
       status: 'pending',
       checkedAt,
@@ -237,10 +260,14 @@ export async function checkTransaction(record: AidPayment): Promise<Verification
     let response: Response;
     let pageRecords: HorizonOperation[] | undefined;
     try {
-      const result = await getJson<{ _embedded?: { records?: HorizonOperation[] } }>(operationsUrl);
+      const result = await getJson<{ _embedded?: { records?: HorizonOperation[] } }>(
+        operationsUrl,
+        deadline,
+      );
       response = result.response;
       pageRecords = result.data?._embedded?.records;
     } catch {
+      if (deadline.aborted) return deadlinePassed();
       return {
         status: 'pending',
         checkedAt,

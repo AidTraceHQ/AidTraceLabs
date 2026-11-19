@@ -265,6 +265,77 @@ describe('On-chain verification distinguishes matching and mismatching payments'
     expect((await checkTransaction(record)).status).toBe('pending');
     expect(calls).toBe(20);
   });
+
+  it('returns pending before the overall verification deadline', async () => {
+    const organization = Keypair.random().publicKey();
+    const record = {
+      network: 'testnet' as const,
+      txHash: 'd'.repeat(64),
+      organizationWallet: organization,
+      recipientWallet: Keypair.random().publicKey(),
+      amountStroops: '10000000',
+      assetCode: 'XLM',
+      assetIssuer: null,
+    };
+    const fullPage = Array.from({ length: 200 }, (_, index) => ({
+      type: 'payment',
+      from: organization,
+      to: organization,
+      amount: '1',
+      asset_type: 'native',
+      paging_token: String(index + 1),
+    }));
+    // Each operations page answers only after pageDelayMs unless its signal aborts first.
+    let pageDelayMs = 0;
+    let operationCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = new URL(String(input));
+        if (!url.pathname.endsWith('/operations')) {
+          return new Response(JSON.stringify({ successful: true, source_account: organization }), {
+            status: 200,
+          });
+        }
+        operationCalls += 1;
+        const signal = init?.signal;
+        await new Promise<void>((resolve, reject) => {
+          if (signal?.aborted) return reject(signal.reason);
+          const timer = setTimeout(resolve, pageDelayMs);
+          signal?.addEventListener('abort', () => {
+            clearTimeout(timer);
+            reject(signal.reason);
+          });
+        });
+        return new Response(JSON.stringify({ _embedded: { records: fullPage } }), {
+          status: 200,
+        });
+      }),
+    );
+
+    const deadlineMs = 150;
+    // A single operations page that would only answer long after the deadline.
+    pageDelayMs = 5_000;
+    let started = performance.now();
+    let result = await checkTransaction(record, { deadlineMs });
+    let elapsed = performance.now() - started;
+    expect(result.status).toBe('pending');
+    expect(result.reason).toMatch(/time limit/);
+    expect(operationCalls).toBe(1);
+    expect(elapsed).toBeLessThan(deadlineMs + 250);
+
+    // Many pages that are each fast enough alone but exceed the deadline together.
+    pageDelayMs = 40;
+    operationCalls = 0;
+    started = performance.now();
+    result = await checkTransaction(record, { deadlineMs });
+    elapsed = performance.now() - started;
+    expect(result.status).toBe('pending');
+    expect(result.reason).toMatch(/time limit/);
+    expect(operationCalls).toBeGreaterThan(1);
+    expect(operationCalls).toBeLessThan(20);
+    expect(elapsed).toBeLessThan(deadlineMs + 250);
+  });
 });
 
 const integration = describe.skipIf(!process.env.TEST_DATABASE_URL);
