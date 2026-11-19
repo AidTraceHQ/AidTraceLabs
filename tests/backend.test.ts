@@ -1,5 +1,4 @@
 import { createHash, createHmac } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { Keypair } from '@stellar/stellar-sdk';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -378,6 +377,36 @@ integration('Database-backed wallet, records, and authorization flows', () => {
   let admin: Keypair;
 
   afterEach(() => vi.unstubAllGlobals());
+
+  async function expectAuditEvent(
+    action: string,
+    actorWallet: string,
+    expected: { subjectWallet?: string; recordId?: string } = {},
+  ) {
+    const subjectWallet = expected.subjectWallet ?? null;
+    const recordId = expected.recordId ?? null;
+    const result = await pool.query<{
+      action: string;
+      actor_wallet: string;
+      subject_wallet: string | null;
+      record_id: string | null;
+    }>(
+      `SELECT action, actor_wallet, subject_wallet, record_id
+       FROM audit_events
+       WHERE action = $1 AND actor_wallet = $2
+         AND subject_wallet IS NOT DISTINCT FROM $3
+         AND record_id IS NOT DISTINCT FROM $4
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [action, actorWallet, subjectWallet, recordId],
+    );
+    expect(result.rows[0], `Missing ${action} audit event for ${actorWallet}`).toEqual({
+      action,
+      actor_wallet: actorWallet,
+      subject_wallet: subjectWallet,
+      record_id: recordId,
+    });
+  }
 
   async function login(wallet: Keypair) {
     const address = wallet.publicKey();
