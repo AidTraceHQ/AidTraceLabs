@@ -35,15 +35,26 @@ Run the Express API on a Node.js 20+ host/container/VM connected to PostgreSQL, 
 | `AUTH_RATE_LIMIT_WINDOW_MS`        | `/api/auth/*` per-IP rate-limit window; defaults to `900000` (15 minutes).                         |
 | `AUTH_RATE_LIMIT_MAX`              | `/api/auth/*` requests per IP per window; defaults to `20`.                                        |
 | `TRUST_PROXY_HOPS`                 | Number of trusted reverse-proxy hops; defaults to `0` (trust no forwarded client IP).              |
+| `RATE_LIMIT_STORE`                 | Per-IP counter store: `postgres` (default, shared) or `memory` (per process; not in production).   |
+| `RATE_LIMIT_STORE_TIMEOUT_MS`      | Longest a request waits for the shared counter store before falling back; defaults to `2000`.      |
 
 Do not commit `.env` or paste connection strings into logs/issues. `.env.example` contains local placeholders. On Neon, point development to a dev branch and tests to a separate test branch; configure the production-host guard with the production hostname without exposing connection strings.
 
-The API limits use express-rate-limit's default in-memory store, which is per process/instance; multiple replicas do not share counters. Use a shared store if limits must apply across replicas. `TRUST_PROXY_HOPS` controls Express proxy trust and therefore which forwarded IP is used by the per-IP limits. Keep it at `0` when the API is directly exposed; behind a reverse proxy, set the exact trusted hop count for the deployment topology. Do not trust arbitrary forwarded headers or set broad proxy trust without a known trusted network path.
+### Shared per-IP rate limits
+
+The API-wide, `/api/auth/*`, and public-read per-IP limits keep their counters in the PostgreSQL `rate_limits` table (created by migration `001`), so every replica or Vercel Function instance connected to the same `DATABASE_URL` enforces one fixed-window count per client IP. Stored keys are HMAC-SHA256 digests keyed by `SESSION_SECRET`; raw client IPs are not written to the database. Rotating `SESSION_SECRET` therefore also resets the per-IP counters. Each counted request adds one database round trip, and expired counter rows are removed in small batches at most once a minute per instance.
+
+If the shared store errors or does not answer within `RATE_LIMIT_STORE_TIMEOUT_MS`, the limiter does not switch off: the request is counted by an in-process store with the same limit, a single `[rate-limit] Shared store unavailable` warning (error code only) is logged per limiter, and the database is not retried for 15 seconds. During an outage each instance therefore enforces the configured limit on its own, so a client can reach at most the limit times the number of live instances, and added latency is bounded by the timeout. A `[rate-limit] Shared store recovered` message is logged when the shared counts resume. Alert on the warning if degraded limiting matters for your deployment.
+
+`RATE_LIMIT_STORE=memory` keeps express-rate-limit's per-process store for local development without PostgreSQL limits; startup rejects it when `NODE_ENV=production` or on Vercel (`VERCEL` set), because separate instances would not share counters.
+
+`TRUST_PROXY_HOPS` controls Express proxy trust and therefore which forwarded IP is used by the per-IP limits. Keep it at `0` when the API is directly exposed; behind a reverse proxy, set the exact trusted hop count for the deployment topology. Do not trust arbitrary forwarded headers or set broad proxy trust without a known trusted network path.
 
 ## Deployment checklist
 
 - [ ] You must set `TRUST_PROXY_HOPS` when deployed behind a proxy; use the exact number of trusted proxy hops.
 - [ ] Confirm public-read, API, and auth per-IP limits match expected traffic and replica topology.
+- [ ] Keep `RATE_LIMIT_STORE` unset or `postgres` and run migrations so the shared `rate_limits` table exists before serving traffic.
 
 ## Migrations and administrator seed
 
@@ -63,4 +74,4 @@ The UI/API support testnet and mainnet selection. Use testnet for development an
 
 ## Operations still required
 
-Configure PostgreSQL network restrictions, encrypted backups and tested restore procedures, monitoring, rate limits for public reads, and database readiness checks. `/api/_healthcheck` reports process liveness only. Production hosting, backups, restore, and browser cookie behavior have not been exercised as part of this repository work.
+Configure PostgreSQL network restrictions, encrypted backups and tested restore procedures, monitoring (including alerts on degraded `[rate-limit]` warnings), and database readiness checks. `/api/_healthcheck` reports process liveness only. Production hosting, backups, restore, and browser cookie behavior have not been exercised as part of this repository work.

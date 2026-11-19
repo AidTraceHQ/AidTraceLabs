@@ -45,6 +45,9 @@ if (testDatabaseUrl) {
 } else {
   process.env.DATABASE_URL = 'postgresql://localhost:1/aidtrace_test';
   process.env.DATABASE_URL_UNPOOLED = process.env.DATABASE_URL;
+  // Without a test database the app's own limiters keep per-process counters; the shared-store
+  // behavior is covered directly in tests/rate-limits.test.ts.
+  process.env.RATE_LIMIT_STORE = 'memory';
 }
 
 process.env.SESSION_SECRET = 'vitest-session-secret-with-at-least-thirty-two-bytes';

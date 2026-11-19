@@ -129,7 +129,7 @@ docs/             Architecture, API, security, deployment, and backlog notes
 
 - A browser-level Freighter journey, production hosting, backup/restore procedure, and Docker Compose startup have not been verified here.
 - Horizon availability affects checks; incomplete operation pagination or temporary failures remain pending.
-- Per-IP/public-read rate limiting, last-admin protection, complete security-event auditing, and explicit beneficiary-consent evidence are not implemented.
+- Last-admin protection, complete security-event auditing, and explicit beneficiary-consent evidence are not implemented.
 - A successful payment comparison cannot establish identity, consent, intended use, or impact.
 
 ## Roadmap
