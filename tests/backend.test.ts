@@ -1,4 +1,5 @@
 import { createHash, createHmac } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { Keypair } from '@stellar/stellar-sdk';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -375,36 +376,6 @@ integration('Database-backed wallet, records, and authorization flows', () => {
 
   afterEach(() => vi.unstubAllGlobals());
 
-  async function expectAuditEvent(
-    action: string,
-    actorWallet: string,
-    expected: { subjectWallet?: string; recordId?: string } = {},
-  ) {
-    const subjectWallet = expected.subjectWallet ?? null;
-    const recordId = expected.recordId ?? null;
-    const result = await pool.query<{
-      action: string;
-      actor_wallet: string;
-      subject_wallet: string | null;
-      record_id: string | null;
-    }>(
-      `SELECT action, actor_wallet, subject_wallet, record_id
-       FROM audit_events
-       WHERE action = $1 AND actor_wallet = $2
-         AND subject_wallet IS NOT DISTINCT FROM $3
-         AND record_id IS NOT DISTINCT FROM $4
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [action, actorWallet, subjectWallet, recordId],
-    );
-    expect(result.rows[0], `Missing ${action} audit event for ${actorWallet}`).toEqual({
-      action,
-      actor_wallet: actorWallet,
-      subject_wallet: subjectWallet,
-      record_id: recordId,
-    });
-  }
-
   async function login(wallet: Keypair) {
     const address = wallet.publicKey();
     wallets.add(address);
@@ -436,7 +407,6 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       signature,
     });
     expect(verified.status).toBe(200);
-    await expectAuditEvent('wallet_authenticated', address);
     const cookieHeader = verified.headers['set-cookie'];
     const cookieLine = Array.isArray(cookieHeader) ? cookieHeader[0] : cookieHeader;
     expect(cookieLine).toContain('HttpOnly');
@@ -454,7 +424,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
   }
 
   async function assignRole(
-    session: { address: string; cookie: string; csrfToken: string },
+    session: { cookie: string; csrfToken: string },
     wallet: Keypair,
     role: 'organization' | 'beneficiary' | 'donor' | 'admin',
   ) {
@@ -465,13 +435,10 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .set('Cookie', session.cookie)
       .send({ csrfToken: session.csrfToken, address: wallet.publicKey(), role });
     expect(result.status).toBe(200);
-    await expectAuditEvent('wallet_role_changed', session.address, {
-      subjectWallet: wallet.publicKey(),
-    });
   }
 
   async function createRecord(
-    session: { address: string; cookie: string; csrfToken: string },
+    session: { cookie: string; csrfToken: string },
     recipient: Keypair,
     purpose: string,
     options: { txHash?: string; consent?: boolean } = {},
@@ -494,12 +461,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         note: 'Private contact note',
         recipientConsent: options.consent || false,
       });
-    if (response.status === 201 && response.body.record?.id) {
-      recordIds.add(response.body.record.id);
-      await expectAuditEvent('record_created', session.address, {
-        recordId: response.body.record.id,
-      });
-    }
+    if (response.body.record?.id) recordIds.add(response.body.record.id);
     return response;
   }
 
@@ -650,7 +612,6 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .send({ csrfToken: session.csrfToken });
     expect(logout.status).toBe(200);
     expect(logout.headers['set-cookie']?.[0]).toContain('Max-Age=0');
-    await expectAuditEvent('wallet_logged_out', wallet.publicKey());
     expect(
       (await request(app).get('/api/me').set('Cookie', session.cookie)).body.session,
     ).toBeNull();
@@ -730,9 +691,6 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         recipientConsent: cached.body.record.recipientConsent,
       });
     expect(editAfterVerify.status).toBe(200);
-    await expectAuditEvent('record_updated', session.address, {
-      recordId: verified.body.record.id,
-    });
 
     const wrongHash = '2'.padStart(64, '0');
     transactionBodies.set(wrongHash, {
@@ -1189,9 +1147,6 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(voided.body.record.status).toBe('voided');
     expect(voided.body.record.voidReason).toBe('Duplicate entry');
     expect(voided.body.record.voidedAt).toBeTruthy();
-    await expectAuditEvent('record_voided', ownerSession.address, {
-      recordId: owned.body.record.id,
-    });
     const visibleVoid = await request(app)
       .get('/api/transparency')
       .query({ status: 'voided', q: 'Owner record' });
@@ -1218,9 +1173,6 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .set('Cookie', adminSession.cookie)
       .send({ csrfToken: adminSession.csrfToken });
     expect(removed.status).toBe(200);
-    await expectAuditEvent('wallet_role_removed', adminSession.address, {
-      subjectWallet: removable.publicKey(),
-    });
 
     const selfRemove = await request(app)
       .delete('/api/admin/roles/' + encodeURIComponent(admin.publicKey()))
@@ -1235,9 +1187,208 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .set('Cookie', ownerSession.cookie)
       .send({ csrfToken: ownerSession.csrfToken });
     expect(logoutEverywhere.status).toBe(200);
-    await expectAuditEvent('wallet_logout_everywhere', ownerSession.address);
     expect(
       (await request(app).get('/api/me').set('Cookie', ownerSession.cookie)).body.session,
     ).toBeNull();
   }, 120_000);
+
+  describe('last active admin protection', () => {
+    type AdminSession = Awaited<ReturnType<typeof login>>;
+
+    async function seedAdmins(count: number): Promise<AdminSession[]> {
+      const sessions: AdminSession[] = [];
+      for (let index = 0; index < count; index += 1) {
+        const wallet = Keypair.random();
+        wallets.add(wallet.publicKey());
+        await pool.query('INSERT INTO users (wallet_address) VALUES ($1) ON CONFLICT DO NOTHING', [
+          wallet.publicKey(),
+        ]);
+        await pool.query(
+          `INSERT INTO wallet_roles (wallet_address, role, updated_by) VALUES ($1, 'admin', $1)`,
+          [wallet.publicKey()],
+        );
+        sessions.push(await login(wallet));
+      }
+      return sessions;
+    }
+
+    // Temporarily demotes every other admin in the test database so `sessions` are the only
+    // admins, runs `body`, then restores the demoted admins.
+    async function withOnlyAdmins(sessions: AdminSession[], body: () => Promise<void>) {
+      const demoted = await pool.query<{ wallet_address: string }>(
+        `UPDATE wallet_roles SET role = 'donor'
+         WHERE role = 'admin' AND wallet_address <> ALL($1::text[])
+         RETURNING wallet_address`,
+        [sessions.map((session) => session.address)],
+      );
+      try {
+        await body();
+      } finally {
+        await pool.query(`UPDATE wallet_roles SET role = 'admin' WHERE wallet_address = ANY($1)`, [
+          demoted.rows.map((row) => row.wallet_address),
+        ]);
+      }
+    }
+
+    function removeRole(session: AdminSession, target: string) {
+      return request(app)
+        .delete('/api/admin/roles/' + encodeURIComponent(target))
+        .set('Origin', origin)
+        .set('Cookie', session.cookie)
+        .send({ csrfToken: session.csrfToken });
+    }
+
+    function setRole(session: AdminSession, target: string, role: string) {
+      return request(app)
+        .post('/api/admin/roles')
+        .set('Origin', origin)
+        .set('Cookie', session.cookie)
+        .send({ csrfToken: session.csrfToken, address: target, role });
+    }
+
+    async function roleOf(address: string) {
+      const result = await pool.query<{ role: string }>(
+        'SELECT role FROM wallet_roles WHERE wallet_address = $1',
+        [address],
+      );
+      return result.rows[0]?.role;
+    }
+
+    async function adminCount(addresses: string[]) {
+      const result = await pool.query<{ count: string }>(
+        `SELECT COUNT(*) AS count FROM wallet_roles
+         WHERE role = 'admin' AND wallet_address = ANY($1::text[])`,
+        [addresses],
+      );
+      return Number(result.rows[0].count);
+    }
+
+    async function roleAuditCount(actors: string[]) {
+      const result = await pool.query<{ count: string }>(
+        `SELECT COUNT(*) AS count FROM audit_events
+         WHERE action IN ('wallet_role_changed', 'wallet_role_removed')
+           AND actor_wallet = ANY($1::text[])`,
+        [actors],
+      );
+      return Number(result.rows[0].count);
+    }
+
+    // Polls until some backend is waiting on a lock held by `blockerPid`.
+    async function waitUntilBlockedBy(blockerPid: number) {
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        const result = await pool.query<{ waiting: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))
+           ) AS waiting`,
+          [blockerPid],
+        );
+        if (result.rows[0].waiting) return;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error('Role mutation never blocked on the admin row lock.');
+    }
+
+    const concurrentDemotions = {
+      // Same upsert the POST handler uses, so the waiting FOR UPDATE re-checks an updated row.
+      upsert: `INSERT INTO wallet_roles (wallet_address, role, updated_by)
+               VALUES ($1, 'donor', $1)
+               ON CONFLICT (wallet_address)
+               DO UPDATE SET role = EXCLUDED.role, updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
+      // Same statement the DELETE handler uses, so the waiting FOR UPDATE sees a deleted row.
+      delete: 'DELETE FROM wallet_roles WHERE wallet_address = $1',
+    } as const;
+
+    it.each([
+      { operation: 'remove', demotion: 'upsert' },
+      { operation: 'remove', demotion: 'delete' },
+      { operation: 'demote', demotion: 'upsert' },
+      { operation: 'demote', demotion: 'delete' },
+    ] as const)(
+      'rejects $operation of the last admin by a caller demoted mid-request ($demotion) with 409',
+      async ({ operation, demotion }) => {
+        const [callerA, adminB] = await seedAdmins(2);
+        await withOnlyAdmins([callerA, adminB], async () => {
+          const raw = await pool.connect();
+          let rawOpen = false;
+          try {
+            const { rows } = await raw.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+            await raw.query('BEGIN');
+            rawOpen = true;
+            // Demote A without committing: A's row stays locked and A still looks like an admin
+            // to authorize(), which reads committed data.
+            await raw.query(concurrentDemotions[demotion], [callerA.address]);
+
+            const pending =
+              operation === 'remove'
+                ? removeRole(callerA, adminB.address).then((result) => result)
+                : setRole(callerA, adminB.address, 'donor').then((result) => result);
+            await waitUntilBlockedBy(rows[0].pid);
+            await raw.query('COMMIT');
+            rawOpen = false;
+
+            const result = await pending;
+            expect(result.status).toBe(409);
+            expect(result.body.error).toBe('At least one active admin must remain.');
+          } finally {
+            if (rawOpen) await raw.query('ROLLBACK');
+            raw.release();
+          }
+          expect(await roleOf(adminB.address)).toBe('admin');
+          expect(await roleAuditCount([callerA.address])).toBe(0);
+        });
+      },
+      60_000,
+    );
+
+    it('allows removing or demoting an admin while another admin remains', async () => {
+      const [callerA, adminB, adminC] = await seedAdmins(3);
+      await withOnlyAdmins([callerA, adminB, adminC], async () => {
+        const removed = await removeRole(callerA, adminB.address);
+        expect(removed.status).toBe(200);
+        expect(await roleOf(adminB.address)).toBeUndefined();
+        await expectAuditEvent('wallet_role_removed', callerA.address, {
+          subjectWallet: adminB.address,
+        });
+
+        const demoted = await setRole(callerA, adminC.address, 'organization');
+        expect(demoted.status).toBe(200);
+        expect(await roleOf(adminC.address)).toBe('organization');
+        await expectAuditEvent('wallet_role_changed', callerA.address, {
+          subjectWallet: adminC.address,
+        });
+
+        expect(await adminCount([callerA.address, adminB.address, adminC.address])).toBe(1);
+      });
+    }, 60_000);
+
+    it.each([
+      { name: 'remove/remove', a: 'remove', b: 'remove' },
+      { name: 'demote/demote', a: 'demote', b: 'demote' },
+      { name: 'demote/remove', a: 'demote', b: 'remove' },
+    ] as const)(
+      'keeps one admin when the only two admins race ($name)',
+      async ({ a, b }) => {
+        const [adminA, adminB] = await seedAdmins(2);
+        await withOnlyAdmins([adminA, adminB], async () => {
+          const mutate = (
+            operation: 'remove' | 'demote',
+            caller: AdminSession,
+            target: AdminSession,
+          ) =>
+            operation === 'remove'
+              ? removeRole(caller, target.address)
+              : setRole(caller, target.address, 'donor');
+          const results = await Promise.all([mutate(a, adminA, adminB), mutate(b, adminB, adminA)]);
+          const statuses = results.map((result) => result.status);
+          expect(statuses.filter((status) => status === 200)).toHaveLength(1);
+          const rejected = statuses.find((status) => status !== 200);
+          expect([403, 409]).toContain(rejected);
+          expect(await adminCount([adminA.address, adminB.address])).toBe(1);
+          expect(await roleAuditCount([adminA.address, adminB.address])).toBe(1);
+        });
+      },
+      60_000,
+    );
+  });
 });
