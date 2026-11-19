@@ -58,6 +58,68 @@ describe('Freighter signed challenge creates a secure session', () => {
     expect(protectedRequest.status).toBe(401);
   });
 
+  it('rejects a valid signature from a different keypair', () => {
+    const walletA = Keypair.random();
+    const walletB = Keypair.random();
+    const message = [
+      'AidTrace wallet login',
+      'Domain: http://localhost:5173',
+      'Address: ' + walletA.publicKey(),
+      'Network: testnet',
+      'Nonce: ' + 'b'.repeat(64),
+      'Issued At: 2026-10-28T09:55:00.000Z',
+      'Expires: 2026-10-28T10:00:00.000Z',
+      'Purpose: prove wallet ownership; no transaction will be sent.',
+    ].join('\n');
+    const digest = createHash('sha256')
+      .update('Stellar Signed Message:\n')
+      .update(message)
+      .digest();
+    // Wallet B signs the message intended for wallet A
+    const signatureByB = Buffer.from(walletB.sign(digest)).toString('base64');
+    expect(verifySep53Signature(walletA.publicKey(), message, signatureByB)).toBe(false);
+    // Sanity check: wallet B's own signature verifies against wallet B
+    expect(verifySep53Signature(walletB.publicKey(), message, signatureByB)).toBe(true);
+  });
+
+  it('rejects malformed challengeId and over-length signature at the verify endpoint', async () => {
+    const wallet = Keypair.random();
+    const address = wallet.publicKey();
+
+    const badChallengeId = await request(app)
+      .post('/api/auth/verify')
+      .set('Origin', origin)
+      .send({
+        challengeId: 'not-hex',
+        address,
+        network: 'testnet',
+        signature: 'a'.repeat(88),
+      });
+    expect(badChallengeId.status).toBe(400);
+
+    const tooShortChallengeId = await request(app)
+      .post('/api/auth/verify')
+      .set('Origin', origin)
+      .send({
+        challengeId: 'a'.repeat(40),
+        address,
+        network: 'testnet',
+        signature: 'a'.repeat(88),
+      });
+    expect(tooShortChallengeId.status).toBe(400);
+
+    const longSignature = await request(app)
+      .post('/api/auth/verify')
+      .set('Origin', origin)
+      .send({
+        challengeId: 'a'.repeat(48),
+        address,
+        network: 'testnet',
+        signature: 'x'.repeat(1001),
+      });
+    expect(longSignature.status).toBe(400);
+  });
+
   it('rejects malformed JSON and returns a credentialed CORS preflight', async () => {
     const malformed = await request(app)
       .post('/api/records')
@@ -411,6 +473,61 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       await pool.query('DELETE FROM users WHERE wallet_address = ANY($1::text[])', [addresses]);
     }
     await pool.end();
+  });
+
+  it('rejects verify with mismatched address or network', async () => {
+    const walletA = Keypair.random();
+    const walletB = Keypair.random();
+    wallets.add(walletA.publicKey());
+    wallets.add(walletB.publicKey());
+
+    const challenge = await request(app)
+      .post('/api/auth/challenge')
+      .set('Origin', origin)
+      .send({ address: walletA.publicKey(), network: 'testnet' });
+    expect(challenge.status).toBe(200);
+
+    const digest = createHash('sha256')
+      .update('Stellar Signed Message:\n')
+      .update(challenge.body.message)
+      .digest();
+    const signature = Buffer.from(walletA.sign(digest)).toString('base64');
+
+    // Correct signature submitted with a different address
+    const wrongAddress = await request(app)
+      .post('/api/auth/verify')
+      .set('Origin', origin)
+      .send({
+        challengeId: challenge.body.challengeId,
+        address: walletB.publicKey(),
+        network: 'testnet',
+        signature,
+      });
+    expect(wrongAddress.status).toBe(401);
+
+    // Correct signature submitted with a different network
+    const wrongNetwork = await request(app)
+      .post('/api/auth/verify')
+      .set('Origin', origin)
+      .send({
+        challengeId: challenge.body.challengeId,
+        address: walletA.publicKey(),
+        network: 'mainnet',
+        signature,
+      });
+    expect(wrongNetwork.status).toBe(401);
+
+    // Correct address and network should still succeed
+    const ok = await request(app)
+      .post('/api/auth/verify')
+      .set('Origin', origin)
+      .send({
+        challengeId: challenge.body.challengeId,
+        address: walletA.publicKey(),
+        network: 'testnet',
+        signature,
+      });
+    expect(ok.status).toBe(200);
   });
 
   it('reports duplicate hashes and aborts migration 002 before creating the unique constraint', async () => {
@@ -905,5 +1022,71 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(
       (await request(app).get('/api/me').set('Cookie', ownerSession.cookie)).body.session,
     ).toBeNull();
+  }, 120_000);
+
+  it('enforces a limit on active sessions per wallet and evicts older ones', async () => {
+    const wallet = Keypair.random();
+    wallets.add(wallet.publicKey());
+    const sessions: Array<{ address: string; cookie: string; csrfToken: string }> = [];
+
+    // Create 6 sessions (1 more than the limit of 5)
+    for (let i = 0; i < 6; i += 1) {
+      const session = await login(wallet);
+      sessions.push(session);
+    }
+
+    // Check that only 5 sessions are active
+    const activeSessions = await request(app)
+      .get('/api/auth/sessions')
+      .set('Cookie', sessions[5].cookie);
+    expect(activeSessions.status).toBe(200);
+    expect(activeSessions.body.count).toBe(5);
+    expect(activeSessions.body.sessions).toHaveLength(5);
+
+    // Verify the oldest session was evicted and is no longer valid
+    const oldestSession = await request(app).get('/api/me').set('Cookie', sessions[0].cookie);
+    expect(oldestSession.status).toBe(200);
+    expect(oldestSession.body.session).toBeNull();
+
+    // Verify the second-oldest session was also evicted
+    const secondOldest = await request(app).get('/api/me').set('Cookie', sessions[1].cookie);
+    expect(secondOldest.status).toBe(200);
+    expect(secondOldest.body.session).toBeNull();
+
+    // Verify the most recent 5 sessions still work
+    for (let i = 1; i < 6; i += 1) {
+      const me = await request(app).get('/api/me').set('Cookie', sessions[i].cookie);
+      expect(me.status).toBe(200);
+      expect(me.body.session).not.toBeNull();
+      expect(me.body.session.address).toBe(wallet.publicKey());
+    }
+
+    // Verify the eviction was recorded in audit events
+    const auditResult = await pool.query<{ action: string; summary: string }>(
+      `SELECT action, summary FROM audit_events
+       WHERE action = 'session_evicted' AND actor_wallet = $1
+       ORDER BY created_at DESC LIMIT 1`,
+      [wallet.publicKey()],
+    );
+    expect(auditResult.rows.length).toBeGreaterThan(0);
+    expect(auditResult.rows[0].action).toBe('session_evicted');
+    expect(auditResult.rows[0].summary).toContain('Evicted');
+
+    // Create one more session, which should evict the 5th session
+    const seventhSession = await login(wallet);
+    const checkEviction = await request(app).get('/api/me').set('Cookie', sessions[4].cookie);
+    expect(checkEviction.status).toBe(200);
+    expect(checkEviction.body.session).toBeNull();
+
+    // Verify the 6th and 7th sessions are still active
+    for (const session of [sessions[5], seventhSession]) {
+      const me = await request(app).get('/api/me').set('Cookie', session.cookie);
+      expect(me.status).toBe(200);
+      expect(me.body.session).not.toBeNull();
+    }
+
+    // Check that GET /api/auth/sessions requires a valid session
+    const noSession = await request(app).get('/api/auth/sessions');
+    expect(noSession.status).toBe(401);
   }, 120_000);
 });
