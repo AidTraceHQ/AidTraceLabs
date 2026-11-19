@@ -47,6 +47,20 @@ Use concise Conventional Commit subjects, for example `fix: separate pseudonym s
 
 Database-backed tests need `TEST_DATABASE_URL` pointed at a dedicated disposable/test branch. Tests use Stellar Horizon mocks unless a test explicitly documents otherwise. Do not use real funds or production records.
 
+### Browser tests
+
+The Playwright suite runs the rendered app and API against `TEST_DATABASE_URL`. Set
+`TEST_DATABASE_BRANCH=test`, `TEST_DATABASE_URL_UNPOOLED`, and `PRODUCTION_DATABASE_HOST` as
+described in the local setup. The test URL must point to a dedicated disposable database and be
+different from both `DATABASE_URL` and the production host; the suite applies migrations and
+removes its own generated fixtures.
+
+Install Chromium once with `npx playwright install chromium`, then run `npm run test:e2e`. The
+suite exercises the real signed login challenge with generated in-memory Stellar keypairs, mocks
+the public Freighter provider message API and testnet Horizon responses, and blocks unexpected
+external network requests. It never uses a seed phrase, submits a transaction, or contacts a
+production network. Playwright retains traces and screenshots only for failed tests.
+
 ## Scope and evidence
 
 AidTrace checks transaction data on the selected Stellar network. A matching result does not establish a beneficiary's identity, consent, intended use, or real-world impact. Contributions must not imply otherwise. Do not add a Soroban contract or claim deployed services unless separately implemented and verified.
