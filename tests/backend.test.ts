@@ -1101,4 +1101,70 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       (await request(app).get('/api/me').set('Cookie', ownerSession.cookie)).body.session,
     ).toBeNull();
   }, 120_000);
+
+  it('enforces a limit on active sessions per wallet and evicts older ones', async () => {
+    const wallet = Keypair.random();
+    wallets.add(wallet.publicKey());
+    const sessions: Array<{ address: string; cookie: string; csrfToken: string }> = [];
+
+    // Create 6 sessions (1 more than the limit of 5)
+    for (let i = 0; i < 6; i += 1) {
+      const session = await login(wallet);
+      sessions.push(session);
+    }
+
+    // Check that only 5 sessions are active
+    const activeSessions = await request(app)
+      .get('/api/auth/sessions')
+      .set('Cookie', sessions[5].cookie);
+    expect(activeSessions.status).toBe(200);
+    expect(activeSessions.body.count).toBe(5);
+    expect(activeSessions.body.sessions).toHaveLength(5);
+
+    // Verify the oldest session was evicted and is no longer valid
+    const oldestSession = await request(app).get('/api/me').set('Cookie', sessions[0].cookie);
+    expect(oldestSession.status).toBe(200);
+    expect(oldestSession.body.session).toBeNull();
+
+    // Verify the second-oldest session was also evicted
+    const secondOldest = await request(app).get('/api/me').set('Cookie', sessions[1].cookie);
+    expect(secondOldest.status).toBe(200);
+    expect(secondOldest.body.session).toBeNull();
+
+    // Verify the most recent 5 sessions still work
+    for (let i = 1; i < 6; i += 1) {
+      const me = await request(app).get('/api/me').set('Cookie', sessions[i].cookie);
+      expect(me.status).toBe(200);
+      expect(me.body.session).not.toBeNull();
+      expect(me.body.session.address).toBe(wallet.publicKey());
+    }
+
+    // Verify the eviction was recorded in audit events
+    const auditResult = await pool.query<{ action: string; summary: string }>(
+      `SELECT action, summary FROM audit_events
+       WHERE action = 'session_evicted' AND actor_wallet = $1
+       ORDER BY created_at DESC LIMIT 1`,
+      [wallet.publicKey()],
+    );
+    expect(auditResult.rows.length).toBeGreaterThan(0);
+    expect(auditResult.rows[0].action).toBe('session_evicted');
+    expect(auditResult.rows[0].summary).toContain('Evicted');
+
+    // Create one more session, which should evict the 5th session
+    const seventhSession = await login(wallet);
+    const checkEviction = await request(app).get('/api/me').set('Cookie', sessions[4].cookie);
+    expect(checkEviction.status).toBe(200);
+    expect(checkEviction.body.session).toBeNull();
+
+    // Verify the 6th and 7th sessions are still active
+    for (const session of [sessions[5], seventhSession]) {
+      const me = await request(app).get('/api/me').set('Cookie', session.cookie);
+      expect(me.status).toBe(200);
+      expect(me.body.session).not.toBeNull();
+    }
+
+    // Check that GET /api/auth/sessions requires a valid session
+    const noSession = await request(app).get('/api/auth/sessions');
+    expect(noSession.status).toBe(401);
+  }, 120_000);
 });
