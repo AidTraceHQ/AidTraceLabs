@@ -77,6 +77,16 @@ type AidRecord = {
   voidReason?: string;
   voidedAt?: string;
 };
+type ConsentConfiguration = {
+  enabled: boolean;
+  statementVersion: string;
+  statement: string;
+};
+type ConsentAcknowledgment = {
+  active: boolean;
+  statementVersion?: string;
+  expiresAt?: string;
+};
 type ActivityItem = {
   id: string;
   hash: string;
@@ -230,6 +240,14 @@ export default function App() {
   >('offline');
   const [pageNumber, setPageNumber] = useState(1);
   const [selected, setSelected] = useState<AidRecord | null>(null);
+  const [consentConfiguration, setConsentConfiguration] = useState<ConsentConfiguration>({
+    enabled: false,
+    statementVersion: '',
+    statement: '',
+  });
+  const [consentAcknowledgment, setConsentAcknowledgment] = useState<ConsentAcknowledgment | null>(
+    null,
+  );
   const [recordConflictId, setRecordConflictId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({
@@ -252,6 +270,10 @@ export default function App() {
   const [voidReason, setVoidReason] = useState('');
   const pageSize = 10;
   const transparencyRequestId = useRef(0);
+  const selectedConsentRecordId = selected?.id;
+  const selectedConsentRecipient = selected?.recipientAddress;
+  const consentSessionAddress = session?.address;
+  const consentSessionRole = session?.role;
 
   const notify = useCallback((text: string) => {
     setToast(text);
@@ -376,6 +398,53 @@ export default function App() {
   useEffect(() => {
     if (page === 'beneficiary' && session) void loadBeneficiaryRecords();
   }, [page, session, loadBeneficiaryRecords]);
+  useEffect(() => {
+    let active = true;
+    void api
+      .get<ConsentConfiguration>('/api/consent/config')
+      .then((result) => {
+        if (active) setConsentConfiguration(result.data);
+      })
+      .catch((e) => {
+        if (active) setError(messageOf(e));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+  useEffect(() => {
+    let active = true;
+    setConsentAcknowledgment(null);
+    if (
+      !consentConfiguration.enabled ||
+      consentSessionRole !== 'beneficiary' ||
+      !selectedConsentRecordId ||
+      selectedConsentRecipient !== consentSessionAddress
+    ) {
+      return () => {
+        active = false;
+      };
+    }
+    void api
+      .get<{ acknowledgment: ConsentAcknowledgment }>(
+        '/api/records/' + encodeURIComponent(selectedConsentRecordId) + '/consent',
+      )
+      .then((result) => {
+        if (active) setConsentAcknowledgment(result.data.acknowledgment);
+      })
+      .catch((e) => {
+        if (active) setError(messageOf(e));
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    consentConfiguration.enabled,
+    consentSessionAddress,
+    consentSessionRole,
+    selectedConsentRecordId,
+    selectedConsentRecipient,
+  ]);
   async function loadRoles() {
     try {
       const r = await api.getAllPages<{
@@ -606,6 +675,44 @@ export default function App() {
       notify(everywhere ? 'All sessions for this wallet were signed out.' : 'Wallet disconnected.');
     } catch (e) {
       setError(messageOf(e));
+    }
+  }
+  async function submitConsentAcknowledgment(action: 'acknowledge' | 'revoke') {
+    if (!selected || !session || session.role !== 'beneficiary') return;
+    setBusy(true);
+    setError('');
+    try {
+      const path = '/api/records/' + encodeURIComponent(selected.id) + '/consent';
+      const challenge = await api.post<{
+        challengeId: string;
+        message: string;
+      }>(path + '/challenge', { csrfToken: session.csrfToken, action });
+      const signed = await signMessage(challenge.data.message, {
+        address: session.address,
+        networkPassphrase: networkPassphrase(selected.network),
+      });
+      throwFreighterError(signed);
+      if (signed.signerAddress !== session.address) {
+        throw new Error('The acknowledgment was signed by a different wallet.');
+      }
+      await api.post(path + '/verify', {
+        csrfToken: session.csrfToken,
+        challengeId: challenge.data.challengeId,
+        signature: signatureToBase64(signed.signedMessage),
+      });
+      const status = await api.get<{ acknowledgment: ConsentAcknowledgment }>(path);
+      setConsentAcknowledgment(status.data.acknowledgment);
+      await loadTransparency();
+      await loadBeneficiaryRecords();
+      notify(
+        action === 'acknowledge'
+          ? 'Beneficiary wallet acknowledgment recorded for 90 days.'
+          : 'Beneficiary wallet acknowledgment revoked.',
+      );
+    } catch (e) {
+      setError(messageOf(e));
+    } finally {
+      setBusy(false);
     }
   }
   async function copyAddress() {
@@ -1893,9 +2000,16 @@ export default function App() {
                   checked={form.recipientConsent}
                   onChange={(event) => setForm({ ...form, recipientConsent: event.target.checked })}
                 />{' '}
-                I have explicit consent to publish the beneficiary name, wallet address, note and
-                transaction link.
+                Request a beneficiary wallet acknowledgment for publication. This checkbox alone
+                does not publish private beneficiary details.
               </label>
+              {!consentConfiguration.enabled && form.recipientConsent && (
+                <p className="form-hint full">
+                  Beneficiary acknowledgments are disabled pending product/privacy review. This
+                  record will remain private until the feature is approved and the beneficiary
+                  signs.
+                </p>
+              )}
             </div>
             <p className="form-hint">
               Only a successful payment with a matching organization source, destination, amount and
@@ -2003,7 +2117,7 @@ export default function App() {
                     </span>
                   )}
                   {!selected.txHash &&
-                    (!selected.recipientConsent && selected.verification
+                    (!selected.recipientAddress && selected.verification
                       ? 'Hidden for beneficiary privacy'
                       : 'No transaction hash supplied')}
                 </dd>
@@ -2062,6 +2176,53 @@ export default function App() {
                 )}
               </div>
             )}
+            {consentConfiguration.enabled &&
+              selected.recipientConsent &&
+              session?.role === 'beneficiary' &&
+              selected.recipientAddress === session.address && (
+                <section className="consent-acknowledgment">
+                  <h3>Beneficiary publication acknowledgment</h3>
+                  <p>
+                    Statement {consentConfiguration.statementVersion}:{' '}
+                    {consentConfiguration.statement}
+                  </p>
+                  {consentAcknowledgment?.active ? (
+                    <>
+                      <p>
+                        Active until{' '}
+                        {consentAcknowledgment.expiresAt
+                          ? new Date(consentAcknowledgment.expiresAt).toLocaleString()
+                          : 'expiry unavailable'}
+                        .
+                      </p>
+                      <button
+                        className="button secondary compact"
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void submitConsentAcknowledgment('revoke')}
+                      >
+                        Revoke with wallet signature
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <p>
+                        Signing is optional, expires after 90 days, and can be revoked with another
+                        wallet signature. Wallet control does not establish legal identity or prove
+                        informed consent.
+                      </p>
+                      <button
+                        className="button primary compact"
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void submitConsentAcknowledgment('acknowledge')}
+                      >
+                        Acknowledge with wallet signature
+                      </button>
+                    </>
+                  )}
+                </section>
+              )}
             <div className="detail-actions">
               {selected.txHash && (
                 <a
@@ -2130,7 +2291,8 @@ export default function App() {
                         setSelected({ ...selected, recipientConsent: event.target.checked })
                       }
                     />{' '}
-                    I have explicit consent to publish beneficiary details and transaction link.
+                    Request beneficiary wallet acknowledgment for publication. This checkbox alone
+                    does not publish private beneficiary details.
                   </label>
                   <button className="button primary compact" type="submit">
                     Save changes
