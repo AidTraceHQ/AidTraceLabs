@@ -73,6 +73,8 @@ type AidRecord = {
     assetIssuer?: string;
     link?: string;
     reason?: string;
+    memo?: string;
+    memoType?: 'text' | 'id' | 'hash' | 'return';
   };
   voidReason?: string;
   voidedAt?: string;
@@ -2165,6 +2167,14 @@ export default function App() {
                 <div>
                   <dt>Verification note</dt>
                   <dd>{selected.verification.reason}</dd>
+                </div>
+              )}
+              {selected.verification?.memo && selected.verification.memoType && (
+                <div>
+                  <dt>Memo</dt>
+                  <dd>
+                    {selected.verification.memoType}: {selected.verification.memo}
+                  </dd>
                 </div>
               )}
               {selected.voidReason && (
