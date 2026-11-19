@@ -289,6 +289,11 @@ export default function App() {
   >('offline');
   const [selected, setSelected] = useState<AidRecord | null>(null);
   const [recordConflictId, setRecordConflictId] = useState<string | null>(null);
+  const [createIdempotencyKey, setCreateIdempotencyKey] = useState<string>(() =>
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({
     recipient: '',

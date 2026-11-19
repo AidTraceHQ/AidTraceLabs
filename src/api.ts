@@ -39,8 +39,22 @@ export function resolveApiUrl(
   return new URL(path, normalizedBase || origin).toString();
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<ApiResponse<T>> {
+export type RequestOptions = {
+  headers?: Record<string, string>;
+};
+
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  options: RequestOptions = {},
+): Promise<ApiResponse<T>> {
   const headers = new Headers({ Accept: 'application/json' });
+  if (options.headers) {
+    for (const [name, value] of Object.entries(options.headers)) {
+      headers.set(name, value);
+    }
+  }
   const init: RequestInit = {
     method,
     headers,
@@ -155,13 +169,22 @@ export function resetCursorStack(): Array<string | null> {
   return [null];
 }
 
+/** Generate a client-side idempotency key for a create request. */
+export function newIdempotencyKey(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'idem-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+}
+
 export const api = {
   get: <T>(path: string) => request<T>('GET', path),
   getRecord: <T>(id: string) =>
     request<{ record: T }>('GET', '/api/records/' + encodeURIComponent(id)),
   getAllPages,
   getPage,
-  post: <T = unknown>(path: string, body?: unknown) => request<T>('POST', path, body),
+  post: <T = unknown>(path: string, body?: unknown, options?: RequestOptions) =>
+    request<T>('POST', path, body, options),
   put: <T = unknown>(path: string, body?: unknown) => request<T>('PUT', path, body),
   delete: <T = unknown>(path: string, body?: unknown) => request<T>('DELETE', path, body),
 };
