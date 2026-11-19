@@ -1,7 +1,7 @@
 import { URL } from 'node:url';
 
 type Network = 'testnet' | 'mainnet';
-type AidPayment = {
+export type AidPayment = {
   network: Network;
   txHash: string;
   organizationWallet: string;
