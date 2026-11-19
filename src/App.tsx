@@ -270,7 +270,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
-  const [dark, setDark] = useState(false);
+  const [theme, setTheme] = useState<Theme>(readThemePreference);
+  const dark = theme === 'dark';
   const [search, setSearch] = useState('');
   const [orgFilter, setOrgFilter] = useState('all');
   const [assetFilter, setAssetFilter] = useState('all');
@@ -427,6 +428,11 @@ export default function App() {
     if (value !== 'testnet' && value !== 'mainnet') return;
     setNetwork(value);
     writeNetworkPreference(value);
+  }
+  function toggleTheme() {
+    const nextTheme: Theme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(nextTheme);
+    writeThemePreference(nextTheme);
   }
   const loadAudit = useCallback(
     async (options: { append?: boolean } = {}) => {
@@ -1090,7 +1096,7 @@ export default function App() {
           <button
             className="icon-button"
             aria-label={dark ? 'Use light theme' : 'Use dark theme'}
-            onClick={() => setDark((value) => !value)}
+            onClick={toggleTheme}
           >
             {dark ? <Sun size={16} /> : <Moon size={16} />}
           </button>
