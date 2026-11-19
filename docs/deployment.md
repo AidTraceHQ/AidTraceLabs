@@ -60,6 +60,40 @@ If the shared store errors or does not answer within `RATE_LIMIT_STORE_TIMEOUT_M
 
 Run `npm run db:migrate` as a deployment step before starting the API. Migrations should be run by an appropriately restricted deployment identity. Set `ADMIN_WALLET` to a public G-address and run `npm run db:seed-admin` for first-time bootstrap; do not expose this command as a public route.
 
+### Migration 003: aid record integrity constraints
+
+`003_record_integrity_constraints` adds CHECK constraints to `aid_records` that match the API's record validation, so direct SQL imports and other write paths cannot store what the API would reject:
+
+| Constraint                                | Rule                                                                                                  |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `aid_records_tx_hash_format`              | `tx_hash` is `NULL` (no hash supplied) or exactly 64 lowercase hex characters. `''` is invalid.       |
+| `aid_records_asset_code_format`           | `asset_code` is 1–12 uppercase letters or digits.                                                     |
+| `aid_records_native_asset_without_issuer` | `asset_code = 'XLM'` requires `asset_issuer IS NULL`.                                                 |
+| `aid_records_issued_asset_issuer_format`  | Any other asset code requires an issuer shaped like a Stellar G-address (`G` + 55 base32 characters). |
+
+The database checks the issuer's shape only; the API additionally verifies the StrKey checksum. After this migration, a write that breaks a rule fails with SQLSTATE `23514` (`check_violation`) and names the constraint.
+
+Before adding the constraints, the migration locks `aid_records` against writes and counts existing rows that would violate them. If any exist, it rolls back, adds nothing, and reports only categories and counts, for example:
+
+```text
+Migration 003 aborted: aid_records rows violate the new rules (counts only):
+[
+  { "category": "tx_hash_not_lowercase", "count": 2 },
+  { "category": "issued_asset_missing_issuer", "count": 1 }
+]
+```
+
+| Category                      | Rows where                                                             |
+| ----------------------------- | ---------------------------------------------------------------------- |
+| `tx_hash_not_lowercase`       | `tx_hash` is 64 hex characters but contains uppercase letters.         |
+| `tx_hash_malformed`           | `tx_hash` is not `NULL` and is not 64 hex characters (including `''`). |
+| `asset_code_malformed`        | `asset_code` is not 1–12 uppercase letters or digits.                  |
+| `native_asset_with_issuer`    | `asset_code = 'XLM'` and `asset_issuer` is set.                        |
+| `issued_asset_missing_issuer` | `asset_code` is not `XLM` and `asset_issuer` is `NULL`.                |
+| `issued_asset_invalid_issuer` | `asset_code` is not `XLM` and `asset_issuer` is not G-address shaped.  |
+
+A row can count in more than one category. The report deliberately contains no record IDs, recipient data, hashes, or issuers. The migration never rewrites or deletes rows: operators must find and correct the affected rows themselves (voided rows must comply too), using the category conditions above as queries against the database, and then re-run `npm run db:migrate`. Migrations `001` and `002` stay applied; only `003` is retried. Check corrections against the original disbursement evidence rather than guessing a hash or issuer.
+
 ## Network selection
 
 The UI/API support testnet and mainnet selection. Use testnet for development and tests. Mainnet verification reads public Horizon data, but the application does not send payments. Never describe a matching transaction as proof of identity, consent, intended use, or impact.

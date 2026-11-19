@@ -1,8 +1,12 @@
-import { createHash, createHmac } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { Keypair } from '@stellar/stellar-sdk';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { applyUniqueNetworkTxHashMigration, migrate } from '../scripts/migrate.js';
+import {
+  applyRecordIntegrityConstraintsMigration,
+  applyUniqueNetworkTxHashMigration,
+  migrate,
+} from '../scripts/migrate.js';
 import { app } from '../server/app.js';
 import { verifySep53Signature } from '../server/auth.js';
 import { pool } from '../server/db.js';
@@ -553,6 +557,152 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     } finally {
       await client.query('ROLLBACK');
       client.release();
+    }
+  });
+
+  it('reports invalid rows by category only and aborts migration 003 without changing rows', async () => {
+    const client = await pool.connect();
+    const recipientName = 'Sensitive Recipient Name';
+    const upperHash = randomBytes(32).toString('hex').toUpperCase();
+    const issuer = Keypair.random().publicKey();
+    const seeded: [string, string | null, string, string | null][] = [
+      ['valid-native', randomBytes(32).toString('hex'), 'XLM', null],
+      ['upper-hash', upperHash, 'XLM', null],
+      ['short-hash', 'abc123', 'XLM', null],
+      ['empty-hash', '', 'XLM', null],
+      ['native-with-issuer', null, 'XLM', issuer],
+      ['issued-without-issuer', null, 'USDC', null],
+      ['issued-bad-issuer', null, 'USDC', 'not-a-stellar-address'],
+      ['lowercase-asset', null, 'usdc', issuer],
+    ];
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `CREATE TEMP TABLE aid_records (
+           id TEXT PRIMARY KEY, recipient_name TEXT NOT NULL, tx_hash TEXT,
+           asset_code TEXT NOT NULL, asset_issuer TEXT)`,
+      );
+      for (const [id, txHash, assetCode, assetIssuer] of seeded) {
+        await client.query(
+          `INSERT INTO aid_records (id, recipient_name, tx_hash, asset_code, asset_issuer)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [id, recipientName, txHash, assetCode, assetIssuer],
+        );
+      }
+      const before = await client.query('SELECT * FROM aid_records ORDER BY id');
+
+      const error = await applyRecordIntegrityConstraintsMigration(client).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+      expect(error).toMatchObject({
+        name: 'InvalidAidRecordsError',
+        violations: [
+          { category: 'tx_hash_not_lowercase', count: 1 },
+          { category: 'tx_hash_malformed', count: 2 },
+          { category: 'asset_code_malformed', count: 1 },
+          { category: 'native_asset_with_issuer', count: 1 },
+          { category: 'issued_asset_missing_issuer', count: 1 },
+          { category: 'issued_asset_invalid_issuer', count: 1 },
+        ],
+      });
+      const { violations, message } = error as { violations: object[]; message: string };
+      for (const violation of violations) {
+        expect(Object.keys(violation).sort()).toEqual(['category', 'count']);
+      }
+      const report = message + JSON.stringify(violations);
+      for (const secret of [recipientName, upperHash, upperHash.toLowerCase(), issuer]) {
+        expect(report).not.toContain(secret);
+      }
+      for (const [id] of seeded) expect(report).not.toContain(id);
+
+      const after = await client.query('SELECT * FROM aid_records ORDER BY id');
+      expect(after.rowCount).toBe(seeded.length);
+      expect(after.rows).toEqual(before.rows);
+      const constraints = await client.query(
+        `SELECT 1 FROM pg_constraint
+         WHERE conrelid = 'pg_temp.aid_records'::regclass AND contype = 'c'`,
+      );
+      expect(constraints.rowCount).toBe(0);
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
+  });
+
+  it('enforces transaction-hash and asset-issuer rules on aid_records after migration', async () => {
+    const organization = Keypair.random().publicKey();
+    wallets.add(organization);
+    await pool.query('INSERT INTO users (wallet_address) VALUES ($1)', [organization]);
+    await pool.query(
+      `INSERT INTO organizations (wallet_address, display_name, normalized_name)
+       VALUES ($1, 'Integrity test org', $2)`,
+      [organization, 'integrity-test-' + organization.toLowerCase()],
+    );
+    const insertRecord = async (fields: {
+      txHash: string | null;
+      assetCode: string;
+      assetIssuer: string | null;
+    }) => {
+      const id = 'integrity-' + randomBytes(8).toString('hex');
+      recordIds.add(id);
+      await pool.query(
+        `INSERT INTO aid_records
+           (id, organization_wallet, recipient_name, recipient_wallet, purpose, amount_stroops,
+            asset_code, asset_issuer, network, tx_hash, disbursement_date, status, created_by)
+         VALUES ($1, $2, 'Integrity beneficiary', $3, 'Integrity check', 12500000,
+                 $4, $5, 'testnet', $6, '2026-01-15', 'unverified', $2)`,
+        [
+          id,
+          organization,
+          Keypair.random().publicKey(),
+          fields.assetCode,
+          fields.assetIssuer,
+          fields.txHash,
+        ],
+      );
+    };
+    const issuer = Keypair.random().publicKey();
+
+    await insertRecord({
+      txHash: randomBytes(32).toString('hex'),
+      assetCode: 'XLM',
+      assetIssuer: null,
+    });
+    await insertRecord({ txHash: null, assetCode: 'XLM', assetIssuer: null });
+    await insertRecord({
+      txHash: randomBytes(32).toString('hex'),
+      assetCode: 'USDC',
+      assetIssuer: issuer,
+    });
+
+    const rejected = [
+      [{ txHash: 'abc123', assetCode: 'XLM', assetIssuer: null }, 'aid_records_tx_hash_format'],
+      [{ txHash: '', assetCode: 'XLM', assetIssuer: null }, 'aid_records_tx_hash_format'],
+      [
+        {
+          txHash: randomBytes(32).toString('hex').toUpperCase(),
+          assetCode: 'XLM',
+          assetIssuer: null,
+        },
+        'aid_records_tx_hash_format',
+      ],
+      [
+        { txHash: null, assetCode: 'XLM', assetIssuer: issuer },
+        'aid_records_native_asset_without_issuer',
+      ],
+      [
+        { txHash: null, assetCode: 'USDC', assetIssuer: null },
+        'aid_records_issued_asset_issuer_format',
+      ],
+      [
+        { txHash: null, assetCode: 'USDC', assetIssuer: 'not-a-stellar-address' },
+        'aid_records_issued_asset_issuer_format',
+      ],
+      [{ txHash: null, assetCode: 'usdc', assetIssuer: issuer }, 'aid_records_asset_code_format'],
+    ] as const;
+    for (const [fields, constraint] of rejected) {
+      await expect(insertRecord(fields)).rejects.toMatchObject({ code: '23514', constraint });
     }
   });
 
