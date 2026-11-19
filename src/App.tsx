@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ApiError, api, type PageEnvelope } from './api';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { ApiError, api, resetCursorStack } from './api';
 import { getNetwork, isConnected, requestAccess, signMessage } from '@stellar/freighter-api';
 import {
   networkPassphrase,
@@ -73,9 +73,12 @@ type AidRecord = {
     assetIssuer?: string;
     link?: string;
     reason?: string;
+    memo?: string;
+    memoType?: 'text' | 'id' | 'hash' | 'return';
   };
   voidReason?: string;
   voidedAt?: string;
+  version: number;
 };
 type ActivityItem = {
   id: string;
@@ -188,6 +191,50 @@ const SkeletonRows = ({ columns = 6 }: { columns?: number }) => (
   </>
 );
 
+const focusable = 'a[href], button:enabled, input:enabled, select:enabled, textarea:enabled';
+
+// While a dialog is open, focus stays inside it, Escape closes it, and the page behind it is
+// inert. On close, focus moves to the returnTo element, or else to the active section tab.
+function useDialogFocus(
+  open: boolean,
+  dialogRef: React.RefObject<HTMLElement | null>,
+  onClose: () => void,
+  returnTo: string,
+) {
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current;
+    if (!open || !dialog) return;
+    const background = document.querySelectorAll('.app > :not(.backdrop)');
+    for (const el of background) el.setAttribute('inert', '');
+    (dialog.querySelector<HTMLElement>(focusable) ?? dialog).focus();
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !event.isComposing) onClose();
+      const current = document.activeElement;
+      // Date inputs use Tab to move between their month, day, and year parts.
+      const isDate = current instanceof HTMLInputElement && current.type === 'date';
+      if (event.key !== 'Tab' || isDate) return;
+      // Step through the dialog's own controls, because Safari skips links on Tab by default.
+      event.preventDefault();
+      const items = Array.from(dialog.querySelectorAll<HTMLElement>(focusable));
+      const index = items.indexOf(current as HTMLElement);
+      const last = items.length - 1;
+      const next = event.shiftKey ? (index > 0 ? index - 1 : last) : index < last ? index + 1 : 0;
+      (items[next] ?? dialog).focus();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      // Remove inert first, because inert elements cannot take focus.
+      for (const el of background) el.removeAttribute('inert');
+      const target =
+        document.querySelector<HTMLElement>(returnTo) ??
+        document.querySelector<HTMLElement>('.tab.active');
+      target?.focus();
+    };
+  }, [open, dialogRef, onClose, returnTo]);
+}
+
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [network, setNetwork] = useState<Network>(readNetworkPreference);
@@ -199,13 +246,23 @@ export default function App() {
   const [assetOptions, setAssetOptions] = useState<string[]>([]);
   const [ledgerTotals, setLedgerTotals] = useState<LedgerTotal[]>([]);
   const [ledgerTotal, setLedgerTotal] = useState(0);
+  const [ledgerCursors, setLedgerCursors] = useState<Array<string | null>>(resetCursorStack());
+  const [ledgerCursorIndex, setLedgerCursorIndex] = useState(0);
+  const [ledgerHasMore, setLedgerHasMore] = useState(false);
+  const [ledgerPageLoading, setLedgerPageLoading] = useState(false);
   const [beneficiaryRecords, setBeneficiaryRecords] = useState<AidRecord[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [audit, setAudit] = useState<AuditItem[]>([]);
   const [auditActionOptions, setAuditActionOptions] = useState<string[]>([]);
+  const [auditCursor, setAuditCursor] = useState<string | null>(null);
+  const [auditHasMore, setAuditHasMore] = useState(false);
+  const [auditLoading, setAuditLoading] = useState(false);
   const [roles, setRoles] = useState<
     { address: string; role: Role; updatedAt: string; updatedBy: string }[]
   >([]);
+  const [rolesCursor, setRolesCursor] = useState<string | null>(null);
+  const [rolesHasMore, setRolesHasMore] = useState(false);
+  const [rolesLoading, setRolesLoading] = useState(false);
   const [balance, setBalance] = useState('0');
   const [loading, setLoading] = useState(true);
   const [activityLoading, setActivityLoading] = useState(false);
@@ -228,7 +285,6 @@ export default function App() {
   const [activityStream, setActivityStream] = useState<
     'connecting' | 'live' | 'polling' | 'offline'
   >('offline');
-  const [pageNumber, setPageNumber] = useState(1);
   const [selected, setSelected] = useState<AidRecord | null>(null);
   const [recordConflictId, setRecordConflictId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -252,40 +308,81 @@ export default function App() {
   const [voidReason, setVoidReason] = useState('');
   const pageSize = 10;
   const transparencyRequestId = useRef(0);
+  const ledgerSeenCursors = useRef(new Set<string>());
+  const auditSeenCursors = useRef(new Set<string>());
+  const rolesSeenCursors = useRef(new Set<string>());
+  const auditCursorRef = useRef<string | null>(null);
+  const rolesCursorRef = useRef<string | null>(null);
+  const auditRequestInFlight = useRef(false);
+  const rolesRequestInFlight = useRef(false);
+  const formDialogRef = useRef<HTMLDivElement>(null);
+  const detailDialogRef = useRef<HTMLElement>(null);
+  const closeForm = useCallback(() => setShowForm(false), []);
+  const closeDetail = useCallback(() => {
+    setSelected(null);
+    setRecordConflictId(null);
+  }, []);
+  useDialogFocus(showForm, formDialogRef, closeForm, '#add-record');
+  useDialogFocus(!!selected, detailDialogRef, closeDetail, `[data-record-id="${selected?.id}"]`);
 
   const notify = useCallback((text: string) => {
     setToast(text);
     window.setTimeout(() => setToast(''), 3600);
   }, []);
-  const loadTransparency = useCallback(async () => {
-    const requestId = ++transparencyRequestId.current;
-    const params = new URLSearchParams();
-    if (search.trim()) params.set('q', search.trim());
-    if (orgFilter !== 'all') params.set('organization', orgFilter);
-    if (assetFilter !== 'all') params.set('asset', assetFilter);
-    if (networkFilter !== 'all') params.set('network', networkFilter);
-    if (statusFilter !== 'all') params.set('status', statusFilter);
-    if (fromDate) params.set('from', fromDate);
-    if (toDate) params.set('to', toDate);
-    params.set('limit', String(pageSize));
-    setLoading(true);
-    try {
-      const result = await api.get<PageEnvelope & { records?: AidRecord[] }>(
-        '/api/transparency?' + params.toString(),
-      );
-      if (requestId === transparencyRequestId.current) {
+  const fetchLedgerPage = useCallback(
+    async (index: number, cursors: Array<string | null>) => {
+      const requestId = ++transparencyRequestId.current;
+      const params = new URLSearchParams();
+      if (search.trim()) params.set('q', search.trim());
+      if (orgFilter !== 'all') params.set('organization', orgFilter);
+      if (assetFilter !== 'all') params.set('asset', assetFilter);
+      if (networkFilter !== 'all') params.set('network', networkFilter);
+      if (statusFilter !== 'all') params.set('status', statusFilter);
+      if (fromDate) params.set('from', fromDate);
+      if (toDate) params.set('to', toDate);
+      const query = params.toString();
+      const cursor = cursors[index] ?? null;
+      if (index === 0) setLoading(true);
+      else setLedgerPageLoading(true);
+      try {
+        const result = await api.getPage<AidRecord>(
+          '/api/transparency' + (query ? '?' + query : ''),
+          'records',
+          { limit: pageSize, cursor, seenCursors: ledgerSeenCursors.current },
+        );
+        if (requestId !== transparencyRequestId.current) return;
+        const next = typeof result.data.nextCursor === 'string' ? result.data.nextCursor : null;
         setRecords(result.data.records || []);
         setLedgerTotal(typeof result.data.total === 'number' ? result.data.total : 0);
+        setLedgerHasMore(result.data.hasMore === true);
         setOrganizationOptions(result.data.facets?.organizations || []);
         setAssetOptions(result.data.facets?.assets || []);
         setLedgerTotals(result.data.summary?.byStatus || []);
+        setLedgerCursorIndex(index);
+        setLedgerCursors(() => {
+          const stack = cursors.slice(0, index + 1);
+          if (next) stack.push(next);
+          return stack;
+        });
+      } catch (e) {
+        if (requestId === transparencyRequestId.current) setError(messageOf(e));
+      } finally {
+        if (requestId === transparencyRequestId.current) {
+          setLoading(false);
+          setLedgerPageLoading(false);
+        }
       }
-    } catch (e) {
-      if (requestId === transparencyRequestId.current) setError(messageOf(e));
-    } finally {
-      if (requestId === transparencyRequestId.current) setLoading(false);
-    }
-  }, [search, orgFilter, assetFilter, networkFilter, statusFilter, fromDate, toDate]);
+    },
+    [search, orgFilter, assetFilter, networkFilter, statusFilter, fromDate, toDate],
+  );
+  const loadTransparency = useCallback(async () => {
+    ledgerSeenCursors.current.clear();
+    const cursors = resetCursorStack();
+    setLedgerCursors(cursors);
+    setLedgerCursorIndex(0);
+    setLedgerHasMore(false);
+    await fetchLedgerPage(0, cursors);
+  }, [fetchLedgerPage]);
   async function getLatestRecord(recordId: string): Promise<AidRecord> {
     const result = await api.getRecord<AidRecord>(recordId);
     const latest = result.data.record;
@@ -309,6 +406,8 @@ export default function App() {
     try {
       setSelected(await getLatestRecord(recordId));
       setRecordConflictId(null);
+      // The Reload latest button removes itself, so keep focus in the dialog.
+      detailDialogRef.current?.focus();
       setError('');
     } catch (e) {
       setError(messageOf(e));
@@ -328,23 +427,49 @@ export default function App() {
     setNetwork(value);
     writeNetworkPreference(value);
   }
-  const loadAudit = useCallback(async () => {
-    if (!session || session.role !== 'admin') return;
-    const params = new URLSearchParams();
-    if (auditAction !== 'all') params.set('action', auditAction);
-    if (auditSearch.trim()) params.set('q', auditSearch.trim());
-    const query = params.toString();
-    try {
-      const r = await api.getAllPages<AuditItem>(
-        '/api/audit' + (query ? '?' + query : ''),
-        'entries',
-      );
-      setAudit(r.data.entries || []);
-      setAuditActionOptions(r.data.facets?.actions || []);
-    } catch (e) {
-      setError(messageOf(e));
-    }
-  }, [session, auditAction, auditSearch]);
+  const loadAudit = useCallback(
+    async (options: { append?: boolean } = {}) => {
+      if (!session || session.role !== 'admin') return;
+      if (auditRequestInFlight.current) return;
+      auditRequestInFlight.current = true;
+      setAuditLoading(true);
+      const params = new URLSearchParams();
+      if (auditAction !== 'all') params.set('action', auditAction);
+      if (auditSearch.trim()) params.set('q', auditSearch.trim());
+      const query = params.toString();
+      const append = options.append === true;
+      if (!append) {
+        auditSeenCursors.current.clear();
+        auditCursorRef.current = null;
+        setAuditCursor(null);
+        setAuditHasMore(false);
+      }
+      try {
+        const r = await api.getPage<AuditItem>(
+          '/api/audit' + (query ? '?' + query : ''),
+          'entries',
+          {
+            limit: 20,
+            cursor: append ? auditCursorRef.current : null,
+            seenCursors: auditSeenCursors.current,
+          },
+        );
+        const entries = r.data.entries || [];
+        const next = typeof r.data.nextCursor === 'string' ? r.data.nextCursor : null;
+        setAudit((previous) => (append ? [...previous, ...entries] : entries));
+        setAuditActionOptions(r.data.facets?.actions || []);
+        setAuditHasMore(r.data.hasMore === true);
+        auditCursorRef.current = next;
+        setAuditCursor(next);
+      } catch (e) {
+        setError(messageOf(e));
+      } finally {
+        auditRequestInFlight.current = false;
+        setAuditLoading(false);
+      }
+    },
+    [session, auditAction, auditSearch],
+  );
   const restoreSession = useCallback(async () => {
     try {
       const r = await api.get<{ session: Session | null }>('/api/me');
@@ -355,35 +480,57 @@ export default function App() {
       setError(messageOf(e));
     }
   }, []);
+  const loadRoles = useCallback(async (options: { append?: boolean } = {}) => {
+    if (rolesRequestInFlight.current) return;
+    rolesRequestInFlight.current = true;
+    setRolesLoading(true);
+    const append = options.append === true;
+    if (!append) {
+      rolesSeenCursors.current.clear();
+      rolesCursorRef.current = null;
+      setRolesCursor(null);
+      setRolesHasMore(false);
+    }
+    try {
+      const r = await api.getPage<{
+        address: string;
+        role: Role;
+        updatedAt: string;
+        updatedBy: string;
+      }>('/api/admin/roles', 'roles', {
+        limit: 20,
+        cursor: append ? rolesCursorRef.current : null,
+        seenCursors: rolesSeenCursors.current,
+      });
+      const nextRoles = r.data.roles || [];
+      const next = typeof r.data.nextCursor === 'string' ? r.data.nextCursor : null;
+      setRoles((previous) => (append ? [...previous, ...nextRoles] : nextRoles));
+      setRolesHasMore(r.data.hasMore === true);
+      rolesCursorRef.current = next;
+      setRolesCursor(next);
+    } catch (e) {
+      setError(messageOf(e));
+    } finally {
+      rolesRequestInFlight.current = false;
+      setRolesLoading(false);
+    }
+  }, []);
   useEffect(() => {
     void restoreSession();
   }, [restoreSession]);
   useEffect(() => {
     const timer = window.setTimeout(() => void loadTransparency(), 200);
     return () => window.clearTimeout(timer);
-  }, [loadTransparency]);
+  }, [loadTransparency, sortBy, sortDir]);
   useEffect(() => {
-    if (session?.role === 'admin') {
-      void loadAudit();
-      void loadRoles();
-    }
+    if (session?.role === 'admin') void loadRoles();
+  }, [session, loadRoles]);
+  useEffect(() => {
+    if (session?.role === 'admin') void loadAudit();
   }, [session, loadAudit]);
   useEffect(() => {
     if (page === 'beneficiary' && session) void loadBeneficiaryRecords();
   }, [page, session, loadBeneficiaryRecords]);
-  async function loadRoles() {
-    try {
-      const r = await api.getAllPages<{
-        address: string;
-        role: Role;
-        updatedAt: string;
-        updatedBy: string;
-      }>('/api/admin/roles', 'roles');
-      setRoles(r.data.roles || []);
-    } catch (e) {
-      setError(messageOf(e));
-    }
-  }
 
   const loadActivity = useCallback(
     async (address: string, selectedNetwork: Network) => {
@@ -733,12 +880,15 @@ export default function App() {
           date: selected.date,
           note: selected.note,
           recipientConsent: selected.recipientConsent === true,
+          // The version this form was loaded with; a newer edit elsewhere makes the server reply 409.
+          expectedVersion: selected.version,
         },
       );
       await refreshRecordAfterAction(selected.id, r.data.record);
       notify('Record updated and audit-logged.');
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
+        // Keep the typed input in the form; the user chooses when to reload the latest version.
         setRecordConflictId(selected.id);
         return;
       }
@@ -851,8 +1001,13 @@ export default function App() {
     [audit, auditAction, auditSearch],
   );
   const verified = records.filter((r) => r.status === 'verified' && !r.voidedAt);
-  const pageCount = Math.max(1, Math.ceil(filteredAid.length / pageSize));
-  const visibleAid = filteredAid.slice((pageNumber - 1) * pageSize, pageNumber * pageSize);
+  const pageCount = Math.max(1, Math.ceil((ledgerTotal || filteredAid.length) / pageSize));
+  const visibleAid = filteredAid;
+  const ledgerRangeStart = ledgerCursorIndex * pageSize + (visibleAid.length ? 1 : 0);
+  const ledgerRangeEnd = ledgerCursorIndex * pageSize + visibleAid.length;
+  const canGoLedgerPrevious = ledgerCursorIndex > 0 && !ledgerPageLoading;
+  const canGoLedgerNext =
+    !ledgerPageLoading && typeof ledgerCursors[ledgerCursorIndex + 1] === 'string';
   const verifiedTotals = ledgerTotals.filter((total) => total.status === 'verified');
   const otherStatusTotals = ledgerTotals
     .filter((total) => total.status !== 'verified')
@@ -865,9 +1020,6 @@ export default function App() {
       (session.role === 'organization' && selected.organization === session.address));
   const selectedDifferences = selected?.verification?.differences || [];
   const selectedMismatchDetails = selected ? mismatchDetails(selected) : [];
-  useEffect(() => {
-    setPageNumber(1);
-  }, [search, orgFilter, assetFilter, networkFilter, statusFilter, fromDate, toDate]);
 
   function sortRecords(field: string) {
     if (sortBy === field) setSortDir((current) => (current === 'asc' ? 'desc' : 'asc'));
@@ -1111,7 +1263,11 @@ export default function App() {
                   Export CSV
                 </button>
                 {canManageRecords && (
-                  <button className="button primary compact" onClick={() => setShowForm(true)}>
+                  <button
+                    className="button primary compact"
+                    id="add-record"
+                    onClick={() => setShowForm(true)}
+                  >
                     <Plus size={14} />
                     Add record
                   </button>
@@ -1154,10 +1310,7 @@ export default function App() {
                   aria-label="Search records"
                   placeholder="Search purpose, organization or record"
                   value={search}
-                  onChange={(event) => {
-                    setSearch(event.target.value);
-                    setPageNumber(1);
-                  }}
+                  onChange={(event) => setSearch(event.target.value)}
                 />
               </label>
               <select
@@ -1283,7 +1436,11 @@ export default function App() {
                           </span>
                         </td>
                         <td>
-                          <button className="text-button" onClick={() => setSelected(record)}>
+                          <button
+                            className="text-button"
+                            data-record-id={record.id}
+                            onClick={() => setSelected(record)}
+                          >
                             View <ArrowUpRight size={13} />
                           </button>
                         </td>
@@ -1303,28 +1460,38 @@ export default function App() {
             <div className="pagination">
               <span>
                 {ledgerTotal
-                  ? `Showing 1–${Math.min(records.length, ledgerTotal)} of ${ledgerTotal}`
+                  ? `Showing ${ledgerRangeStart}–${ledgerRangeEnd} of ${ledgerTotal}`
                   : 'No records'}
               </span>
-              <div>
+              <div className="pagination-actions">
                 <button
                   className="button secondary compact"
-                  disabled={pageNumber <= 1}
-                  onClick={() => setPageNumber((value) => Math.max(1, value - 1))}
+                  disabled={!canGoLedgerPrevious}
+                  onClick={() => void fetchLedgerPage(ledgerCursorIndex - 1, ledgerCursors)}
                 >
                   Previous
                 </button>
                 <span>
-                  Page {pageNumber} of {pageCount}
+                  Page {ledgerCursorIndex + 1} of {pageCount}
+                  {ledgerPageLoading ? ' · Loading…' : ''}
                 </span>
                 <button
                   className="button secondary compact"
-                  disabled={pageNumber >= pageCount}
-                  onClick={() => setPageNumber((value) => Math.min(pageCount, value + 1))}
+                  disabled={!canGoLedgerNext}
+                  onClick={() => void fetchLedgerPage(ledgerCursorIndex + 1, ledgerCursors)}
                 >
                   Next
                 </button>
+                {error && !loading && (
+                  <button
+                    className="button secondary compact pagination-retry"
+                    onClick={() => void fetchLedgerPage(ledgerCursorIndex, ledgerCursors)}
+                  >
+                    Retry
+                  </button>
+                )}
               </div>
+              {!ledgerHasMore && visibleAid.length > 0 && <p className="list-end">End of list</p>}
             </div>
             <p className="panel-foot">
               A transaction hash alone does not establish impact. Review the on-chain evidence and
@@ -1524,7 +1691,11 @@ export default function App() {
                           </span>
                         </td>
                         <td>
-                          <button className="text-button" onClick={() => setSelected(record)}>
+                          <button
+                            className="text-button"
+                            data-record-id={record.id}
+                            onClick={() => setSelected(record)}
+                          >
                             View <ArrowUpRight size={13} />
                           </button>
                         </td>
@@ -1556,12 +1727,12 @@ export default function App() {
               <article>
                 <span>Explicit role assignments</span>
                 <b>{roles.length}</b>
-                <small>Cursor-paginated assignments</small>
+                <small>Loaded so far</small>
               </article>
               <article>
                 <span>Recent audit events</span>
                 <b>{audit.length}</b>
-                <small>Cursor-paginated audit history</small>
+                <small>Loaded so far</small>
               </article>
               <article>
                 <span>Connected as</span>
@@ -1640,6 +1811,28 @@ export default function App() {
                 </tbody>
               </table>
             </div>
+            <div className="list-pager">
+              {rolesHasMore ? (
+                <button
+                  className="button secondary compact load-more"
+                  disabled={rolesLoading}
+                  onClick={() => void loadRoles({ append: true })}
+                >
+                  {rolesLoading ? 'Loading…' : 'Load more'}
+                </button>
+              ) : (
+                roles.length > 0 && <p className="list-end">End of list</p>
+              )}
+              {error && roles.length > 0 && (
+                <button
+                  className="button secondary compact pagination-retry"
+                  disabled={rolesLoading}
+                  onClick={() => void loadRoles({ append: rolesCursor !== null })}
+                >
+                  Retry
+                </button>
+              )}
+            </div>
             <div className="toolbar">
               <label className="search">
                 <Search size={15} />
@@ -1685,13 +1878,35 @@ export default function App() {
                 </tbody>
               </table>
             </div>
-            {!filteredAudit.length && (
+            {!filteredAudit.length && !auditLoading && (
               <div className="empty-state">
                 <FileClock size={22} />
                 <b>No audit events found</b>
                 <p>Audit events will appear here as users interact with AidTrace.</p>
               </div>
             )}
+            <div className="list-pager">
+              {auditHasMore ? (
+                <button
+                  className="button secondary compact load-more"
+                  disabled={auditLoading}
+                  onClick={() => void loadAudit({ append: true })}
+                >
+                  {auditLoading ? 'Loading…' : 'Load more'}
+                </button>
+              ) : (
+                filteredAudit.length > 0 && <p className="list-end">End of list</p>
+              )}
+              {error && filteredAudit.length > 0 && (
+                <button
+                  className="button secondary compact pagination-retry"
+                  disabled={auditLoading}
+                  onClick={() => void loadAudit({ append: auditCursor !== null })}
+                >
+                  Retry
+                </button>
+              )}
+            </div>
           </section>
         )}
 
@@ -1738,16 +1953,23 @@ export default function App() {
       {showForm && (
         <div
           className="backdrop"
-          role="presentation"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="record-form-heading"
+          ref={formDialogRef}
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setShowForm(false);
+            if (event.target === event.currentTarget) {
+              // Stop the mousedown default action from moving the restored focus to <body>.
+              event.preventDefault();
+              closeForm();
+            }
           }}
         >
           <form className="form modal-large" onSubmit={saveRecord}>
             <div className="modal-head">
               <div>
                 <p className="eyebrow">PUBLISH AID RECORD</p>
-                <h2>New disbursement</h2>
+                <h2 id="record-form-heading">New disbursement</h2>
                 <p className="muted">
                   Beneficiary details, notes and transaction links are pseudonymous on the public
                   ledger by default.
@@ -1757,7 +1979,7 @@ export default function App() {
                 className="icon-button"
                 type="button"
                 aria-label="Close form"
-                onClick={() => setShowForm(false)}
+                onClick={closeForm}
               >
                 <X size={17} />
               </button>
@@ -1895,7 +2117,7 @@ export default function App() {
               asset can be verified on-chain.
             </p>
             <div className="form-actions">
-              <button className="button secondary" type="button" onClick={() => setShowForm(false)}>
+              <button className="button secondary" type="button" onClick={closeForm}>
                 Cancel
               </button>
               <button className="button primary" disabled={busy} type="submit">
@@ -1913,8 +2135,8 @@ export default function App() {
           role="presentation"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) {
-              setSelected(null);
-              setRecordConflictId(null);
+              event.preventDefault();
+              closeDetail();
             }
           }}
         >
@@ -1923,6 +2145,8 @@ export default function App() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="record-heading"
+            ref={detailDialogRef}
+            tabIndex={-1}
           >
             <div className="modal-head">
               <div>
@@ -1930,14 +2154,7 @@ export default function App() {
                 <h2 id="record-heading">{selected.recipient}</h2>
                 <p className="muted">{selected.purpose}</p>
               </div>
-              <button
-                className="icon-button"
-                aria-label="Close details"
-                onClick={() => {
-                  setSelected(null);
-                  setRecordConflictId(null);
-                }}
-              >
+              <button className="icon-button" aria-label="Close details" onClick={closeDetail}>
                 <X size={17} />
               </button>
             </div>
@@ -2019,6 +2236,14 @@ export default function App() {
                 <div>
                   <dt>Verification note</dt>
                   <dd>{selected.verification.reason}</dd>
+                </div>
+              )}
+              {selected.verification?.memo && selected.verification.memoType && (
+                <div>
+                  <dt>Memo</dt>
+                  <dd>
+                    {selected.verification.memoType}: {selected.verification.memo}
+                  </dd>
                 </div>
               )}
               {selected.voidReason && (

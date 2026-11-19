@@ -265,6 +265,105 @@ describe('On-chain verification distinguishes matching and mismatching payments'
     expect((await checkTransaction(record)).status).toBe('pending');
     expect(calls).toBe(20);
   });
+
+  it('captures the transaction memo as evidence without changing the matching result', async () => {
+    const organization = Keypair.random().publicKey();
+    const recipient = Keypair.random().publicKey();
+    const record = {
+      network: 'testnet' as const,
+      txHash: 'd'.repeat(64),
+      organizationWallet: organization,
+      recipientWallet: recipient,
+      amountStroops: '10000000',
+      assetCode: 'XLM',
+      assetIssuer: null,
+    };
+    let transaction: Record<string, unknown> = {};
+    let operations: Record<string, unknown>[] = [];
+    const matching = [
+      { type: 'payment', from: organization, to: recipient, amount: '1', asset_type: 'native' },
+    ];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = new URL(String(input));
+        const body = url.pathname.endsWith('/operations')
+          ? { _embedded: { records: operations } }
+          : transaction;
+        return new Response(JSON.stringify(body), { status: 200 });
+      }),
+    );
+    const base = { successful: true, source_account: organization, ledger: 5 };
+    operations = matching;
+
+    transaction = { ...base, memo_type: 'text', memo: 'AID-2026-0042' };
+    const text = await checkTransaction(record);
+    expect(text.status).toBe('verified');
+    expect(text).toMatchObject({ memo: 'AID-2026-0042', memoType: 'text' });
+
+    // uint64 beyond Number.MAX_SAFE_INTEGER must survive exactly as a string.
+    const largeId = '18446744073709551615';
+    transaction = { ...base, memo_type: 'id', memo: largeId };
+    const id = await checkTransaction(record);
+    expect(id.status).toBe('verified');
+    expect(id.memoType).toBe('id');
+    expect(id.memo).toBe(largeId);
+    expect(typeof id.memo).toBe('string');
+
+    const base64Hash = Buffer.alloc(32, 0xab).toString('base64');
+    transaction = { ...base, memo_type: 'hash', memo: base64Hash };
+    expect(await checkTransaction(record)).toMatchObject({
+      status: 'verified',
+      memo: base64Hash,
+      memoType: 'hash',
+    });
+
+    transaction = { ...base, memo_type: 'return', memo: base64Hash };
+    expect(await checkTransaction(record)).toMatchObject({ memo: base64Hash, memoType: 'return' });
+
+    for (const noMemo of [
+      { ...base, memo_type: 'none' },
+      { ...base },
+      { ...base, memo_type: 'unknown', memo: 'ignored' },
+      { ...base, memo_type: 'id', memo: 42 },
+      { ...base, memo_type: 'text', memo: '' },
+      { ...base, memo_type: 'text', memo: '\u0000\u0000' },
+    ]) {
+      transaction = noMemo;
+      const result = await checkTransaction(record);
+      expect(result.status).toBe('verified');
+      expect(result).not.toHaveProperty('memo');
+      expect(result).not.toHaveProperty('memoType');
+    }
+
+    transaction = { ...base, memo_type: 'text', memo: 'x'.repeat(500) };
+    expect((await checkTransaction(record)).memo).toHaveLength(128);
+
+    // PostgreSQL TEXT rejects NUL, so it is stripped before the memo can reach storage.
+    transaction = { ...base, memo_type: 'text', memo: 'AID\u0000-0042' };
+    expect((await checkTransaction(record)).memo).toBe('AID-0042');
+
+    operations = [{ ...matching[0], to: Keypair.random().publicKey() }];
+    transaction = { ...base, memo_type: 'text', memo: 'AID-2026-0042' };
+    const mismatch = await checkTransaction(record);
+    expect(mismatch.status).toBe('mismatch');
+    expect(mismatch).toMatchObject({ memo: 'AID-2026-0042', memoType: 'text' });
+
+    transaction = { ...base, successful: false, memo_type: 'text', memo: 'AID-2026-0042' };
+    expect(await checkTransaction(record)).toMatchObject({
+      status: 'mismatch',
+      memo: 'AID-2026-0042',
+      memoType: 'text',
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 404 })),
+    );
+    const notFound = await checkTransaction(record);
+    expect(notFound.status).toBe('not-found');
+    expect(notFound).not.toHaveProperty('memo');
+  });
 });
 
 const integration = describe.skipIf(!process.env.TEST_DATABASE_URL);
@@ -275,6 +374,36 @@ integration('Database-backed wallet, records, and authorization flows', () => {
   let admin: Keypair;
 
   afterEach(() => vi.unstubAllGlobals());
+
+  async function expectAuditEvent(
+    action: string,
+    actorWallet: string,
+    expected: { subjectWallet?: string; recordId?: string } = {},
+  ) {
+    const subjectWallet = expected.subjectWallet ?? null;
+    const recordId = expected.recordId ?? null;
+    const result = await pool.query<{
+      action: string;
+      actor_wallet: string;
+      subject_wallet: string | null;
+      record_id: string | null;
+    }>(
+      `SELECT action, actor_wallet, subject_wallet, record_id
+       FROM audit_events
+       WHERE action = $1 AND actor_wallet = $2
+         AND subject_wallet IS NOT DISTINCT FROM $3
+         AND record_id IS NOT DISTINCT FROM $4
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [action, actorWallet, subjectWallet, recordId],
+    );
+    expect(result.rows[0], `Missing ${action} audit event for ${actorWallet}`).toEqual({
+      action,
+      actor_wallet: actorWallet,
+      subject_wallet: subjectWallet,
+      record_id: recordId,
+    });
+  }
 
   async function login(wallet: Keypair) {
     const address = wallet.publicKey();
@@ -444,6 +573,17 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       await client.query('ROLLBACK');
       client.release();
     }
+  });
+
+  it('should have an index for wallet_roles sorting by updated_at DESC and wallet_address DESC', async () => {
+    const result = await pool.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes WHERE tablename = 'wallet_roles'`,
+    );
+    expect(
+      result.rows.some(({ indexdef }) =>
+        indexdef.includes('btree (updated_at DESC, wallet_address DESC)'),
+      ),
+    ).toBe(true);
   });
 
   it('creates a single-use wallet session, enforces CSRF, expires challenges, and logs out', async () => {
@@ -669,6 +809,191 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       txHash: verifiedHash,
     });
     expect(duplicate.status).toBe(409);
+  }, 120_000);
+
+  it('stores the transaction memo and withholds it from consent-off public views', async () => {
+    const adminSession = await login(admin);
+    const organization = Keypair.random();
+    const otherOrganization = Keypair.random();
+    const recipient = Keypair.random();
+    await assignRole(adminSession, organization, 'organization');
+    await assignRole(adminSession, otherOrganization, 'organization');
+    const session = await login(organization);
+    const otherSession = await login(otherOrganization);
+    const term = 'memo-' + Keypair.random().publicKey().slice(-8);
+    const memo = 'AID-' + Keypair.random().publicKey().slice(-12);
+    const privateHash = createHash('sha256')
+      .update(term + '-private')
+      .digest('hex');
+    const consentHash = createHash('sha256')
+      .update(term + '-consent')
+      .digest('hex');
+    const largeId = '18446744073709551615';
+    const transactions = new Map<string, Record<string, unknown>>();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = new URL(String(input));
+        const segments = url.pathname.split('/').filter(Boolean);
+        const hash = segments[segments.indexOf('transactions') + 1] || '';
+        const transaction = transactions.get(hash);
+        if (!transaction) return new Response('{}', { status: 404 });
+        const records = url.pathname.endsWith('/operations')
+          ? [
+              {
+                type: 'payment',
+                from: organization.publicKey(),
+                to: recipient.publicKey(),
+                amount: '1.25',
+                asset_type: 'native',
+              },
+            ]
+          : undefined;
+        return new Response(JSON.stringify(records ? { _embedded: { records } } : transaction), {
+          status: 200,
+        });
+      }),
+    );
+
+    // Created while Horizon returns 404, so the explicit verify call below is not cached.
+    const created = await createRecord(session, recipient, term + ' private', {
+      txHash: privateHash,
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.record.status).toBe('not-found');
+    expect(created.body.record.verification).not.toHaveProperty('memo');
+    const recordId = created.body.record.id;
+
+    transactions.set(privateHash, {
+      successful: true,
+      source_account: organization.publicKey(),
+      ledger: 11,
+      created_at: '2026-01-15T00:00:00Z',
+      memo_type: 'text',
+      memo,
+    });
+    const verified = await request(app)
+      .post('/api/records/' + recordId + '/verify')
+      .set('Origin', origin)
+      .set('Cookie', session.cookie)
+      .send({ csrfToken: session.csrfToken });
+    expect(verified.status).toBe(200);
+    expect(verified.body.record.status).toBe('verified');
+    expect(verified.body.record.verification).toMatchObject({ memo, memoType: 'text' });
+
+    const stored = await pool.query<{ memo: string | null; memo_type: string | null }>(
+      `SELECT memo, memo_type FROM verification_results
+       WHERE aid_record_id = $1 ORDER BY checked_at DESC, id DESC LIMIT 1`,
+      [recordId],
+    );
+    expect(stored.rows[0]).toEqual({ memo, memo_type: 'text' });
+
+    const findRecord = (body: { records: { id: string }[] }) =>
+      body.records.find((record) => record.id === recordId) as
+        { verification?: Record<string, unknown> } | undefined;
+
+    const ownerView = await request(app)
+      .get('/api/transparency')
+      .query({ q: term })
+      .set('Cookie', session.cookie);
+    expect(ownerView.status).toBe(200);
+    expect(findRecord(ownerView.body)?.verification).toMatchObject({ memo, memoType: 'text' });
+
+    const adminView = await request(app)
+      .get('/api/transparency')
+      .query({ q: term })
+      .set('Cookie', adminSession.cookie);
+    expect(findRecord(adminView.body)?.verification).toMatchObject({ memo, memoType: 'text' });
+
+    for (const publicView of [
+      await request(app).get('/api/transparency').query({ q: term }),
+      await request(app)
+        .get('/api/transparency')
+        .query({ q: term })
+        .set('Cookie', otherSession.cookie),
+    ]) {
+      expect(publicView.status).toBe(200);
+      const publicRecord = findRecord(publicView.body);
+      expect(publicRecord?.verification?.status).toBe('verified');
+      expect(publicRecord?.verification).not.toHaveProperty('memo');
+      expect(publicRecord?.verification).not.toHaveProperty('memoType');
+      expect(JSON.stringify(publicView.body)).not.toContain(memo);
+    }
+
+    await assignRole(adminSession, recipient, 'beneficiary');
+    const beneficiarySession = await login(recipient);
+    const beneficiaryView = await request(app)
+      .get('/api/beneficiary')
+      .query({ q: term })
+      .set('Cookie', beneficiarySession.cookie);
+    expect(beneficiaryView.status).toBe(200);
+    expect(findRecord(beneficiaryView.body)?.verification).toMatchObject({
+      memo,
+      memoType: 'text',
+    });
+
+    // With consent the public projection includes the full record, memo included; a uint64 id
+    // memo above 2^53 round-trips through the TEXT column unchanged.
+    transactions.set(consentHash, {
+      successful: true,
+      source_account: organization.publicKey(),
+      memo_type: 'id',
+      memo: largeId,
+    });
+    const consented = await createRecord(session, recipient, term + ' consented', {
+      txHash: consentHash,
+      consent: true,
+    });
+    expect(consented.status).toBe(201);
+    expect(consented.body.record.verification).toMatchObject({ memo: largeId, memoType: 'id' });
+    const consentedPublic = await request(app)
+      .get('/api/transparency')
+      .query({ q: term + ' consented' });
+    expect(consentedPublic.body.records[0].verification).toMatchObject({
+      memo: largeId,
+      memoType: 'id',
+    });
+  }, 120_000);
+
+  it('returns a filter-bounded total on transparency pages without walking every record', async () => {
+    const adminSession = await login(admin);
+    const organization = Keypair.random();
+    await assignRole(adminSession, organization, 'organization');
+    const session = await login(organization);
+    const recipient = Keypair.random();
+    const token = 'bounded-total-' + Date.now();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 404 })),
+    );
+    for (let index = 0; index < 3; index += 1) {
+      const created = await createRecord(session, recipient, `${token} case ${index}`, {
+        txHash: createHash('sha256').update(`${token}-${index}`).digest('hex'),
+      });
+      expect(created.status).toBe(201);
+    }
+
+    const pageOne = await request(app).get('/api/transparency').query({ q: token, limit: '1' });
+    expect(pageOne.status).toBe(200);
+    expect(pageOne.body.records).toHaveLength(1);
+    expect(pageOne.body.total).toBe(3);
+    expect(pageOne.body.hasMore).toBe(true);
+    expect(typeof pageOne.body.nextCursor).toBe('string');
+
+    const pageTwo = await request(app)
+      .get('/api/transparency')
+      .query({ q: token, limit: '1', cursor: pageOne.body.nextCursor });
+    expect(pageTwo.status).toBe(200);
+    expect(pageTwo.body.records).toHaveLength(1);
+    expect(pageTwo.body.total).toBe(3);
+    expect(pageTwo.body.records[0].id).not.toBe(pageOne.body.records[0].id);
+
+    const tight = await request(app)
+      .get('/api/transparency')
+      .query({ q: `${token} case 1`, limit: '1' });
+    expect(tight.status).toBe(200);
+    expect(tight.body.total).toBe(1);
+    expect(tight.body.hasMore).toBe(false);
   }, 120_000);
 
   it('paginates and filters public records while redacting beneficiary identifiers by default', async () => {
@@ -906,4 +1231,204 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       (await request(app).get('/api/me').set('Cookie', ownerSession.cookie)).body.session,
     ).toBeNull();
   }, 120_000);
+
+  describe('last active admin protection', () => {
+    type AdminSession = Awaited<ReturnType<typeof login>>;
+
+    async function seedAdmins(count: number): Promise<AdminSession[]> {
+      const sessions: AdminSession[] = [];
+      for (let index = 0; index < count; index += 1) {
+        const wallet = Keypair.random();
+        wallets.add(wallet.publicKey());
+        await pool.query('INSERT INTO users (wallet_address) VALUES ($1) ON CONFLICT DO NOTHING', [
+          wallet.publicKey(),
+        ]);
+        await pool.query(
+          `INSERT INTO wallet_roles (wallet_address, role, updated_by) VALUES ($1, 'admin', $1)`,
+          [wallet.publicKey()],
+        );
+        sessions.push(await login(wallet));
+      }
+      return sessions;
+    }
+
+    // Temporarily demotes every other admin in the test database so `sessions` are the only
+    // admins, runs `body`, then restores the demoted admins.
+    async function withOnlyAdmins(sessions: AdminSession[], body: () => Promise<void>) {
+      const demoted = await pool.query<{ wallet_address: string }>(
+        `UPDATE wallet_roles SET role = 'donor'
+         WHERE role = 'admin' AND wallet_address <> ALL($1::text[])
+         RETURNING wallet_address`,
+        [sessions.map((session) => session.address)],
+      );
+      try {
+        await body();
+      } finally {
+        await pool.query(`UPDATE wallet_roles SET role = 'admin' WHERE wallet_address = ANY($1)`, [
+          demoted.rows.map((row) => row.wallet_address),
+        ]);
+      }
+    }
+
+    function removeRole(session: AdminSession, target: string) {
+      return request(app)
+        .delete('/api/admin/roles/' + encodeURIComponent(target))
+        .set('Origin', origin)
+        .set('Cookie', session.cookie)
+        .send({ csrfToken: session.csrfToken });
+    }
+
+    function setRole(session: AdminSession, target: string, role: string) {
+      return request(app)
+        .post('/api/admin/roles')
+        .set('Origin', origin)
+        .set('Cookie', session.cookie)
+        .send({ csrfToken: session.csrfToken, address: target, role });
+    }
+
+    async function roleOf(address: string) {
+      const result = await pool.query<{ role: string }>(
+        'SELECT role FROM wallet_roles WHERE wallet_address = $1',
+        [address],
+      );
+      return result.rows[0]?.role;
+    }
+
+    async function adminCount(addresses: string[]) {
+      const result = await pool.query<{ count: string }>(
+        `SELECT COUNT(*) AS count FROM wallet_roles
+         WHERE role = 'admin' AND wallet_address = ANY($1::text[])`,
+        [addresses],
+      );
+      return Number(result.rows[0].count);
+    }
+
+    async function roleAuditCount(actors: string[]) {
+      const result = await pool.query<{ count: string }>(
+        `SELECT COUNT(*) AS count FROM audit_events
+         WHERE action IN ('wallet_role_changed', 'wallet_role_removed')
+           AND actor_wallet = ANY($1::text[])`,
+        [actors],
+      );
+      return Number(result.rows[0].count);
+    }
+
+    // Polls until some backend is waiting on a lock held by `blockerPid`.
+    async function waitUntilBlockedBy(blockerPid: number) {
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        const result = await pool.query<{ waiting: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))
+           ) AS waiting`,
+          [blockerPid],
+        );
+        if (result.rows[0].waiting) return;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error('Role mutation never blocked on the admin row lock.');
+    }
+
+    const concurrentDemotions = {
+      // Same upsert the POST handler uses, so the waiting FOR UPDATE re-checks an updated row.
+      upsert: `INSERT INTO wallet_roles (wallet_address, role, updated_by)
+               VALUES ($1, 'donor', $1)
+               ON CONFLICT (wallet_address)
+               DO UPDATE SET role = EXCLUDED.role, updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
+      // Same statement the DELETE handler uses, so the waiting FOR UPDATE sees a deleted row.
+      delete: 'DELETE FROM wallet_roles WHERE wallet_address = $1',
+    } as const;
+
+    it.each([
+      { operation: 'remove', demotion: 'upsert' },
+      { operation: 'remove', demotion: 'delete' },
+      { operation: 'demote', demotion: 'upsert' },
+      { operation: 'demote', demotion: 'delete' },
+    ] as const)(
+      'rejects $operation of the last admin by a caller demoted mid-request ($demotion) with 409',
+      async ({ operation, demotion }) => {
+        const [callerA, adminB] = await seedAdmins(2);
+        await withOnlyAdmins([callerA, adminB], async () => {
+          const raw = await pool.connect();
+          let rawOpen = false;
+          try {
+            const { rows } = await raw.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+            await raw.query('BEGIN');
+            rawOpen = true;
+            // Demote A without committing: A's row stays locked and A still looks like an admin
+            // to authorize(), which reads committed data.
+            await raw.query(concurrentDemotions[demotion], [callerA.address]);
+
+            const pending =
+              operation === 'remove'
+                ? removeRole(callerA, adminB.address).then((result) => result)
+                : setRole(callerA, adminB.address, 'donor').then((result) => result);
+            await waitUntilBlockedBy(rows[0].pid);
+            await raw.query('COMMIT');
+            rawOpen = false;
+
+            const result = await pending;
+            expect(result.status).toBe(409);
+            expect(result.body.error).toBe('At least one active admin must remain.');
+          } finally {
+            if (rawOpen) await raw.query('ROLLBACK');
+            raw.release();
+          }
+          expect(await roleOf(adminB.address)).toBe('admin');
+          expect(await roleAuditCount([callerA.address])).toBe(0);
+        });
+      },
+      60_000,
+    );
+
+    it('allows removing or demoting an admin while another admin remains', async () => {
+      const [callerA, adminB, adminC] = await seedAdmins(3);
+      await withOnlyAdmins([callerA, adminB, adminC], async () => {
+        const removed = await removeRole(callerA, adminB.address);
+        expect(removed.status).toBe(200);
+        expect(await roleOf(adminB.address)).toBeUndefined();
+        await expectAuditEvent('wallet_role_removed', callerA.address, {
+          subjectWallet: adminB.address,
+        });
+
+        const demoted = await setRole(callerA, adminC.address, 'organization');
+        expect(demoted.status).toBe(200);
+        expect(await roleOf(adminC.address)).toBe('organization');
+        await expectAuditEvent('wallet_role_changed', callerA.address, {
+          subjectWallet: adminC.address,
+        });
+
+        expect(await adminCount([callerA.address, adminB.address, adminC.address])).toBe(1);
+      });
+    }, 60_000);
+
+    it.each([
+      { name: 'remove/remove', a: 'remove', b: 'remove' },
+      { name: 'demote/demote', a: 'demote', b: 'demote' },
+      { name: 'demote/remove', a: 'demote', b: 'remove' },
+    ] as const)(
+      'keeps one admin when the only two admins race ($name)',
+      async ({ a, b }) => {
+        const [adminA, adminB] = await seedAdmins(2);
+        await withOnlyAdmins([adminA, adminB], async () => {
+          const mutate = (
+            operation: 'remove' | 'demote',
+            caller: AdminSession,
+            target: AdminSession,
+          ) =>
+            operation === 'remove'
+              ? removeRole(caller, target.address)
+              : setRole(caller, target.address, 'donor');
+          const results = await Promise.all([mutate(a, adminA, adminB), mutate(b, adminB, adminA)]);
+          const statuses = results.map((result) => result.status);
+          expect(statuses.filter((status) => status === 200)).toHaveLength(1);
+          const rejected = statuses.find((status) => status !== 200);
+          expect([403, 409]).toContain(rejected);
+          expect(await adminCount([adminA.address, adminB.address])).toBe(1);
+          expect(await roleAuditCount([adminA.address, adminB.address])).toBe(1);
+        });
+      },
+      60_000,
+    );
+  });
 });
