@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { pool, withTransaction } from './db.js';
 import { checkTransaction, type AidPayment, type Verification } from './stellar-verification.js';
+import { enqueueStatusChange, lockRecordStatus } from './notifications.js';
 
 export const REVERIFICATION_STALE_AFTER_HOURS = 24;
 export const MAX_REVERIFICATION_BATCH_SIZE = 50;
@@ -140,6 +141,7 @@ async function saveVerification(record: ClaimedRecord, result: Verification): Pr
       return false;
     }
 
+    const previousStatus = await lockRecordStatus(client, record.id);
     await client.query(
       `INSERT INTO verification_results
          (id, aid_record_id, status, differences_json, reason, ledger,
@@ -167,6 +169,7 @@ async function saveVerification(record: ClaimedRecord, result: Verification): Pr
        WHERE id = $1 AND voided_at IS NULL`,
       [record.id, result.status],
     );
+    await enqueueStatusChange(client, record.id, previousStatus);
     return true;
   });
 }
