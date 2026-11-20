@@ -840,6 +840,24 @@ router.get('/api/transparency', noStore, publicReadIpRateLimit, (request, respon
   retryReadOnlyDatabase('/api/transparency', () => transparencyHandler(request, response)),
 );
 
+router.get('/api/records/:id/public', noStore, publicReadIpRateLimit, (request, response) =>
+  retryReadOnlyDatabase('/api/records/:id/public', async () => {
+    const recordId = Array.isArray(request.params.id) ? request.params.id[0] : request.params.id;
+    if (!recordId || !/^[A-Za-z0-9_-]{1,128}$/.test(recordId)) {
+      error(response, 400, 'Invalid record identifier.');
+      return;
+    }
+    const result = await getRecord(recordId);
+    if (!result) {
+      error(response, 404, 'Record not found.');
+      return;
+    }
+    response.json({
+      record: publicRecord(result.record, result.consent),
+    });
+  }),
+);
+
 router.get('/api/records/:id', noStore, publicReadIpRateLimit, (request, response) =>
   retryReadOnlyDatabase('/api/records/:id', async () => {
     const recordId = Array.isArray(request.params.id) ? request.params.id[0] : request.params.id;

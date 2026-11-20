@@ -236,12 +236,33 @@ function useDialogFocus(
   }, [open, dialogRef, onClose, returnTo]);
 }
 
+function parseRecordIdFromUrl(): string | null {
+  if (typeof window === 'undefined') return null;
+  const path = window.location.pathname;
+  const match = path.match(/^\/records\/([^/?#]+)/);
+  if (match) {
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  }
+  const params = new URLSearchParams(window.location.search);
+  const qRecord = params.get('record');
+  if (qRecord) return qRecord;
+  return null;
+}
+
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [network, setNetwork] = useState<Network>(readNetworkPreference);
-  const [page, setPage] = useState<'transparency' | 'activity' | 'beneficiary' | 'admin'>(
-    'transparency',
-  );
+  const [page, setPage] = useState<
+    'transparency' | 'activity' | 'beneficiary' | 'admin' | 'record'
+  >(() => (parseRecordIdFromUrl() ? 'record' : 'transparency'));
+  const [publicRecordId, setPublicRecordId] = useState<string | null>(parseRecordIdFromUrl);
+  const [publicRecord, setPublicRecord] = useState<AidRecord | null>(null);
+  const [publicRecordLoading, setPublicRecordLoading] = useState(false);
+  const [publicRecordError, setPublicRecordError] = useState('');
   const [records, setRecords] = useState<AidRecord[]>([]);
   const [organizationOptions, setOrganizationOptions] = useState<string[]>([]);
   const [assetOptions, setAssetOptions] = useState<string[]>([]);
@@ -422,6 +443,57 @@ export default function App() {
     } catch (e) {
       setError(messageOf(e));
     }
+  }, []);
+
+  const navigateToPublicRecord = useCallback((id: string) => {
+    setPublicRecordId(id);
+    setPage('record');
+    window.history.pushState(null, '', '/records/' + encodeURIComponent(id));
+  }, []);
+
+  const navigateToHome = useCallback(() => {
+    setPublicRecordId(null);
+    setPublicRecord(null);
+    setPublicRecordError('');
+    setPage('transparency');
+    window.history.pushState(null, '', '/');
+  }, []);
+
+  const loadPublicRecord = useCallback(async (id: string) => {
+    setPublicRecordLoading(true);
+    setPublicRecordError('');
+    try {
+      const response = await api.getPublicRecord<AidRecord>(id);
+      setPublicRecord(response.data.record);
+    } catch (e) {
+      setPublicRecord(null);
+      setPublicRecordError(messageOf(e));
+    } finally {
+      setPublicRecordLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (page === 'record' && publicRecordId) {
+      void loadPublicRecord(publicRecordId);
+    }
+  }, [page, publicRecordId, loadPublicRecord]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const id = parseRecordIdFromUrl();
+      if (id) {
+        setPublicRecordId(id);
+        setPage('record');
+      } else {
+        setPublicRecordId(null);
+        setPublicRecord(null);
+        setPublicRecordError('');
+        setPage('transparency');
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
   function chooseNetwork(value: string) {
@@ -1089,7 +1161,7 @@ export default function App() {
           href="#"
           onClick={(event) => {
             event.preventDefault();
-            setPage('transparency');
+            navigateToHome();
           }}
         >
           <span className="mark">
@@ -1212,14 +1284,22 @@ export default function App() {
         <nav className="tabs" aria-label="AidTrace sections">
           <button
             className={`tab${page === 'transparency' ? ' active' : ''}`}
-            onClick={() => setPage('transparency')}
+            onClick={navigateToHome}
           >
             Public Transparency
           </button>
+          {page === 'record' && (
+            <button className="tab active" aria-current="page">
+              Record Verification
+            </button>
+          )}
           {session && (
             <button
               className={`tab${page === 'activity' ? ' active' : ''}`}
-              onClick={() => setPage('activity')}
+              onClick={() => {
+                setPublicRecordId(null);
+                setPage('activity');
+              }}
             >
               My Activity
             </button>
@@ -1227,7 +1307,10 @@ export default function App() {
           {session && (session.role === 'beneficiary' || session.role === 'admin') && (
             <button
               className={`tab${page === 'beneficiary' ? ' active' : ''}`}
-              onClick={() => setPage('beneficiary')}
+              onClick={() => {
+                setPublicRecordId(null);
+                setPage('beneficiary');
+              }}
             >
               Beneficiary Records
             </button>
@@ -1235,7 +1318,10 @@ export default function App() {
           {session?.role === 'admin' && (
             <button
               className={`tab${page === 'admin' ? ' active' : ''}`}
-              onClick={() => setPage('admin')}
+              onClick={() => {
+                setPublicRecordId(null);
+                setPage('admin');
+              }}
             >
               Administration
             </button>
@@ -1504,6 +1590,304 @@ export default function App() {
               A transaction hash alone does not establish impact. Review the on-chain evidence and
               publish identifying information only with appropriate consent.
             </p>
+          </section>
+        )}
+
+        {page === 'record' && (
+          <section className="panel public-record-page" id="public-record-view">
+            {publicRecordLoading ? (
+              <div className="empty-state">
+                <RefreshCw size={24} />
+                <b>Loading record verification details…</b>
+              </div>
+            ) : publicRecordError || !publicRecord ? (
+              <div className="empty-state record-not-found" role="alert">
+                <CircleAlert size={28} />
+                <b>Record not found</b>
+                <p>
+                  {publicRecordError ||
+                    'The requested aid record could not be found or the identifier is invalid.'}
+                </p>
+                <button className="button primary compact" type="button" onClick={navigateToHome}>
+                  Return to public ledger
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="section-head">
+                  <div>
+                    <p className="eyebrow">PUBLIC VERIFICATION RECORD</p>
+                    <h2>{publicRecord.purpose}</h2>
+                    <p>
+                      Shareable, read-only public record with on-chain payment evidence. No sign-in
+                      required.
+                    </p>
+                  </div>
+                  <div className="section-actions">
+                    <button
+                      className="button secondary compact"
+                      type="button"
+                      onClick={() => {
+                        const url =
+                          window.location.origin + '/records/' + encodeURIComponent(publicRecord.id);
+                        navigator.clipboard.writeText(url).then(
+                          () => notify('Shareable record URL copied to clipboard.'),
+                          () => setError('Could not copy URL to clipboard.'),
+                        );
+                      }}
+                    >
+                      <Copy size={14} />
+                      Copy link
+                    </button>
+                    <button
+                      className="button secondary compact"
+                      type="button"
+                      onClick={navigateToHome}
+                    >
+                      Explore all records
+                    </button>
+                  </div>
+                </div>
+
+                <dl className="detail-list public-record-details">
+                  <div>
+                    <dt>Record ID</dt>
+                    <dd>
+                      <code>{publicRecord.id}</code>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Network</dt>
+                    <dd className="network-badge">{publicRecord.network}</dd>
+                  </div>
+                  <div>
+                    <dt>Verification outcome</dt>
+                    <dd className={`status ${publicRecord.status}`}>
+                      <i />
+                      {labelStatus(publicRecord.status)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Amount</dt>
+                    <dd>
+                      <strong>
+                        {publicRecord.amount} {publicRecord.asset}
+                      </strong>
+                      {publicRecord.assetIssuer
+                        ? ` · issuer ${short(publicRecord.assetIssuer)}`
+                        : ''}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Organization</dt>
+                    <dd>
+                      {publicRecord.organizationName || 'Organization'}
+                      <small className="subcell">{publicRecord.organization}</small>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Disbursement date</dt>
+                    <dd>{publicRecord.date}</dd>
+                  </div>
+                  <div>
+                    <dt>Beneficiary</dt>
+                    <dd>
+                      {publicRecord.recipientAddress ? (
+                        <>
+                          {publicRecord.recipient}
+                          <small className="subcell">{publicRecord.recipientAddress}</small>
+                        </>
+                      ) : (
+                        <>
+                          {publicRecord.recipient}
+                          <small className="subcell">
+                            Pseudonymous by default (withheld without consent)
+                          </small>
+                        </>
+                      )}
+                    </dd>
+                  </div>
+                  <div className="transaction-detail">
+                    <dt>Transaction</dt>
+                    <dd className="transaction-value">
+                      {publicRecord.txHash ? (
+                        <span className="transaction-hash-row">
+                          <code className="transaction-hash">{publicRecord.txHash}</code>
+                          <button
+                            className="icon-button copy-transaction"
+                            type="button"
+                            aria-label="Copy transaction hash"
+                            title="Copy transaction hash"
+                            onClick={() => void copyTransactionHash(publicRecord.txHash)}
+                          >
+                            <Copy size={14} />
+                          </button>
+                        </span>
+                      ) : (
+                        <span className="muted">Hidden for beneficiary privacy</span>
+                      )}
+                    </dd>
+                  </div>
+                  {publicRecord.voidReason && (
+                    <div>
+                      <dt>Void reason</dt>
+                      <dd>{publicRecord.voidReason}</dd>
+                    </div>
+                  )}
+                  {publicRecord.voidedAt && (
+                    <div>
+                      <dt>Voided at</dt>
+                      <dd>{new Date(publicRecord.voidedAt).toLocaleString()}</dd>
+                    </div>
+                  )}
+                </dl>
+
+                <div className="checked-fields-section">
+                  <h3>Checked payment fields</h3>
+                  <p className="muted">
+                    Verification compares the recorded disbursement data against the on-chain
+                    Stellar transaction evidence.
+                  </p>
+                  <div className="checked-fields-grid">
+                    <div className="checked-field-item">
+                      <span className="field-label">Sender (source account)</span>
+                      <span className="field-value">
+                        {publicRecord.verification?.sourceAccount || publicRecord.organization}
+                      </span>
+                      <span className="field-match">
+                        {publicRecord.verification?.sourceAccount &&
+                        publicRecord.verification.sourceAccount !== publicRecord.organization
+                          ? 'Mismatch with organization wallet'
+                          : 'Matches organization wallet'}
+                      </span>
+                    </div>
+                    <div className="checked-field-item">
+                      <span className="field-label">Recipient (destination)</span>
+                      <span className="field-value">
+                        {publicRecord.recipientAddress
+                          ? publicRecord.verification?.destination || publicRecord.recipientAddress
+                          : 'Withheld without consent'}
+                      </span>
+                      <span className="field-match">
+                        {publicRecord.recipientAddress
+                          ? 'Checked against beneficiary wallet'
+                          : 'Protected for beneficiary privacy'}
+                      </span>
+                    </div>
+                    <div className="checked-field-item">
+                      <span className="field-label">Amount</span>
+                      <span className="field-value">
+                        {publicRecord.verification?.amount || publicRecord.amount}{' '}
+                        {publicRecord.verification?.asset || publicRecord.asset}
+                      </span>
+                      <span className="field-match">
+                        {publicRecord.verification?.amount &&
+                        publicRecord.verification.amount !== publicRecord.amount
+                          ? 'Amount difference detected'
+                          : 'Matches recorded amount'}
+                      </span>
+                    </div>
+                    <div className="checked-field-item">
+                      <span className="field-label">Asset</span>
+                      <span className="field-value">
+                        {publicRecord.verification?.asset || publicRecord.asset}
+                        {publicRecord.assetIssuer ? ` (${short(publicRecord.assetIssuer)})` : ''}
+                      </span>
+                      <span className="field-match">Matches recorded asset</span>
+                    </div>
+                    <div className="checked-field-item">
+                      <span className="field-label">Network</span>
+                      <span className="field-value">{publicRecord.network}</span>
+                      <span className="field-match">Verified on Stellar {publicRecord.network}</span>
+                    </div>
+                    <div className="checked-field-item">
+                      <span className="field-label">Transaction status</span>
+                      <span className="field-value">
+                        {publicRecord.status === 'verified'
+                          ? 'Confirmed successful on-chain'
+                          : publicRecord.status === 'mismatch'
+                            ? 'Transaction found with field discrepancies'
+                            : publicRecord.status === 'not-found'
+                              ? 'Transaction not found on this network'
+                              : publicRecord.status === 'voided'
+                                ? 'Record voided'
+                                : 'Unverified'}
+                      </span>
+                      <span className="field-match">Outcome: {labelStatus(publicRecord.status)}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {publicRecord.verification?.differences &&
+                  publicRecord.verification.differences.length > 0 && (
+                    <div className="diff-box">
+                      <b>Mismatch details</b>
+                      <ul>
+                        {publicRecord.verification.differences.map((diff, index) => (
+                          <li key={index}>{diff}</li>
+                        ))}
+                      </ul>
+                      {mismatchDetails(publicRecord).length > 0 && (
+                        <div className="mismatch-comparisons">
+                          {mismatchDetails(publicRecord).map((detail) => (
+                            <div className="mismatch-row" key={detail.field}>
+                              <b>{detail.field}</b>
+                              <span>
+                                <small>Expected</small>
+                                {detail.expected}
+                              </span>
+                              <span>
+                                <small>Found</small>
+                                {detail.found}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                {publicRecord.txHash && (
+                  <div className="detail-actions">
+                    <a
+                      className="explorer-link"
+                      href={
+                        publicRecord.verification?.link ||
+                        explorer(publicRecord.network, publicRecord.txHash)
+                      }
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      View on Stellar Expert <ExternalLink size={13} />
+                    </a>
+                  </div>
+                )}
+
+                <div className="verification-limits-card">
+                  <div className="limits-header">
+                    <ShieldCheck size={18} />
+                    <h3>What on-chain verification does not prove</h3>
+                  </div>
+                  <p>
+                    A verified status confirms only that the recorded payment fields (sender,
+                    recipient, amount, and asset) matched a successful transaction on the public
+                    Stellar network.
+                  </p>
+                  <p>
+                    <strong>Verification does NOT prove:</strong>
+                  </p>
+                  <ul>
+                    <li>The real-world identity of the beneficiary</li>
+                    <li>Beneficiary consent to publish private identifiers</li>
+                    <li>
+                      How funds were spent or whether aid reached the intended recipient in the
+                      real world
+                    </li>
+                    <li>Real-world program impact or effectiveness</li>
+                  </ul>
+                </div>
+              </>
+            )}
           </section>
         )}
 
@@ -2288,6 +2672,17 @@ export default function App() {
               </div>
             )}
             <div className="detail-actions">
+              <button
+                className="button secondary compact"
+                type="button"
+                onClick={() => {
+                  const id = selected.id;
+                  closeDetail();
+                  navigateToPublicRecord(id);
+                }}
+              >
+                Public page <ArrowUpRight size={13} />
+              </button>
               {selected.txHash && (
                 <a
                   className="explorer-link"

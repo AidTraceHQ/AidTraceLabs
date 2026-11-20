@@ -137,6 +137,118 @@
   flex-wrap: wrap;
   padding: 0 22px 18px;
 }
+.public-record-page {
+  display: grid;
+  gap: 20px;
+}
+.public-record-details {
+  border-bottom: 1px solid #e8eaf1;
+  padding-bottom: 20px;
+}
+.network-badge {
+  display: inline-flex;
+  align-items: center;
+  text-transform: capitalize;
+  font-weight: 700;
+  color: #5c50c8;
+}
+.checked-fields-section {
+  display: grid;
+  gap: 12px;
+}
+.checked-fields-section h3 {
+  margin: 0;
+  font-size: 15px;
+  color: #20252f;
+}
+.checked-fields-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+.checked-field-item {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  background: #f7f8fb;
+  border: 1px solid #e8eaf1;
+  border-radius: 8px;
+}
+.field-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #7d8493;
+}
+.field-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: #20252f;
+  word-break: break-all;
+}
+.field-match {
+  font-size: 11px;
+  color: #168b67;
+  font-weight: 500;
+}
+.verification-limits-card {
+  display: grid;
+  gap: 10px;
+  padding: 18px 20px;
+  background: #f4f5f9;
+  border: 1px solid #e2e5ec;
+  border-left: 4px solid #5e50d8;
+  border-radius: 8px;
+  color: #404553;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.limits-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #5e50d8;
+}
+.limits-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+.verification-limits-card p {
+  margin: 0;
+}
+.verification-limits-card ul {
+  margin: 0 0 0 18px;
+  padding: 0;
+}
+.verification-limits-card li {
+  margin-bottom: 4px;
+}
+.record-not-found {
+  padding: 48px 24px;
+}
+.dark .checked-fields-section h3 {
+  color: #e5e8f0;
+}
+.dark .checked-field-item {
+  background: #1a1e28;
+  border-color: #2c3344;
+}
+.dark .field-value {
+  color: #e5e8f0;
+}
+.dark .verification-limits-card {
+  background: #1c202c;
+  border-color: #2e3547;
+  border-left-color: #7d70fa;
+  color: #b0b7c6;
+}
+.dark .limits-header {
+  color: #9389ff;
+}
+.dark .limits-header h3 {
+  color: #e5e8f0;
+}
 .list-end {
   margin: 0;
   color: #8a90a0;
