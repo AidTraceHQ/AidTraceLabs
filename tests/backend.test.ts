@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { applyUniqueNetworkTxHashMigration, migrate } from '../scripts/migrate.js';
 import { app } from '../server/app.js';
 import { verifySep53Signature } from '../server/auth.js';
+import { databaseReadinessTimeoutMs } from '../server/database-errors.js';
 import { pool, withTransaction } from '../server/db.js';
 import { parseNotificationConfig } from '../server/notification-config.js';
 import {
@@ -105,6 +106,79 @@ describe('Freighter signed challenge creates a secure session', () => {
     expect(preflight.status).toBe(204);
     expect(preflight.headers['access-control-allow-origin']).toBe(origin);
     expect(preflight.headers['access-control-allow-credentials']).toBe('true');
+  });
+});
+
+describe('Readiness probe reports database availability separately from liveness', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const leakyError = () =>
+    Object.assign(
+      new Error(
+        'connect ECONNREFUSED db-secret-host.internal:5432 ' +
+          'postgresql://leak_user:leak_password@db-secret-host.internal:5432/leak_db',
+      ),
+      { code: 'ECONNREFUSED' },
+    );
+
+  it('returns 200 with no-store when SELECT 1 succeeds', async () => {
+    const query = vi.spyOn(pool, 'query').mockResolvedValue({ rows: [{ '?column?': 1 }] } as never);
+
+    const response = await request(app).get('/api/_readiness');
+
+    expect(response.status).toBe(200);
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.body).toEqual({ ok: true, service: 'aidtrace-wallet-api', database: 'ready' });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledWith('SELECT 1');
+  });
+
+  it('returns a generic 503 that never echoes the driver error', async () => {
+    vi.spyOn(pool, 'query').mockRejectedValue(leakyError());
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const response = await request(app).get('/api/_readiness');
+
+    expect(response.status).toBe(503);
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.body).toEqual({ ok: false, error: 'database_unavailable' });
+    for (const secret of [
+      'postgresql://',
+      'db-secret-host',
+      'leak_user',
+      'leak_password',
+      'leak_db',
+      'ECONNREFUSED',
+    ]) {
+      expect(response.text).not.toContain(secret);
+    }
+    expect(JSON.stringify(log.mock.calls)).not.toContain('db-secret-host');
+  });
+
+  it('times out a hung query to 503 within the readiness bound', async () => {
+    vi.spyOn(pool, 'query').mockReturnValue(new Promise(() => {}) as never);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const started = Date.now();
+    const response = await request(app).get('/api/_readiness');
+    const elapsed = Date.now() - started;
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ ok: false, error: 'database_unavailable' });
+    expect(elapsed).toBeGreaterThanOrEqual(databaseReadinessTimeoutMs - 50);
+    expect(elapsed).toBeLessThan(databaseReadinessTimeoutMs + 1_500);
+  });
+
+  it('keeps /api/_healthcheck at 200 without touching the database', async () => {
+    const query = vi.spyOn(pool, 'query').mockRejectedValue(leakyError());
+    const connect = vi.spyOn(pool, 'connect');
+
+    const response = await request(app).get('/api/_healthcheck');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ ok: true, service: 'aidtrace-wallet-api' });
+    expect(query).not.toHaveBeenCalled();
+    expect(connect).not.toHaveBeenCalled();
   });
 });
 

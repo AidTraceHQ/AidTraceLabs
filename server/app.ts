@@ -1,11 +1,12 @@
 import { integerEnvironmentVariable } from './environment.js';
 import express, { type ErrorRequestHandler } from 'express';
 import { authRouter } from './auth.js';
-import { cors } from './http-security.js';
+import { cors, noStore } from './http-security.js';
 import { apiIpRateLimit, authIpRateLimit, publicReadIpRateLimit } from './rate-limits.js';
 import { recordsRouter } from './records.js';
 import { notificationsRouter } from './notifications-router.js';
-import { databaseUnavailableResponse } from './database-errors.js';
+import { checkDatabaseReadiness, databaseUnavailableResponse } from './database-errors.js';
+import { pool } from './db.js';
 
 const app = express();
 
@@ -21,6 +22,16 @@ app.use(notificationsRouter);
 
 app.get('/api/_healthcheck', publicReadIpRateLimit, (_request, response) => {
   response.set('Cache-Control', 'no-store').json({ ok: true, service: 'aidtrace-wallet-api' });
+});
+
+app.get('/api/_readiness', publicReadIpRateLimit, noStore, async (_request, response) => {
+  // The probe's own deadline bounds the wait; the pool's query_timeout later frees a hung client.
+  const readiness = await checkDatabaseReadiness(() => pool.query('SELECT 1'));
+  if (readiness.ready) {
+    response.json({ ok: true, service: 'aidtrace-wallet-api', database: 'ready' });
+    return;
+  }
+  response.status(503).json({ ok: false, error: 'database_unavailable' });
 });
 
 app.use((_request, response) => {

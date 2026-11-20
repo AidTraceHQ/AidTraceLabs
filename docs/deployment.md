@@ -74,6 +74,19 @@ The delivery host needs outbound HTTPS to the public internet. Egress firewall r
 
 The UI/API support testnet and mainnet selection. Use testnet for development and tests. Mainnet verification reads public Horizon data, but the application does not send payments. Never describe a matching transaction as proof of identity, consent, intended use, or impact.
 
+## Health probes
+
+The API exposes two unauthenticated probes. Both send `Cache-Control: no-store` and share the public-read IP rate limit, so set `PUBLIC_READ_RATE_LIMIT_MAX` high enough for the probe frequency.
+
+| Probe                   | Use for                                    | Touches the database | Responses                                                                                                                 |
+| ----------------------- | ------------------------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/_healthcheck` | Liveness (restart a stuck process)         | No                   | `200` while the process can serve HTTP                                                                                    |
+| `GET /api/_readiness`   | Readiness and load-balancer traffic gating | Yes, one `SELECT 1`  | `200` when PostgreSQL answers; `503` with `{"ok":false,"error":"database_unavailable"}` when the query fails or times out |
+
+The readiness query runs through the shared pool with its own two-second bound (`databaseReadinessTimeoutMs` in `server/database-errors.ts`), so a hung database yields `503` after about two seconds. Give the orchestrator's probe a timeout of at least three seconds so it receives that `503` rather than timing out itself. The `503` body never includes the driver error, host, user, database name, or connection string; the server logs only the failure kind and error class.
+
+Do not point a liveness probe at `/api/_readiness`: a database outage would then restart healthy API processes without fixing anything.
+
 ## Operations still required
 
-Configure PostgreSQL network restrictions, encrypted backups and tested restore procedures, monitoring, rate limits for public reads, and database readiness checks. `/api/_healthcheck` reports process liveness only. Production hosting, backups, restore, and browser cookie behavior have not been exercised as part of this repository work.
+Configure PostgreSQL network restrictions, encrypted backups and tested restore procedures, monitoring, and rate limits for public reads. Wire the orchestrator or load balancer to the [health probes](#health-probes): `/api/_healthcheck` for liveness and `/api/_readiness` for readiness. Production hosting, backups, restore, and browser cookie behavior have not been exercised as part of this repository work.
