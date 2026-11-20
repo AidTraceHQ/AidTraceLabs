@@ -311,10 +311,12 @@ async function writeAudit(
   actor: string,
   recordId?: string,
   subject?: string,
+  metadata?: Record<string, string>,
 ) {
   await client.query(
-    `INSERT INTO audit_events (id, action, actor_wallet, subject_wallet, record_id, summary)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
+    `INSERT INTO audit_events
+       (id, action, actor_wallet, subject_wallet, record_id, summary, metadata_json)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
     [
       randomBytes(16).toString('hex'),
       action,
@@ -322,6 +324,7 @@ async function writeAudit(
       subject || null,
       recordId || null,
       summary.slice(0, 1000),
+      JSON.stringify(metadata || {}),
     ],
   );
 }
@@ -1250,6 +1253,15 @@ router.post('/api/admin/roles', noStore, async (request, response) => {
     error(response, 400, 'Valid wallet address and role required.');
     return;
   }
+  if (body.reason !== undefined && typeof body.reason !== 'string') {
+    error(response, 400, 'Role change reason must be text.');
+    return;
+  }
+  if (typeof body.reason === 'string' && body.reason.length > 500) {
+    error(response, 400, 'Role change reason must be 500 characters or fewer.');
+    return;
+  }
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
   if (address === current.session.address && role !== 'admin') {
     error(response, 409, 'You cannot demote your own active admin wallet.');
     return;
@@ -1290,6 +1302,11 @@ router.post('/api/admin/roles', noStore, async (request, response) => {
       current.session.address,
       undefined,
       address,
+      {
+        oldRole: old.rows[0]?.role || 'donor',
+        newRole: role,
+        reason,
+      },
     );
     await client.query('COMMIT');
   } catch (errorValue) {
@@ -1311,6 +1328,16 @@ router.delete('/api/admin/roles/:address', noStore, async (request, response) =>
     error(response, 400, 'Invalid wallet address.');
     return;
   }
+  const body = isObject(request.body) ? request.body : {};
+  if (body.reason !== undefined && typeof body.reason !== 'string') {
+    error(response, 400, 'Role change reason must be text.');
+    return;
+  }
+  if (typeof body.reason === 'string' && body.reason.length > 500) {
+    error(response, 400, 'Role change reason must be 500 characters or fewer.');
+    return;
+  }
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
   if (address === current.session.address) {
     error(response, 409, 'Cannot remove your own active admin role.');
     return;
@@ -1339,6 +1366,11 @@ router.delete('/api/admin/roles/:address', noStore, async (request, response) =>
       current.session.address,
       undefined,
       address,
+      {
+        oldRole,
+        newRole: 'donor',
+        reason,
+      },
     );
     await client.query('COMMIT');
   } catch (errorValue) {
@@ -1412,11 +1444,14 @@ router.get('/api/audit', noStore, async (request, response) => {
       action: string;
       summary: string;
       actor_wallet: string | null;
+      subject_wallet: string | null;
       record_id: string | null;
+      metadata_json: Record<string, string>;
       created_at: Date | string;
     }
   >(
-    `SELECT ae.id, ae.action, ae.summary, ae.actor_wallet, ae.record_id, ae.created_at
+    `SELECT ae.id, ae.action, ae.summary, ae.actor_wallet, ae.subject_wallet, ae.record_id,
+            ae.metadata_json, ae.created_at
      FROM audit_events ae`,
     conditions,
     values,
@@ -1429,6 +1464,14 @@ router.get('/api/audit', noStore, async (request, response) => {
     action: row.action,
     summary: row.summary,
     address: row.actor_wallet || '',
+    ...(row.action === 'wallet_role_changed' || row.action === 'wallet_role_removed'
+      ? {
+          subjectAddress: row.subject_wallet || '',
+          oldRole: row.metadata_json.oldRole || '',
+          newRole: row.metadata_json.newRole || '',
+          reason: row.metadata_json.reason || '',
+        }
+      : {}),
     recordId: row.record_id || undefined,
     createdAt: timestamp(row.created_at)!,
   }));

@@ -1020,6 +1020,80 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     await pool.end();
   });
 
+  it('exposes role-change context and accepts an empty optional reason', async () => {
+    const session = await login(admin);
+    const subject = Keypair.random();
+    wallets.add(subject.publicKey());
+
+    const overLengthReason = await request(app)
+      .post('/api/admin/roles')
+      .set('Origin', origin)
+      .set('Cookie', session.cookie)
+      .send({
+        csrfToken: session.csrfToken,
+        address: subject.publicKey(),
+        role: 'organization',
+        reason: 'x'.repeat(501),
+      });
+    expect(overLengthReason.status).toBe(400);
+
+    const changed = await request(app)
+      .post('/api/admin/roles')
+      .set('Origin', origin)
+      .set('Cookie', session.cookie)
+      .send({
+        csrfToken: session.csrfToken,
+        address: subject.publicKey(),
+        role: 'organization',
+        reason: 'Approved organization onboarding',
+      });
+    expect(changed.status).toBe(200);
+
+    const changedAgain = await request(app)
+      .post('/api/admin/roles')
+      .set('Origin', origin)
+      .set('Cookie', session.cookie)
+      .send({
+        csrfToken: session.csrfToken,
+        address: subject.publicKey(),
+        role: 'beneficiary',
+        reason: '',
+      });
+    expect(changedAgain.status).toBe(200);
+
+    const audit = await request(app)
+      .get('/api/audit')
+      .query({ action: 'wallet_role_changed', address: session.address, limit: '100' })
+      .set('Cookie', session.cookie);
+    expect(audit.status).toBe(200);
+    const roleEvents = audit.body.entries.filter(
+      (event: { subjectAddress?: string }) => event.subjectAddress === subject.publicKey(),
+    );
+    expect(roleEvents).toHaveLength(2);
+    expect(roleEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          address: session.address,
+          subjectAddress: subject.publicKey(),
+          oldRole: 'donor',
+          newRole: 'organization',
+          reason: 'Approved organization onboarding',
+        }),
+        expect.objectContaining({
+          address: session.address,
+          subjectAddress: subject.publicKey(),
+          oldRole: 'organization',
+          newRole: 'beneficiary',
+          reason: '',
+        }),
+      ]),
+    );
+    for (const event of roleEvents) {
+      expect(typeof event.createdAt).toBe('string');
+      expect(Number.isNaN(Date.parse(event.createdAt))).toBe(false);
+    }
+  });
+
   it('reports duplicate hashes and aborts migration 002 before creating the unique constraint', async () => {
     const client = await pool.connect();
     const hash = 'a'.repeat(64);
