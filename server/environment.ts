@@ -1,4 +1,5 @@
 import { config } from 'dotenv';
+import { parseNotificationConfig } from './notification-config.js';
 
 config({ path: ['.env.local', '.env'] });
 
@@ -65,6 +66,8 @@ export function validateEnvironment(environment: NodeJS.ProcessEnv = process.env
   integerEnvironmentVariable('AUTH_RATE_LIMIT_WINDOW_MS', 15 * 60 * 1000, 1, environment);
   integerEnvironmentVariable('AUTH_RATE_LIMIT_MAX', 20, 1, environment);
   integerEnvironmentVariable('TRUST_PROXY_HOPS', 0, 0, environment);
+  // Throws on an invalid flag, a missing or reused encryption key, or out-of-range limits.
+  parseNotificationConfig(environment);
 
   const publicAppOrigin = environment.PUBLIC_APP_ORIGIN;
   if (publicAppOrigin) {

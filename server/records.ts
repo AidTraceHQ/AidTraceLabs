@@ -4,11 +4,12 @@ import { StrKey } from '@stellar/stellar-sdk';
 import type { PoolClient, QueryResultRow } from 'pg';
 import { csrfMatches, getSession, rateLimit } from './auth.js';
 import { pool, withTransaction } from './db.js';
-import { noStore, requireAllowedOrigin } from './http-security.js';
+import { auditSecurityRejection, noStore, requireAllowedOrigin } from './http-security.js';
 import { resolvePseudonymSecret } from './pseudonym.js';
 import { checkTransaction, type Verification } from './stellar-verification.js';
 import { retryReadOnlyDatabase } from './database-errors.js';
 import { publicReadIpRateLimit } from './rate-limits.js';
+import { enqueueRecordEvent, enqueueStatusChange, lockRecordStatus } from './notifications.js';
 
 type Role = 'donor' | 'organization' | 'beneficiary' | 'admin';
 type Network = 'testnet' | 'mainnet';
@@ -310,10 +311,12 @@ async function writeAudit(
   actor: string,
   recordId?: string,
   subject?: string,
+  metadata?: Record<string, string>,
 ) {
   await client.query(
-    `INSERT INTO audit_events (id, action, actor_wallet, subject_wallet, record_id, summary)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
+    `INSERT INTO audit_events
+       (id, action, actor_wallet, subject_wallet, record_id, summary, metadata_json)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
     [
       randomBytes(16).toString('hex'),
       action,
@@ -321,6 +324,7 @@ async function writeAudit(
       subject || null,
       recordId || null,
       summary.slice(0, 1000),
+      JSON.stringify(metadata || {}),
     ],
   );
 }
@@ -376,11 +380,19 @@ async function assertAdminRemains(
   if (!targetLosesAdmin || !admins.has(targetAddress)) return true;
   if (admins.size < 2) {
     await client.query('ROLLBACK');
+    auditSecurityRejection({
+      category: 'authorization_denial',
+      actorWallet: callerAddress,
+    });
     error(response, 409, lastAdminMessage);
     return false;
   }
   if (!admins.has(callerAddress)) {
     await client.query('ROLLBACK');
+    auditSecurityRejection({
+      category: 'authorization_denial',
+      actorWallet: callerAddress,
+    });
     error(response, 403, forbiddenRoleMessage);
     return false;
   }
@@ -399,19 +411,30 @@ async function authorize(
     return null;
   }
   if (allowedRoles && !allowedRoles.includes(current.session.role)) {
+    auditSecurityRejection({
+      category: 'authorization_denial',
+      actorWallet: current.session.address,
+    });
     error(response, 403, forbiddenRoleMessage);
     return null;
   }
-  if (
-    write &&
-    (!requireAllowedOrigin(request, response) ||
-      !csrfMatches(request.body?.csrfToken, current.session.csrfTokenHash))
-  ) {
-    if (!response.headersSent)
+  if (write) {
+    if (!requireAllowedOrigin(request, response)) return null;
+    if (!csrfMatches(request.body?.csrfToken, current.session.csrfTokenHash)) {
+      auditSecurityRejection({
+        category: 'csrf_denial',
+        actorWallet: current.session.address,
+      });
       error(response, 403, 'CSRF check failed. Refresh the app and retry.');
-    return null;
+      return null;
+    }
   }
   if (write && !(await rateLimit('write:' + current.session.address, 60, 60 * 1000))) {
+    auditSecurityRejection({
+      category: 'rate_limit',
+      scope: 'session_write',
+      actorWallet: current.session.address,
+    });
     error(response, 429, 'Write rate limit reached. Retry in a minute.');
     return null;
   }
@@ -710,6 +733,7 @@ async function storeVerification(
   amountStroops: string | null,
   assetCode: string | null,
 ) {
+  const previousStatus = await lockRecordStatus(client, recordId);
   await client.query(
     `INSERT INTO verification_results
        (id, aid_record_id, status, differences_json, reason, ledger,
@@ -741,6 +765,7 @@ async function storeVerification(
      WHERE id = $1`,
     [recordId, status],
   );
+  await enqueueStatusChange(client, recordId, previousStatus);
 }
 
 async function cachedVerification(id: string): Promise<boolean> {
@@ -933,6 +958,7 @@ router.post('/api/records', noStore, async (request, response) => {
         current.session.address,
         id,
       );
+      await enqueueRecordEvent(client, 'record.created', id);
     });
   } catch (writeError) {
     if (uniqueViolation(writeError)) {
@@ -970,6 +996,11 @@ router.post('/api/records/:id/verify', noStore, async (request, response) => {
   const current = await authorize(request, response, undefined, true);
   if (!current) return;
   if (!(await rateLimit('record-verify:' + current.session.address, 30, 60 * 1000))) {
+    auditSecurityRejection({
+      category: 'rate_limit',
+      scope: 'record_verify_wallet',
+      actorWallet: current.session.address,
+    });
     error(response, 429, 'Verification rate limit reached. Retry in a minute.');
     return;
   }
@@ -1025,6 +1056,10 @@ router.put('/api/records/:id', noStore, async (request, response) => {
     current.session.role !== 'admin' &&
     existing.record.organization !== current.session.address
   ) {
+    auditSecurityRejection({
+      category: 'authorization_denial',
+      actorWallet: current.session.address,
+    });
     error(response, 403, 'Organizations can edit only their own records.');
     return;
   }
@@ -1093,6 +1128,7 @@ router.put('/api/records/:id', noStore, async (request, response) => {
           current.session.address,
           existing.record.id,
         );
+        await enqueueRecordEvent(client, 'record.updated', existing.record.id);
       }
       return update;
     });
@@ -1145,6 +1181,10 @@ router.post('/api/records/:id/void', noStore, async (request, response) => {
     current.session.role !== 'admin' &&
     existing.record.organization !== current.session.address
   ) {
+    auditSecurityRejection({
+      category: 'authorization_denial',
+      actorWallet: current.session.address,
+    });
     error(response, 403, 'Organizations can void only their own records.');
     return;
   }
@@ -1174,6 +1214,7 @@ router.post('/api/records/:id/void', noStore, async (request, response) => {
         current.session.address,
         existing.record.id,
       );
+      await enqueueRecordEvent(client, 'record.voided', existing.record.id);
     }
     return update;
   });
@@ -1244,7 +1285,20 @@ router.post('/api/admin/roles', noStore, async (request, response) => {
     error(response, 400, 'Valid wallet address and role required.');
     return;
   }
+  if (body.reason !== undefined && typeof body.reason !== 'string') {
+    error(response, 400, 'Role change reason must be text.');
+    return;
+  }
+  if (typeof body.reason === 'string' && body.reason.length > 500) {
+    error(response, 400, 'Role change reason must be 500 characters or fewer.');
+    return;
+  }
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
   if (address === current.session.address && role !== 'admin') {
+    auditSecurityRejection({
+      category: 'authorization_denial',
+      actorWallet: current.session.address,
+    });
     error(response, 409, 'You cannot demote your own active admin wallet.');
     return;
   }
@@ -1284,6 +1338,11 @@ router.post('/api/admin/roles', noStore, async (request, response) => {
       current.session.address,
       undefined,
       address,
+      {
+        oldRole: old.rows[0]?.role || 'donor',
+        newRole: role,
+        reason,
+      },
     );
     await client.query('COMMIT');
   } catch (errorValue) {
@@ -1305,7 +1364,21 @@ router.delete('/api/admin/roles/:address', noStore, async (request, response) =>
     error(response, 400, 'Invalid wallet address.');
     return;
   }
+  const body = isObject(request.body) ? request.body : {};
+  if (body.reason !== undefined && typeof body.reason !== 'string') {
+    error(response, 400, 'Role change reason must be text.');
+    return;
+  }
+  if (typeof body.reason === 'string' && body.reason.length > 500) {
+    error(response, 400, 'Role change reason must be 500 characters or fewer.');
+    return;
+  }
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
   if (address === current.session.address) {
+    auditSecurityRejection({
+      category: 'authorization_denial',
+      actorWallet: current.session.address,
+    });
     error(response, 409, 'Cannot remove your own active admin role.');
     return;
   }
@@ -1333,6 +1406,11 @@ router.delete('/api/admin/roles/:address', noStore, async (request, response) =>
       current.session.address,
       undefined,
       address,
+      {
+        oldRole,
+        newRole: 'donor',
+        reason,
+      },
     );
     await client.query('COMMIT');
   } catch (errorValue) {
@@ -1406,11 +1484,14 @@ router.get('/api/audit', noStore, async (request, response) => {
       action: string;
       summary: string;
       actor_wallet: string | null;
+      subject_wallet: string | null;
       record_id: string | null;
+      metadata_json: Record<string, string>;
       created_at: Date | string;
     }
   >(
-    `SELECT ae.id, ae.action, ae.summary, ae.actor_wallet, ae.record_id, ae.created_at
+    `SELECT ae.id, ae.action, ae.summary, ae.actor_wallet, ae.subject_wallet, ae.record_id,
+            ae.metadata_json, ae.created_at
      FROM audit_events ae`,
     conditions,
     values,
@@ -1423,6 +1504,14 @@ router.get('/api/audit', noStore, async (request, response) => {
     action: row.action,
     summary: row.summary,
     address: row.actor_wallet || '',
+    ...(row.action === 'wallet_role_changed' || row.action === 'wallet_role_removed'
+      ? {
+          subjectAddress: row.subject_wallet || '',
+          oldRole: row.metadata_json.oldRole || '',
+          newRole: row.metadata_json.newRole || '',
+          reason: row.metadata_json.reason || '',
+        }
+      : {}),
     recordId: row.record_id || undefined,
     createdAt: timestamp(row.created_at)!,
   }));
@@ -1444,4 +1533,4 @@ router.get('/api/audit', noStore, async (request, response) => {
   );
 });
 
-export { router as recordsRouter, validateRecord, amountToStroops, stroopsToAmount };
+export { router as recordsRouter, authorize, validateRecord, amountToStroops, stroopsToAmount };
