@@ -1053,6 +1053,17 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     }
   });
 
+  it('should have an index for wallet_roles sorting by updated_at DESC and wallet_address DESC', async () => {
+    const result = await pool.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes WHERE tablename = 'wallet_roles'`,
+    );
+    expect(
+      result.rows.some(({ indexdef }) =>
+        indexdef.includes('btree (updated_at DESC, wallet_address DESC)'),
+      ),
+    ).toBe(true);
+  });
+
   it('creates a single-use wallet session, enforces CSRF, expires challenges, and logs out', async () => {
     const wallet = Keypair.random();
     const session = await login(wallet);
