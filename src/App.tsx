@@ -81,6 +81,26 @@ type AidRecord = {
   voidedAt?: string;
   version: number;
 };
+type PublicVerificationRecord = {
+  id: string;
+  network: Network;
+  asset: string;
+  assetIssuer?: string;
+  amount: string;
+  status: Verification;
+  date: string;
+  organizationName?: string;
+  verification?: {
+    status: Verification;
+    checkedAt: string;
+    differences: string[];
+    createdAt?: string;
+    sourceAccount?: string;
+    amount?: string;
+    asset?: string;
+    assetIssuer?: string;
+  };
+};
 type ActivityItem = {
   id: string;
   hash: string;
@@ -260,7 +280,7 @@ export default function App() {
     'transparency' | 'activity' | 'beneficiary' | 'admin' | 'record'
   >(() => (parseRecordIdFromUrl() ? 'record' : 'transparency'));
   const [publicRecordId, setPublicRecordId] = useState<string | null>(parseRecordIdFromUrl);
-  const [publicRecord, setPublicRecord] = useState<AidRecord | null>(null);
+  const [publicRecord, setPublicRecord] = useState<PublicVerificationRecord | null>(null);
   const [publicRecordLoading, setPublicRecordLoading] = useState(false);
   const [publicRecordError, setPublicRecordError] = useState('');
   const [records, setRecords] = useState<AidRecord[]>([]);
@@ -463,7 +483,7 @@ export default function App() {
     setPublicRecordLoading(true);
     setPublicRecordError('');
     try {
-      const response = await api.getPublicRecord<AidRecord>(id);
+      const response = await api.getPublicRecord<PublicVerificationRecord>(id);
       setPublicRecord(response.data.record);
     } catch (e) {
       setPublicRecord(null);
@@ -1604,10 +1624,7 @@ export default function App() {
               <div className="empty-state record-not-found" role="alert">
                 <CircleAlert size={28} />
                 <b>Record not found</b>
-                <p>
-                  {publicRecordError ||
-                    'The requested aid record could not be found or the identifier is invalid.'}
-                </p>
+                <p>The requested public record could not be found or its identifier is invalid.</p>
                 <button className="button primary compact" type="button" onClick={navigateToHome}>
                   Return to public ledger
                 </button>
@@ -1617,11 +1634,8 @@ export default function App() {
                 <div className="section-head">
                   <div>
                     <p className="eyebrow">PUBLIC VERIFICATION RECORD</p>
-                    <h2>{publicRecord.purpose}</h2>
-                    <p>
-                      Shareable, read-only public record with on-chain payment evidence. No sign-in
-                      required.
-                    </p>
+                    <h2>Record verification</h2>
+                    <p>Shareable, read-only transaction verification. No sign-in required.</p>
                   </div>
                   <div className="section-actions">
                     <button
@@ -1629,15 +1643,16 @@ export default function App() {
                       type="button"
                       onClick={() => {
                         const url =
-                          window.location.origin + '/records/' + encodeURIComponent(publicRecord.id);
+                          window.location.origin +
+                          '/records/' +
+                          encodeURIComponent(publicRecord.id);
                         navigator.clipboard.writeText(url).then(
                           () => notify('Shareable record URL copied to clipboard.'),
                           () => setError('Could not copy URL to clipboard.'),
                         );
                       }}
                     >
-                      <Copy size={14} />
-                      Copy link
+                      <Copy size={14} /> Copy link
                     </button>
                     <button
                       className="button secondary compact"
@@ -1680,140 +1695,53 @@ export default function App() {
                   </div>
                   <div>
                     <dt>Organization</dt>
-                    <dd>
-                      {publicRecord.organizationName || 'Organization'}
-                      <small className="subcell">{publicRecord.organization}</small>
-                    </dd>
+                    <dd>{publicRecord.organizationName || 'Organization'}</dd>
                   </div>
                   <div>
                     <dt>Disbursement date</dt>
                     <dd>{publicRecord.date}</dd>
                   </div>
-                  <div>
-                    <dt>Beneficiary</dt>
-                    <dd>
-                      {publicRecord.recipientAddress ? (
-                        <>
-                          {publicRecord.recipient}
-                          <small className="subcell">{publicRecord.recipientAddress}</small>
-                        </>
-                      ) : (
-                        <>
-                          {publicRecord.recipient}
-                          <small className="subcell">
-                            Pseudonymous by default (withheld without consent)
-                          </small>
-                        </>
-                      )}
-                    </dd>
-                  </div>
-                  <div className="transaction-detail">
-                    <dt>Transaction</dt>
-                    <dd className="transaction-value">
-                      {publicRecord.txHash ? (
-                        <span className="transaction-hash-row">
-                          <code className="transaction-hash">{publicRecord.txHash}</code>
-                          <button
-                            className="icon-button copy-transaction"
-                            type="button"
-                            aria-label="Copy transaction hash"
-                            title="Copy transaction hash"
-                            onClick={() => void copyTransactionHash(publicRecord.txHash)}
-                          >
-                            <Copy size={14} />
-                          </button>
-                        </span>
-                      ) : (
-                        <span className="muted">Hidden for beneficiary privacy</span>
-                      )}
-                    </dd>
-                  </div>
-                  {publicRecord.voidReason && (
-                    <div>
-                      <dt>Void reason</dt>
-                      <dd>{publicRecord.voidReason}</dd>
-                    </div>
-                  )}
-                  {publicRecord.voidedAt && (
-                    <div>
-                      <dt>Voided at</dt>
-                      <dd>{new Date(publicRecord.voidedAt).toLocaleString()}</dd>
-                    </div>
-                  )}
                 </dl>
 
                 <div className="checked-fields-section">
-                  <h3>Checked payment fields</h3>
+                  <h3>Checked transaction fields</h3>
                   <p className="muted">
-                    Verification compares the recorded disbursement data against the on-chain
-                    Stellar transaction evidence.
+                    The verifier compares the recorded payment details with the transaction data
+                    returned by the selected Stellar network.
                   </p>
                   <div className="checked-fields-grid">
                     <div className="checked-field-item">
-                      <span className="field-label">Sender (source account)</span>
+                      <span className="field-label">Network</span>
+                      <span className="field-value">Stellar {publicRecord.network}</span>
+                    </div>
+                    <div className="checked-field-item">
+                      <span className="field-label">Organization source account</span>
                       <span className="field-value">
-                        {publicRecord.verification?.sourceAccount || publicRecord.organization}
-                      </span>
-                      <span className="field-match">
-                        {publicRecord.verification?.sourceAccount &&
-                        publicRecord.verification.sourceAccount !== publicRecord.organization
-                          ? 'Mismatch with organization wallet'
-                          : 'Matches organization wallet'}
+                        {publicRecord.verification?.sourceAccount || 'Not available'}
                       </span>
                     </div>
                     <div className="checked-field-item">
-                      <span className="field-label">Recipient (destination)</span>
-                      <span className="field-value">
-                        {publicRecord.recipientAddress
-                          ? publicRecord.verification?.destination || publicRecord.recipientAddress
-                          : 'Withheld without consent'}
-                      </span>
-                      <span className="field-match">
-                        {publicRecord.recipientAddress
-                          ? 'Checked against beneficiary wallet'
-                          : 'Protected for beneficiary privacy'}
-                      </span>
-                    </div>
-                    <div className="checked-field-item">
-                      <span className="field-label">Amount</span>
+                      <span className="field-label">Checked amount</span>
                       <span className="field-value">
                         {publicRecord.verification?.amount || publicRecord.amount}{' '}
                         {publicRecord.verification?.asset || publicRecord.asset}
                       </span>
-                      <span className="field-match">
-                        {publicRecord.verification?.amount &&
-                        publicRecord.verification.amount !== publicRecord.amount
-                          ? 'Amount difference detected'
-                          : 'Matches recorded amount'}
-                      </span>
                     </div>
                     <div className="checked-field-item">
-                      <span className="field-label">Asset</span>
+                      <span className="field-label">Checked asset issuer</span>
                       <span className="field-value">
-                        {publicRecord.verification?.asset || publicRecord.asset}
-                        {publicRecord.assetIssuer ? ` (${short(publicRecord.assetIssuer)})` : ''}
+                        {publicRecord.verification?.assetIssuer ||
+                          publicRecord.assetIssuer ||
+                          'Native XLM / not applicable'}
                       </span>
-                      <span className="field-match">Matches recorded asset</span>
                     </div>
                     <div className="checked-field-item">
-                      <span className="field-label">Network</span>
-                      <span className="field-value">{publicRecord.network}</span>
-                      <span className="field-match">Verified on Stellar {publicRecord.network}</span>
-                    </div>
-                    <div className="checked-field-item">
-                      <span className="field-label">Transaction status</span>
+                      <span className="field-label">Verification checked</span>
                       <span className="field-value">
-                        {publicRecord.status === 'verified'
-                          ? 'Confirmed successful on-chain'
-                          : publicRecord.status === 'mismatch'
-                            ? 'Transaction found with field discrepancies'
-                            : publicRecord.status === 'not-found'
-                              ? 'Transaction not found on this network'
-                              : publicRecord.status === 'voided'
-                                ? 'Record voided'
-                                : 'Unverified'}
+                        {publicRecord.verification?.checkedAt
+                          ? new Date(publicRecord.verification.checkedAt).toLocaleString()
+                          : 'No verification check available'}
                       </span>
-                      <span className="field-match">Outcome: {labelStatus(publicRecord.status)}</span>
                     </div>
                   </div>
                 </div>
@@ -1821,69 +1749,35 @@ export default function App() {
                 {publicRecord.verification?.differences &&
                   publicRecord.verification.differences.length > 0 && (
                     <div className="diff-box">
-                      <b>Mismatch details</b>
+                      <b>Reported differences</b>
                       <ul>
-                        {publicRecord.verification.differences.map((diff, index) => (
-                          <li key={index}>{diff}</li>
+                        {publicRecord.verification.differences.map((difference, index) => (
+                          <li key={index}>{difference}</li>
                         ))}
                       </ul>
-                      {mismatchDetails(publicRecord).length > 0 && (
-                        <div className="mismatch-comparisons">
-                          {mismatchDetails(publicRecord).map((detail) => (
-                            <div className="mismatch-row" key={detail.field}>
-                              <b>{detail.field}</b>
-                              <span>
-                                <small>Expected</small>
-                                {detail.expected}
-                              </span>
-                              <span>
-                                <small>Found</small>
-                                {detail.found}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
                     </div>
                   )}
-
-                {publicRecord.txHash && (
-                  <div className="detail-actions">
-                    <a
-                      className="explorer-link"
-                      href={
-                        publicRecord.verification?.link ||
-                        explorer(publicRecord.network, publicRecord.txHash)
-                      }
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      View on Stellar Expert <ExternalLink size={13} />
-                    </a>
-                  </div>
-                )}
 
                 <div className="verification-limits-card">
                   <div className="limits-header">
                     <ShieldCheck size={18} />
-                    <h3>What on-chain verification does not prove</h3>
+                    <h3>What verification does not prove</h3>
                   </div>
                   <p>
-                    A verified status confirms only that the recorded payment fields (sender,
-                    recipient, amount, and asset) matched a successful transaction on the public
-                    Stellar network.
+                    A verified outcome means the checked transaction fields matched the recorded
+                    payment details in a successful transaction reported by the selected Stellar
+                    network.
                   </p>
                   <p>
-                    <strong>Verification does NOT prove:</strong>
+                    <strong>Verification does not independently prove:</strong>
                   </p>
                   <ul>
-                    <li>The real-world identity of the beneficiary</li>
-                    <li>Beneficiary consent to publish private identifiers</li>
+                    <li>The real-world identity of any recipient</li>
+                    <li>That a particular person controls a wallet</li>
                     <li>
-                      How funds were spent or whether aid reached the intended recipient in the
-                      real world
+                      How funds were spent or whether aid achieved its intended real-world result
                     </li>
-                    <li>Real-world program impact or effectiveness</li>
+                    <li>Program impact or effectiveness</li>
                   </ul>
                 </div>
               </>

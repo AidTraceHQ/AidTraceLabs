@@ -140,6 +140,16 @@
 .public-record-page {
   display: grid;
   gap: 20px;
+  min-width: 0;
+}
+.public-record-page .section-head {
+  align-items: flex-start;
+}
+.public-record-details code {
+  overflow-wrap: anywhere;
+}
+.public-record-page .checked-field-item {
+  min-width: 0;
 }
 .public-record-details {
   border-bottom: 1px solid #e8eaf1;
