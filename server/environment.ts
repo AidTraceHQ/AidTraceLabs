@@ -50,6 +50,9 @@ export function validateEnvironment(environment: NodeJS.ProcessEnv = process.env
   } else if (environment.NODE_ENV !== 'development') {
     missing.push('PSEUDONYM_SECRET');
   }
+  if (sessionSecret && pseudonymSecret && sessionSecret === pseudonymSecret) {
+    throw new Error('SESSION_SECRET and PSEUDONYM_SECRET must be different values.');
+  }
 
   const port = integerEnvironmentVariable('PORT', 3001, 1, environment);
   if (port > 65535) {
