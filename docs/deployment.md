@@ -47,7 +47,9 @@ The API limits use express-rate-limit's default in-memory store, which is per pr
 
 ## Migrations and administrator seed
 
-Run `npm run db:migrate` as a deployment step before starting the API. Migrations should be run by an appropriately restricted deployment identity. Set `ADMIN_WALLET` to a public G-address and run `npm run db:seed-admin` for first-time bootstrap; do not expose this command as a public route.
+Run `npm run db:migrate` as a deployment step before starting the API. Migrations should be run by an appropriately restricted deployment identity. For first-time bootstrap, set `ADMIN_WALLET` to a public G-address and set both `ADMIN_SEED_TARGET` and `ADMIN_SEED_CONFIRM_TARGET` to the same target label: `dev`, `test`, `demo`, or `production`. For example, production bootstrap requires both values to be `production`; the script exits without connecting to PostgreSQL if the target is missing, unsupported, or not confirmed exactly.
+
+The target label is the operator's confirmation; it is not inferred from or verified against `DATABASE_URL`. Before running, verify the selected database/branch in the secret manager or provider console. The script prints only the target label and wallet suffix, never the connection string or full address. Run `npm run db:seed-admin` as a one-time operator command; do not expose it as a public route or set these confirmation values in the application's runtime environment.
 
 ## Scheduled verification refresh
 

@@ -13,11 +13,16 @@ type SeedPool = {
   end(): Promise<void>;
 };
 
+const seedTargets = ['dev', 'test', 'demo', 'production'] as const;
+const seedTargetSet: ReadonlySet<string> = new Set(seedTargets);
+
 const connectionTimeoutMs = 10_000;
 
 export async function seedAdmin(
   address: string,
   databaseUrl: string,
+  target: string | undefined,
+  confirmedTarget: string | undefined,
   createPool: (config: PoolConfig) => SeedPool = (config) => new Pool(config),
 ): Promise<string> {
   if (!address) {
@@ -28,6 +33,12 @@ export async function seedAdmin(
   }
   if (!StrKey.isValidEd25519PublicKey(address)) {
     throw new Error('ADMIN_WALLET must contain a Stellar public G-address.');
+  }
+  if (!target || !seedTargetSet.has(target)) {
+    throw new Error(`ADMIN_SEED_TARGET must be one of: ${seedTargets.join(', ')}.`);
+  }
+  if (confirmedTarget !== target) {
+    throw new Error('ADMIN_SEED_CONFIRM_TARGET must exactly match ADMIN_SEED_TARGET.');
   }
 
   const pool = createPool({
@@ -62,15 +73,18 @@ export async function seedAdmin(
       client.release();
     }
 
-    return `Admin role set for G...${address.slice(-6)}`;
+    return `Admin role set for target ${target}; wallet G...${address.slice(-6)}`;
   } finally {
     await pool.end();
   }
 }
 
-async function main(): Promise<void> {
-  const address = process.env.ADMIN_WALLET;
-  const databaseUrl = process.env.DATABASE_URL;
+export async function main(
+  environment: NodeJS.ProcessEnv = process.env,
+  createPool?: (config: PoolConfig) => SeedPool,
+): Promise<void> {
+  const address = environment.ADMIN_WALLET;
+  const databaseUrl = environment.DATABASE_URL;
   try {
     if (!address) {
       throw new Error('ADMIN_WALLET is required.');
@@ -78,7 +92,15 @@ async function main(): Promise<void> {
     if (!databaseUrl) {
       throw new Error('DATABASE_URL is required.');
     }
-    console.log(await seedAdmin(address, databaseUrl));
+    console.log(
+      await seedAdmin(
+        address,
+        databaseUrl,
+        environment.ADMIN_SEED_TARGET,
+        environment.ADMIN_SEED_CONFIRM_TARGET,
+        createPool,
+      ),
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     let safeMessage = message;
