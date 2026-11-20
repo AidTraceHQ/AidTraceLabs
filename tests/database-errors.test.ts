@@ -1,7 +1,11 @@
 import request from 'supertest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../server/app.js';
-import { isTransientDatabaseError } from '../server/database-errors.js';
+import {
+  checkDatabaseReadiness,
+  databaseReadinessTimeoutMs,
+  isTransientDatabaseError,
+} from '../server/database-errors.js';
 import { pool } from '../server/db.js';
 
 function errorWithCode(code: string): Error {
@@ -101,5 +105,74 @@ describe('transient database failures on public GET routes', () => {
     expect(response.status).toBe(503);
     expect(response.body).toEqual({ error: 'database_unavailable' });
     expect(JSON.stringify(response.body)).not.toContain('do-not-leak-this');
+  });
+});
+
+describe('checkDatabaseReadiness', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('reports ready when the probe resolves', async () => {
+    await expect(checkDatabaseReadiness(async () => ({ rows: [] }))).resolves.toEqual({
+      ready: true,
+    });
+  });
+
+  it('uses a timeout of a few seconds by default', () => {
+    expect(databaseReadinessTimeoutMs).toBeGreaterThanOrEqual(1_000);
+    expect(databaseReadinessTimeoutMs).toBeLessThanOrEqual(5_000);
+  });
+
+  it('classifies a transient failure as unavailable and logs only the error class', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const error = Object.assign(new Error('connect ECONNREFUSED secret-host:5432'), {
+      code: 'ECONNREFUSED',
+    });
+
+    await expect(checkDatabaseReadiness(() => Promise.reject(error))).resolves.toEqual({
+      ready: false,
+      reason: 'unavailable',
+    });
+    expect(log).toHaveBeenCalledWith('Database readiness check failed (unavailable, Error)');
+    expect(JSON.stringify(log.mock.calls)).not.toContain('secret-host');
+  });
+
+  it('classifies a non-transient failure as error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      checkDatabaseReadiness(() => Promise.reject(errorWithCode('28P01'))),
+    ).resolves.toEqual({ ready: false, reason: 'error' });
+  });
+
+  it('classifies a synchronous throw as a failure instead of rejecting', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      checkDatabaseReadiness(() => {
+        throw new Error('sync');
+      }),
+    ).resolves.toEqual({ ready: false, reason: 'error' });
+  });
+
+  it('times out a probe that never settles', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const started = Date.now();
+
+    await expect(checkDatabaseReadiness(() => new Promise(() => {}), 25)).resolves.toEqual({
+      ready: false,
+      reason: 'timeout',
+    });
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it('ignores a probe that rejects after the timeout', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const late = new Promise((_resolve, reject) => setTimeout(() => reject(new Error('late')), 50));
+
+    await expect(checkDatabaseReadiness(() => late, 10)).resolves.toEqual({
+      ready: false,
+      reason: 'timeout',
+    });
+    await expect(late).rejects.toThrow('late');
   });
 });
