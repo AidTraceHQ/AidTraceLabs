@@ -256,10 +256,18 @@ function useDialogFocus(
   }, [open, dialogRef, onClose, returnTo]);
 }
 
+
 function parseRecordIdFromUrl(): string | null {
   if (typeof window === 'undefined') return null;
-  const path = window.location.pathname;
+
+  // Handle server-side rendering and test environments
+  // where window.location may be unavailable.
+  const location = window.location;
+  if (!location) return null;
+
+  const path = location.pathname ?? '';
   const match = path.match(/^\/records\/([^/?#]+)/);
+
   if (match) {
     try {
       return decodeURIComponent(match[1]);
@@ -267,11 +275,15 @@ function parseRecordIdFromUrl(): string | null {
       return match[1];
     }
   }
-  const params = new URLSearchParams(window.location.search);
+
+  const params = new URLSearchParams(location.search ?? '');
   const qRecord = params.get('record');
+
   if (qRecord) return qRecord;
+
   return null;
 }
+
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -646,17 +658,17 @@ export default function App() {
           ),
           fetch(
             base +
-              '/accounts/' +
-              encodeURIComponent(address) +
-              '/transactions?order=desc&limit=50&include_failed=true',
+            '/accounts/' +
+            encodeURIComponent(address) +
+            '/transactions?order=desc&limit=50&include_failed=true',
             { headers: { Accept: 'application/json' } },
           ),
         ]);
         if (accountRes.status === 404)
           throw new Error(
             'Wallet account not found on ' +
-              selectedNetwork +
-              '. Switch network or fund the Testnet account.',
+            selectedNetwork +
+            '. Switch network or fund the Testnet account.',
           );
         if (!accountRes.ok || !paymentsRes.ok || !txRes.ok)
           throw new Error('Horizon is unavailable. Your records are safe; activity will retry.');
@@ -738,9 +750,9 @@ export default function App() {
     try {
       source = new EventSource(
         horizon[network] +
-          '/accounts/' +
-          encodeURIComponent(session.address) +
-          '/payments?cursor=now',
+        '/accounts/' +
+        encodeURIComponent(session.address) +
+        '/payments?cursor=now',
       );
       source.onopen = () => {
         setActivityStream('live');
@@ -797,10 +809,10 @@ export default function App() {
       if (walletNet !== network)
         throw new Error(
           'Wrong network: AidTrace is on ' +
-            network +
-            ' but Freighter is on ' +
-            walletNet +
-            '. Switch one network and reconnect.',
+          network +
+          ' but Freighter is on ' +
+          walletNet +
+          '. Switch one network and reconnect.',
         );
       const challenge = await api.post<{ message: string; challengeId: string }>(
         '/api/auth/challenge',
