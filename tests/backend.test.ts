@@ -335,6 +335,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .set('Cookie', session.cookie)
       .send({ csrfToken: session.csrfToken, address: wallet.publicKey(), role });
     expect(result.status).toBe(200);
+    expect(result.body).toEqual({ ok: true });
   }
 
   async function createRecord(
@@ -882,12 +883,22 @@ integration('Database-backed wallet, records, and authorization flows', () => {
 
     const removable = Keypair.random();
     await assignRole(adminSession, removable, 'donor');
+    await assignRole(adminSession, removable, 'beneficiary');
     const removed = await request(app)
       .delete('/api/admin/roles/' + encodeURIComponent(removable.publicKey()))
       .set('Origin', origin)
       .set('Cookie', adminSession.cookie)
       .send({ csrfToken: adminSession.csrfToken });
     expect(removed.status).toBe(200);
+    expect(removed.body).toEqual({ ok: true });
+
+    const missingRole = await request(app)
+      .delete('/api/admin/roles/' + encodeURIComponent(Keypair.random().publicKey()))
+      .set('Origin', origin)
+      .set('Cookie', adminSession.cookie)
+      .send({ csrfToken: adminSession.csrfToken });
+    expect(missingRole.status).toBe(404);
+    expect(missingRole.body).toEqual({ error: 'Explicit role not found.' });
 
     const selfRemove = await request(app)
       .delete('/api/admin/roles/' + encodeURIComponent(admin.publicKey()))
