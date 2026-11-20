@@ -18,3 +18,10 @@ Run `npm run dev` and check both dialogs: "Add record" (New disbursement, signed
 - [ ] Focus outlines stay visible on dialog controls.
 - [ ] After closing, `inert` is removed: the header, filters, and table can be clicked and tabbed to again.
 - [ ] Other flows (sign-in, filters, ledger Previous and Next, admin Load more, toasts, and admin tabs) behave as before.
+
+## New record default network
+
+- [ ] Switch the top-level Stellar network selector to Mainnet, then click "Add record". The form's Network field opens showing Mainnet.
+- [ ] Change the form's Network field to Testnet and trigger unrelated re-renders (type in other form fields, switch Asset between USDC and XLM). The form's Network field stays on Testnet.
+- [ ] Publish the record and confirm the saved record in the ledger uses the exact network shown in the form at submit time.
+- [ ] Reopen "Add record" after saving or closing the dialog; the Network field initializes to the current top-level selected network (while other typed draft values remain when reopening after Cancel/close).
