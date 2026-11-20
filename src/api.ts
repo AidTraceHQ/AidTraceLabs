@@ -119,11 +119,48 @@ async function getAllPages<TItem>(
   return { data: { ...finalPage, [collection]: combined } };
 }
 
+async function getPage<TItem>(
+  path: string,
+  collection: CollectionKey,
+  options: { limit?: number; cursor?: string | null; seenCursors?: Set<string> } = {},
+): Promise<ApiResponse<PageEnvelope & Partial<Record<CollectionKey, TItem[]>>>> {
+  const url = new URL(path, window.location.origin);
+  url.searchParams.set('limit', String(options.limit ?? 20));
+  if (options.cursor) url.searchParams.set('cursor', options.cursor);
+  else url.searchParams.delete('cursor');
+
+  const response = await request<PageEnvelope & Partial<Record<CollectionKey, TItem[]>>>(
+    'GET',
+    url.pathname + url.search,
+  );
+  const page = response.data;
+  const items = page[collection];
+  if (!Array.isArray(items)) {
+    throw new Error('The API response is missing its ' + collection + ' collection.');
+  }
+  // Treat the cursor as an opaque string. Do not base64-decode or parse it in the UI.
+  const cursor = typeof page.nextCursor === 'string' ? page.nextCursor : null;
+  if (page.hasMore === true && !cursor) {
+    throw new Error('The API returned an incomplete pagination cursor.');
+  }
+  if (cursor && options.seenCursors?.has(cursor)) {
+    throw new Error('The API returned a repeated pagination cursor.');
+  }
+  if (cursor && options.seenCursors) options.seenCursors.add(cursor);
+  return { data: page };
+}
+
+/** Reset a ledger cursor stack to the first page (no cursor). */
+export function resetCursorStack(): Array<string | null> {
+  return [null];
+}
+
 export const api = {
   get: <T>(path: string) => request<T>('GET', path),
   getRecord: <T>(id: string) =>
     request<{ record: T }>('GET', '/api/records/' + encodeURIComponent(id)),
   getAllPages,
+  getPage,
   post: <T = unknown>(path: string, body?: unknown) => request<T>('POST', path, body),
   put: <T = unknown>(path: string, body?: unknown) => request<T>('PUT', path, body),
   delete: <T = unknown>(path: string, body?: unknown) => request<T>('DELETE', path, body),
