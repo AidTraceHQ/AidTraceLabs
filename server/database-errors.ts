@@ -99,3 +99,44 @@ export function databaseUnavailableResponse(
   logDatabaseFailure(method, route, error);
   return { status: 503, body: { error: 'database_unavailable' } };
 }
+
+// Upper bound for one readiness probe. Kept below common orchestrator probe timeouts so a hung
+// database is reported as not ready by the API rather than as a probe timeout.
+export const databaseReadinessTimeoutMs = 2_000;
+
+export class DatabaseReadinessTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Database readiness probe exceeded ${timeoutMs}ms.`);
+    this.name = 'DatabaseReadinessTimeoutError';
+  }
+}
+
+export type DatabaseReadiness =
+  { ready: true } | { ready: false; reason: 'timeout' | 'unavailable' | 'error' };
+
+// Runs `probe` with its own deadline and classifies the outcome. Never rethrows, and the result
+// carries no driver error text, so callers can return it to unauthenticated clients.
+export async function checkDatabaseReadiness(
+  probe: () => Promise<unknown>,
+  timeoutMs: number = databaseReadinessTimeoutMs,
+): Promise<DatabaseReadiness> {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new DatabaseReadinessTimeoutError(timeoutMs)), timeoutMs);
+  });
+  try {
+    await Promise.race([probe(), deadline]);
+    return { ready: true };
+  } catch (error) {
+    const reason =
+      error instanceof DatabaseReadinessTimeoutError
+        ? 'timeout'
+        : isTransientDatabaseError(error)
+          ? 'unavailable'
+          : 'error';
+    console.error(`Database readiness check failed (${reason}, ${errorClass(error)})`);
+    return { ready: false, reason };
+  } finally {
+    clearTimeout(timer);
+  }
+}
