@@ -15,6 +15,20 @@ AidTrace handles wallet public addresses, session state, role assignments, aid r
 - Consent-off public projections use an HMAC pseudonym keyed by `PSEUDONYM_SECRET`, separate from `SESSION_SECRET`, and withhold selected direct identifiers. This is data minimization, not anonymity.
 - Rate limits use database-backed counters for selected authentication, write, and verification operations. Responses disable caching.
 
+## Security rejection audit
+
+The audit log records these fixed rejection categories:
+
+- `failed_signature`: an invalid or malformed wallet signature.
+- `invalid_challenge`, `expired_challenge`, and `replayed_challenge`: invalid, expired, or previously consumed authentication challenges.
+- `csrf_denial` and `origin_denial`: failed CSRF or configured Origin checks.
+- `authorization_denial`: a known session was denied by a role, ownership, or self-protection check.
+- `rate_limit`: a configured rate limit was exceeded. Its optional `scope` is one of `api_ip`, `auth_ip`, `public_read_ip`, `challenge_wallet`, `verify_wallet`, `session_write`, or `record_verify_wallet`.
+
+These events use the fixed action `security_<category>`, a fixed summary, and JSON metadata containing only the category and, for rate limits, its fixed scope. An actor wallet is included only when it is a valid, already-known public wallet; subject and record fields remain empty. No origin, IP address, URL, request path, request body, signature, cookie, CSRF token, or database connection information is recorded.
+
+Audit writes are capped at 10 per category and one-minute window (per rate-limit scope for `rate_limit`, per server process). Further events in that bucket are suppressed until the next window. Audit writes are best-effort: a write failure emits only a fixed generic server log message, is not retried, and does not change the rejection response. Rate-limit/database failures do not initiate an audit-write retry chain.
+
 ## Outbound notifications
 
 Webhook alerts are opt-in and off by default. With `NOTIFICATIONS_ENABLED` unset or `false`, the `/api/notifications/*` routes fall through to the normal 404 response, record writes run no notification queries, and the delivery job exits without touching the notification tables.
@@ -50,6 +64,6 @@ Set distinct random values of at least 32 bytes for `SESSION_SECRET` and `PSEUDO
 
 ## Known gaps
 
-General per-IP/read rate limiting, last-admin protection, complete failure/rejection audit coverage, database-enforced append-only audit access, and explicit evidence of beneficiary consent are not implemented. Webhook receivers are responsible for their own replay storage, and email alerts are not implemented. Public records can still reveal amounts, dates, purposes, organization, and creator. A `verified` status does not establish identity, consent, purpose, or impact.
+General per-IP/read rate limiting, last-admin protection, database-enforced append-only audit access, and explicit evidence of beneficiary consent are not implemented. Rejection auditing is limited to the bounded categories described above; it is not a full request or intrusion log. Webhook receivers are responsible for their own replay storage, and email alerts are not implemented. Public records can still reveal amounts, dates, purposes, organization, and creator. A `verified` status does not establish identity, consent, purpose, or impact.
 
 Report vulnerabilities privately using [SECURITY.md](../SECURITY.md). Use a dedicated test database and Stellar testnet for authorized checks; do not test against a live deployment without permission.

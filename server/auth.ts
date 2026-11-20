@@ -2,7 +2,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import { Router, type Request, type Response } from 'express';
 import { Keypair, StrKey } from '@stellar/stellar-sdk';
 import { pool, withTransaction } from './db.js';
-import { noStore, requireAllowedOrigin } from './http-security.js';
+import { auditSecurityRejection, noStore, requireAllowedOrigin } from './http-security.js';
 import { retryReadOnlyDatabase } from './database-errors.js';
 
 type Network = 'testnet' | 'mainnet';
@@ -177,12 +177,14 @@ router.post('/api/auth/challenge', noStore, async (request, response) => {
   const address = body?.address;
   const network = body?.network;
   if (!validAddress(address) || !validNetwork(network)) {
+    auditSecurityRejection({ category: 'invalid_challenge' });
     response
       .status(400)
       .json({ error: 'A valid Stellar public address and network are required.' });
     return;
   }
   if (!(await rateLimit('challenge:' + address, 8, 15 * 60 * 1000))) {
+    auditSecurityRejection({ category: 'rate_limit', scope: 'challenge_wallet' });
     response.status(429).json({ error: 'Too many challenges. Wait a few minutes and try again.' });
     return;
   }
@@ -217,14 +219,19 @@ router.post('/api/auth/verify', noStore, async (request, response) => {
     typeof challengeId !== 'string' ||
     !/^[a-f0-9]{48}$/.test(challengeId) ||
     !validAddress(address) ||
-    !validNetwork(network) ||
-    typeof signature !== 'string' ||
-    signature.length > 1000
+    !validNetwork(network)
   ) {
+    auditSecurityRejection({ category: 'invalid_challenge' });
+    response.status(400).json({ error: 'Invalid signature verification request.' });
+    return;
+  }
+  if (typeof signature !== 'string' || signature.length > 1000) {
+    auditSecurityRejection({ category: 'failed_signature' });
     response.status(400).json({ error: 'Invalid signature verification request.' });
     return;
   }
   if (!(await rateLimit('verify:' + address, 12, 60 * 1000))) {
+    auditSecurityRejection({ category: 'rate_limit', scope: 'verify_wallet' });
     response.status(429).json({ error: 'Too many signature attempts. Wait a minute and retry.' });
     return;
   }
@@ -241,24 +248,41 @@ router.post('/api/auth/verify', noStore, async (request, response) => {
   );
   const challenge = challengeResult.rows[0];
   if (!challenge) {
+    auditSecurityRejection({ category: 'invalid_challenge' });
     response.status(401).json({ error: 'Challenge not found. Request a fresh challenge.' });
     return;
   }
   if (challenge.expires_at.getTime() <= Date.now()) {
+    auditSecurityRejection({
+      category: 'expired_challenge',
+      actorWallet: challenge.wallet_address,
+    });
     response.status(401).json({ error: 'Challenge expired. Request a fresh challenge.' });
     return;
   }
   if (challenge.used_at) {
+    auditSecurityRejection({
+      category: 'replayed_challenge',
+      actorWallet: challenge.wallet_address,
+    });
     response
       .status(409)
       .json({ error: 'Challenge was already used. Connect again for a new challenge.' });
     return;
   }
   if (challenge.wallet_address !== address || challenge.network !== network) {
+    auditSecurityRejection({
+      category: 'invalid_challenge',
+      actorWallet: challenge.wallet_address,
+    });
     response.status(401).json({ error: 'Wallet or network does not match the challenge.' });
     return;
   }
   if (!verifySep53Signature(address, challenge.signed_message, signature)) {
+    auditSecurityRejection({
+      category: 'failed_signature',
+      actorWallet: challenge.wallet_address,
+    });
     response.status(401).json({ error: 'Signature verification failed. No session was created.' });
     return;
   }
@@ -312,16 +336,28 @@ router.post('/api/auth/verify', noStore, async (request, response) => {
     return 'consumed' as const;
   });
   if (consumeOutcome === 'used') {
+    auditSecurityRejection({
+      category: 'replayed_challenge',
+      actorWallet: challenge.wallet_address,
+    });
     response
       .status(409)
       .json({ error: 'Challenge was already used. Connect again for a new challenge.' });
     return;
   }
   if (consumeOutcome === 'expired') {
+    auditSecurityRejection({
+      category: 'expired_challenge',
+      actorWallet: challenge.wallet_address,
+    });
     response.status(401).json({ error: 'Challenge expired. Request a fresh challenge.' });
     return;
   }
   if (consumeOutcome === 'invalid') {
+    auditSecurityRejection({
+      category: 'invalid_challenge',
+      actorWallet: challenge.wallet_address,
+    });
     response
       .status(401)
       .json({ error: 'Challenge expired or already used. Request a fresh challenge.' });
@@ -357,6 +393,10 @@ router.post('/api/auth/logout', noStore, async (request, response) => {
   if (!requireAllowedOrigin(request, response)) return;
   const current = await getSession(request);
   if (current && !csrfMatches(request.body?.csrfToken, current.session.csrfTokenHash)) {
+    auditSecurityRejection({
+      category: 'csrf_denial',
+      actorWallet: current.session.address,
+    });
     response.status(403).json({ error: 'CSRF check failed. Refresh the app and retry.' });
     return;
   }
@@ -385,6 +425,10 @@ router.post('/api/auth/logout-everywhere', noStore, async (request, response) =>
     return;
   }
   if (!csrfMatches(request.body?.csrfToken, current.session.csrfTokenHash)) {
+    auditSecurityRejection({
+      category: 'csrf_denial',
+      actorWallet: current.session.address,
+    });
     response.status(403).json({ error: 'CSRF check failed. Refresh the app and retry.' });
     return;
   }

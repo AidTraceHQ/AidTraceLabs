@@ -4,7 +4,7 @@ import { StrKey } from '@stellar/stellar-sdk';
 import type { PoolClient, QueryResultRow } from 'pg';
 import { csrfMatches, getSession, rateLimit } from './auth.js';
 import { pool, withTransaction } from './db.js';
-import { noStore, requireAllowedOrigin } from './http-security.js';
+import { auditSecurityRejection, noStore, requireAllowedOrigin } from './http-security.js';
 import { resolvePseudonymSecret } from './pseudonym.js';
 import { checkTransaction, type Verification } from './stellar-verification.js';
 import { retryReadOnlyDatabase } from './database-errors.js';
@@ -380,11 +380,19 @@ async function assertAdminRemains(
   if (!targetLosesAdmin || !admins.has(targetAddress)) return true;
   if (admins.size < 2) {
     await client.query('ROLLBACK');
+    auditSecurityRejection({
+      category: 'authorization_denial',
+      actorWallet: callerAddress,
+    });
     error(response, 409, lastAdminMessage);
     return false;
   }
   if (!admins.has(callerAddress)) {
     await client.query('ROLLBACK');
+    auditSecurityRejection({
+      category: 'authorization_denial',
+      actorWallet: callerAddress,
+    });
     error(response, 403, forbiddenRoleMessage);
     return false;
   }
@@ -403,19 +411,30 @@ async function authorize(
     return null;
   }
   if (allowedRoles && !allowedRoles.includes(current.session.role)) {
+    auditSecurityRejection({
+      category: 'authorization_denial',
+      actorWallet: current.session.address,
+    });
     error(response, 403, forbiddenRoleMessage);
     return null;
   }
-  if (
-    write &&
-    (!requireAllowedOrigin(request, response) ||
-      !csrfMatches(request.body?.csrfToken, current.session.csrfTokenHash))
-  ) {
-    if (!response.headersSent)
+  if (write) {
+    if (!requireAllowedOrigin(request, response)) return null;
+    if (!csrfMatches(request.body?.csrfToken, current.session.csrfTokenHash)) {
+      auditSecurityRejection({
+        category: 'csrf_denial',
+        actorWallet: current.session.address,
+      });
       error(response, 403, 'CSRF check failed. Refresh the app and retry.');
-    return null;
+      return null;
+    }
   }
   if (write && !(await rateLimit('write:' + current.session.address, 60, 60 * 1000))) {
+    auditSecurityRejection({
+      category: 'rate_limit',
+      scope: 'session_write',
+      actorWallet: current.session.address,
+    });
     error(response, 429, 'Write rate limit reached. Retry in a minute.');
     return null;
   }
@@ -977,6 +996,11 @@ router.post('/api/records/:id/verify', noStore, async (request, response) => {
   const current = await authorize(request, response, undefined, true);
   if (!current) return;
   if (!(await rateLimit('record-verify:' + current.session.address, 30, 60 * 1000))) {
+    auditSecurityRejection({
+      category: 'rate_limit',
+      scope: 'record_verify_wallet',
+      actorWallet: current.session.address,
+    });
     error(response, 429, 'Verification rate limit reached. Retry in a minute.');
     return;
   }
@@ -1032,6 +1056,10 @@ router.put('/api/records/:id', noStore, async (request, response) => {
     current.session.role !== 'admin' &&
     existing.record.organization !== current.session.address
   ) {
+    auditSecurityRejection({
+      category: 'authorization_denial',
+      actorWallet: current.session.address,
+    });
     error(response, 403, 'Organizations can edit only their own records.');
     return;
   }
@@ -1153,6 +1181,10 @@ router.post('/api/records/:id/void', noStore, async (request, response) => {
     current.session.role !== 'admin' &&
     existing.record.organization !== current.session.address
   ) {
+    auditSecurityRejection({
+      category: 'authorization_denial',
+      actorWallet: current.session.address,
+    });
     error(response, 403, 'Organizations can void only their own records.');
     return;
   }
@@ -1263,6 +1295,10 @@ router.post('/api/admin/roles', noStore, async (request, response) => {
   }
   const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
   if (address === current.session.address && role !== 'admin') {
+    auditSecurityRejection({
+      category: 'authorization_denial',
+      actorWallet: current.session.address,
+    });
     error(response, 409, 'You cannot demote your own active admin wallet.');
     return;
   }
@@ -1339,6 +1375,10 @@ router.delete('/api/admin/roles/:address', noStore, async (request, response) =>
   }
   const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
   if (address === current.session.address) {
+    auditSecurityRejection({
+      category: 'authorization_denial',
+      actorWallet: current.session.address,
+    });
     error(response, 409, 'Cannot remove your own active admin role.');
     return;
   }

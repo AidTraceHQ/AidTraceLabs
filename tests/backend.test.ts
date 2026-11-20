@@ -1020,6 +1020,210 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     await pool.end();
   });
 
+  it('audits security rejections with bounded, non-sensitive fields', async () => {
+    const startedAt = new Date();
+    const rawBodyMarker = 'raw-request-body-marker';
+    const originDeniedBody = {
+      address: Keypair.random().publicKey(),
+      network: 'testnet',
+      marker: rawBodyMarker,
+    };
+    const untrustedOrigin = await request(app)
+      .post('/api/auth/challenge')
+      .set('Origin', 'https://attacker.example')
+      .send(originDeniedBody);
+    expect(untrustedOrigin.status).toBe(403);
+
+    const invalidChallengeSignature = Buffer.alloc(64).toString('base64');
+    const invalidChallengeBody = {
+      challengeId: randomBytes(24).toString('hex'),
+      address: Keypair.random().publicKey(),
+      network: 'testnet',
+      signature: invalidChallengeSignature,
+      marker: rawBodyMarker,
+    };
+    const invalidChallenge = await request(app)
+      .post('/api/auth/verify')
+      .set('Origin', origin)
+      .send(invalidChallengeBody);
+    expect(invalidChallenge.status).toBe(401);
+
+    const signatureWallet = Keypair.random();
+    wallets.add(signatureWallet.publicKey());
+    const signatureChallenge = await request(app)
+      .post('/api/auth/challenge')
+      .set('Origin', origin)
+      .send({ address: signatureWallet.publicKey(), network: 'testnet' });
+    expect(signatureChallenge.status).toBe(200);
+    const signatureDigest = createHash('sha256')
+      .update('Stellar Signed Message:\n')
+      .update(signatureChallenge.body.message)
+      .digest();
+    const rejectedSignature = Buffer.from(Keypair.random().sign(signatureDigest)).toString(
+      'base64',
+    );
+    const rejectedSignatureBody = {
+      challengeId: signatureChallenge.body.challengeId,
+      address: signatureWallet.publicKey(),
+      network: 'testnet',
+      signature: rejectedSignature,
+      marker: rawBodyMarker,
+    };
+    const failedSignature = await request(app)
+      .post('/api/auth/verify')
+      .set('Origin', origin)
+      .send(rejectedSignatureBody);
+    expect(failedSignature.status).toBe(401);
+
+    const expiredWallet = Keypair.random();
+    wallets.add(expiredWallet.publicKey());
+    const expiredChallenge = await request(app)
+      .post('/api/auth/challenge')
+      .set('Origin', origin)
+      .send({ address: expiredWallet.publicKey(), network: 'testnet' });
+    await pool.query(
+      "UPDATE challenges SET expires_at = NOW() - INTERVAL '1 second' WHERE challenge_id = $1",
+      [expiredChallenge.body.challengeId],
+    );
+    const expiredDigest = createHash('sha256')
+      .update('Stellar Signed Message:\n')
+      .update(expiredChallenge.body.message)
+      .digest();
+    const expiredSignature = Buffer.from(expiredWallet.sign(expiredDigest)).toString('base64');
+    const expired = await request(app).post('/api/auth/verify').set('Origin', origin).send({
+      challengeId: expiredChallenge.body.challengeId,
+      address: expiredWallet.publicKey(),
+      network: 'testnet',
+      signature: expiredSignature,
+    });
+    expect(expired.status).toBe(401);
+
+    const replayWallet = Keypair.random();
+    const replaySession = await login(replayWallet);
+    const replayChallenge = await pool.query<{ signed_message: string }>(
+      'SELECT signed_message FROM challenges WHERE challenge_id = $1',
+      [replaySession.challengeId],
+    );
+    const replayDigest = createHash('sha256')
+      .update('Stellar Signed Message:\n')
+      .update(replayChallenge.rows[0]!.signed_message)
+      .digest();
+    const replaySignature = Buffer.from(replayWallet.sign(replayDigest)).toString('base64');
+    const replay = await request(app).post('/api/auth/verify').set('Origin', origin).send({
+      challengeId: replaySession.challengeId,
+      address: replayWallet.publicKey(),
+      network: 'testnet',
+      signature: replaySignature,
+    });
+    expect(replay.status).toBe(409);
+
+    const csrfMarker = 'csrf-token-secret-marker';
+    const csrfDeniedBody = { csrfToken: csrfMarker, marker: rawBodyMarker };
+    const csrfDenied = await request(app)
+      .post('/api/auth/logout')
+      .set('Origin', origin)
+      .set('Cookie', replaySession.cookie)
+      .send(csrfDeniedBody);
+    expect(csrfDenied.status).toBe(403);
+
+    const donor = Keypair.random();
+    const donorSession = await login(donor);
+    const unauthorizedRoleChangeBody = {
+      csrfToken: donorSession.csrfToken,
+      address: Keypair.random().publicKey(),
+      role: 'organization',
+    };
+    const unauthorizedRoleChange = await request(app)
+      .post('/api/admin/roles')
+      .set('Origin', origin)
+      .set('Cookie', donorSession.cookie)
+      .send(unauthorizedRoleChangeBody);
+    expect(unauthorizedRoleChange.status).toBe(403);
+
+    const limitedWallet = Keypair.random();
+    wallets.add(limitedWallet.publicKey());
+    for (let attempt = 0; attempt < 9; attempt += 1) {
+      const response = await request(app)
+        .post('/api/auth/challenge')
+        .set('Origin', origin)
+        .send({ address: limitedWallet.publicKey(), network: 'testnet' });
+      expect(response.status).toBe(attempt < 8 ? 200 : 429);
+    }
+
+    let rows: {
+      action: string;
+      actor_wallet: string | null;
+      subject_wallet: string | null;
+      record_id: string | null;
+      summary: string;
+      metadata_json: Record<string, string>;
+    }[] = [];
+    await vi.waitFor(
+      async () => {
+        const result = await pool.query<(typeof rows)[number]>(
+          `SELECT action, actor_wallet, subject_wallet, record_id, summary, metadata_json
+           FROM audit_events
+           WHERE action LIKE 'security_%' AND created_at >= $1`,
+          [startedAt],
+        );
+        rows = result.rows;
+        const actions = new Set(rows.map((row) => row.action));
+        for (const action of [
+          'security_failed_signature',
+          'security_invalid_challenge',
+          'security_expired_challenge',
+          'security_replayed_challenge',
+          'security_csrf_denial',
+          'security_origin_denial',
+          'security_authorization_denial',
+          'security_rate_limit',
+        ]) {
+          expect(actions.has(action)).toBe(true);
+        }
+      },
+      { timeout: 10_000 },
+    );
+
+    for (const row of rows) {
+      expect(row.action).toBe('security_' + row.metadata_json.category);
+      expect(row.summary).toBe(
+        'Security rejection: ' +
+          row.metadata_json.category +
+          (row.metadata_json.scope ? ' (' + row.metadata_json.scope + ')' : ''),
+      );
+      expect(row.subject_wallet).toBeNull();
+      expect(row.record_id).toBeNull();
+      expect(Object.keys(row.metadata_json).sort()).toEqual(
+        row.metadata_json.scope ? ['category', 'scope'] : ['category'],
+      );
+    }
+    expect(rows.find((row) => row.metadata_json.category === 'rate_limit')?.metadata_json).toEqual({
+      category: 'rate_limit',
+      scope: 'challenge_wallet',
+    });
+
+    const serializedEvents = JSON.stringify(rows);
+    for (const secret of [
+      invalidChallengeSignature,
+      rejectedSignature,
+      expiredSignature,
+      replaySignature,
+      JSON.stringify(originDeniedBody),
+      JSON.stringify(invalidChallengeBody),
+      JSON.stringify(csrfDeniedBody),
+      replaySession.cookie,
+      donorSession.cookie,
+      csrfMarker,
+      donorSession.csrfToken,
+      rawBodyMarker,
+      JSON.stringify(rejectedSignatureBody),
+      JSON.stringify(unauthorizedRoleChangeBody),
+      process.env.TEST_DATABASE_URL || 'postgresql://test-secret.invalid/database',
+    ]) {
+      expect(serializedEvents.includes(secret)).toBe(false);
+    }
+  });
+
   it('exposes role-change context and accepts an empty optional reason', async () => {
     const session = await login(admin);
     const subject = Keypair.random();
