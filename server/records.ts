@@ -9,6 +9,7 @@ import { resolvePseudonymSecret } from './pseudonym.js';
 import { checkTransaction, type Verification } from './stellar-verification.js';
 import { retryReadOnlyDatabase } from './database-errors.js';
 import { publicReadIpRateLimit } from './rate-limits.js';
+import { enqueueRecordEvent, enqueueStatusChange, lockRecordStatus } from './notifications.js';
 
 type Role = 'donor' | 'organization' | 'beneficiary' | 'admin';
 type Network = 'testnet' | 'mainnet';
@@ -710,6 +711,7 @@ async function storeVerification(
   amountStroops: string | null,
   assetCode: string | null,
 ) {
+  const previousStatus = await lockRecordStatus(client, recordId);
   await client.query(
     `INSERT INTO verification_results
        (id, aid_record_id, status, differences_json, reason, ledger,
@@ -741,6 +743,7 @@ async function storeVerification(
      WHERE id = $1`,
     [recordId, status],
   );
+  await enqueueStatusChange(client, recordId, previousStatus);
 }
 
 async function cachedVerification(id: string): Promise<boolean> {
@@ -933,6 +936,7 @@ router.post('/api/records', noStore, async (request, response) => {
         current.session.address,
         id,
       );
+      await enqueueRecordEvent(client, 'record.created', id);
     });
   } catch (writeError) {
     if (uniqueViolation(writeError)) {
@@ -1093,6 +1097,7 @@ router.put('/api/records/:id', noStore, async (request, response) => {
           current.session.address,
           existing.record.id,
         );
+        await enqueueRecordEvent(client, 'record.updated', existing.record.id);
       }
       return update;
     });
@@ -1174,6 +1179,7 @@ router.post('/api/records/:id/void', noStore, async (request, response) => {
         current.session.address,
         existing.record.id,
       );
+      await enqueueRecordEvent(client, 'record.voided', existing.record.id);
     }
     return update;
   });
@@ -1444,4 +1450,4 @@ router.get('/api/audit', noStore, async (request, response) => {
   );
 });
 
-export { router as recordsRouter, validateRecord, amountToStroops, stroopsToAmount };
+export { router as recordsRouter, authorize, validateRecord, amountToStroops, stroopsToAmount };

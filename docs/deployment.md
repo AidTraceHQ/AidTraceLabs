@@ -35,6 +35,12 @@ Run the Express API on a Node.js 20+ host/container/VM connected to PostgreSQL, 
 | `AUTH_RATE_LIMIT_WINDOW_MS`        | `/api/auth/*` per-IP rate-limit window; defaults to `900000` (15 minutes).                         |
 | `AUTH_RATE_LIMIT_MAX`              | `/api/auth/*` requests per IP per window; defaults to `20`.                                        |
 | `TRUST_PROXY_HOPS`                 | Number of trusted reverse-proxy hops; defaults to `0` (trust no forwarded client IP).              |
+| `NOTIFICATIONS_ENABLED`            | `true` turns on webhook alerts; unset or `false` keeps the API exactly as without them.            |
+| `NOTIFICATIONS_ENCRYPTION_KEY`     | Required when enabled; at least 32 random bytes, distinct from the other secrets.                  |
+| `NOTIFICATIONS_MAX_ATTEMPTS`       | Total send attempts per delivery, `1`–`10`; defaults to `5`.                                       |
+| `NOTIFICATIONS_CONNECT_TIMEOUT_MS` | TCP + TLS connect timeout per request, `100`–`30000`; defaults to `5000`.                          |
+| `NOTIFICATIONS_READ_TIMEOUT_MS`    | Response timeout after connecting, `100`–`60000`; defaults to `10000`.                             |
+| `NOTIFICATIONS_RETRY_BASE_MS`      | First retry delay before jitter, doubling per attempt and capped at one hour; defaults to `30000`. |
 
 Do not commit `.env` or paste connection strings into logs/issues. `.env.example` contains local placeholders. On Neon, point development to a dev branch and tests to a separate test branch; configure the production-host guard with the production hostname without exposing connection strings.
 
@@ -44,6 +50,7 @@ The API limits use express-rate-limit's default in-memory store, which is per pr
 
 - [ ] You must set `TRUST_PROXY_HOPS` when deployed behind a proxy; use the exact number of trusted proxy hops.
 - [ ] Confirm public-read, API, and auth per-IP limits match expected traffic and replica topology.
+- [ ] If notifications are enabled, set `NOTIFICATIONS_ENCRYPTION_KEY` and schedule `npm run notifications:deliver`.
 
 ## Migrations and administrator seed
 
@@ -56,6 +63,12 @@ There is no hosted scheduler configured. An operator may run `npm run records:re
 Each invocation considers non-voided records with a non-empty transaction hash whose latest verification is at least 24 hours old. It claims at most 50 records in PostgreSQL before calling Horizon, processes the claims sequentially, and stops after two minutes. Claims expire after three minutes if a process exits unexpectedly. Horizon requests retain the verifier's existing ten-second request timeout and operation-page limit; a transient failure is appended as `pending`, not as a final mismatch. Results are appended to `verification_results`; prior history is not edited. A concurrent invocation skips active claims. The summary logs the claimed, processed, pending, skipped, and timed-out counts.
 
 The job refreshes records when explicitly invoked; this repository does not assert that any production scheduler is running.
+
+## Webhook notification delivery
+
+Notifications are disabled unless `NOTIFICATIONS_ENABLED=true`. To enable them: run `npm run db:migrate` (migration `005_notifications` adds the endpoint and delivery tables), set a fresh `NOTIFICATIONS_ENCRYPTION_KEY`, restart the API, and schedule `npm run notifications:deliver` (for example every minute) from an environment the operator controls. Each run claims at most 25 due deliveries, sends them with the configured timeouts, prints a JSON summary of counts only, and stops after five minutes. Concurrent runs are safe. Without the job, events stay queued in `notification_deliveries`; the only request path that sends a webhook is the owner-initiated endpoint verification.
+
+The delivery host needs outbound HTTPS to the public internet. Egress firewall rules that deny private and metadata ranges are still recommended as a second layer behind the application's own address checks. Keep the encryption key in the platform's secret store; losing or rotating it means endpoints must be registered again. See [security.md](security.md#outbound-notifications) for the delivery model and recipient-verification policy.
 
 ## Network selection
 
