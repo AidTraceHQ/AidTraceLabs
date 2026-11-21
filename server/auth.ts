@@ -20,6 +20,7 @@ const router = Router();
 const cookieName = 'aidtrace_session';
 const challengeTtlMs = 5 * 60 * 1000;
 const sessionTtlMs = 7 * 24 * 60 * 60 * 1000;
+const maxActiveSessions = 5;
 const sessionSecret = process.env.SESSION_SECRET;
 const publicAppOrigin = new URL(process.env.PUBLIC_APP_ORIGIN || 'http://localhost:5173').origin;
 
@@ -171,6 +172,30 @@ async function audit(action: string, actor: string, summary: string) {
   );
 }
 
+async function evictExcessSessions(client: Parameters<typeof pool.query>[0], address: string) {
+  const result = await client.query<{ session_hash: string }>(
+    `SELECT session_hash FROM sessions
+     WHERE wallet_address = $1 AND revoked_at IS NULL
+     ORDER BY created_at DESC
+     OFFSET $2`,
+    [address, maxActiveSessions],
+  );
+  
+  if (result.rows.length > 0) {
+    const sessionHashes = result.rows.map((row) => row.session_hash);
+    await client.query(
+      `UPDATE sessions SET revoked_at = NOW()
+       WHERE session_hash = ANY($1::text[]) AND revoked_at IS NULL`,
+      [sessionHashes],
+    );
+    await client.query(
+      `INSERT INTO audit_events (id, action, actor_wallet, summary, metadata_json)
+       VALUES ($1, 'session_evicted', $2, $3, $4)`,
+      [randomBytes(16).toString('hex'), address, `Evicted ${result.rows.length} excess session(s).`, JSON.stringify({ evicted_count: result.rows.length })],
+    );
+  }
+}
+
 router.post('/api/auth/challenge', noStore, async (request, response) => {
   if (!requireAllowedOrigin(request, response)) return;
   const body = requestObject(request.body);
@@ -309,6 +334,7 @@ router.post('/api/auth/verify', noStore, async (request, response) => {
        VALUES ($1, 'wallet_authenticated', $2, $3)`,
       [randomBytes(16).toString('hex'), address, 'Wallet ownership verified on ' + network],
     );
+    await evictExcessSessions(client, address);
     return 'consumed' as const;
   });
   if (consumeOutcome === 'used') {
@@ -402,6 +428,29 @@ router.post('/api/auth/logout-everywhere', noStore, async (request, response) =>
   });
   clearSessionCookie(response);
   response.status(200).json({ ok: true });
+});
+
+router.get('/api/auth/sessions', noStore, async (request, response) => {
+  const current = await getSession(request);
+  if (!current) {
+    response.status(401).json({ error: 'Session expired. Reconnect Freighter.' });
+    return;
+  }
+  const result = await pool.query<{ session_hash: string; is_current: boolean; created_at: Date }>(
+    `SELECT session_hash, session_hash = $1 AS is_current, created_at
+     FROM sessions
+     WHERE wallet_address = $2 AND revoked_at IS NULL AND expires_at > NOW()
+     ORDER BY created_at DESC`,
+    [current.session.sessionHash, current.session.address],
+  );
+  response.status(200).json({
+    count: result.rows.length,
+    current: current.session.sessionHash,
+    sessions: result.rows.map((row) => ({
+      isCurrent: row.is_current,
+      createdAt: row.created_at.toISOString(),
+    })),
+  });
 });
 
 export { router as authRouter, getSession, rateLimit, audit, csrfMatches };

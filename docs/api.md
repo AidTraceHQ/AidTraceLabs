@@ -8,6 +8,7 @@ All API responses are configured with `Cache-Control: no-store`. Error responses
 | `POST /api/auth/challenge`         | Public, allowed Origin                        | Create a short-lived wallet challenge.                          |
 | `POST /api/auth/verify`            | Public, allowed Origin                        | Verify wallet signature and set session cookie.                 |
 | `GET /api/me`                      | Optional session                              | Return current session or `null`.                               |
+| `GET /api/auth/sessions`           | Authenticated                                 | List active sessions for the wallet and count.                  |
 | `POST /api/auth/logout`            | Optional session, Origin; CSRF when signed in | Revoke current session and clear cookie.                        |
 | `POST /api/auth/logout-everywhere` | Authenticated, CSRF                           | Revoke every session for the wallet.                            |
 | `GET /api/transparency`            | Public; optional session changes projection   | Filter and page public records and summary/facets.              |
