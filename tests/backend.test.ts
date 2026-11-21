@@ -2,6 +2,7 @@ import { createHash, createHmac } from 'node:crypto';
 import { Keypair } from '@stellar/stellar-sdk';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { cleanupEphemeralRows } from '../scripts/cleanup-ephemeral.js';
 import { applyUniqueNetworkTxHashMigration, migrate } from '../scripts/migrate.js';
 import { app } from '../server/app.js';
 import { verifySep53Signature } from '../server/auth.js';
@@ -1431,4 +1432,90 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       60_000,
     );
   });
+
+  it('cleans up only expired/revoked ephemeral rows and is idempotent', async () => {
+    const cleanupKeys = new Set<string>();
+    const future = new Date(Date.now() + 60_000);
+    const past = new Date(Date.now() - 60_000);
+    const boundary = new Date(Date.now());
+    const wallet = Keypair.random();
+    wallets.add(wallet.publicKey());
+    await pool.query('INSERT INTO users (wallet_address) VALUES ($1) ON CONFLICT DO NOTHING', [
+      wallet.publicKey(),
+    ]);
+
+    const sessionHashes = ['a'.repeat(64), 'b'.repeat(64), 'c'.repeat(64)];
+    const challengeIds = ['a'.repeat(48), 'b'.repeat(48), 'c'.repeat(48), 'd'.repeat(48)];
+    const rateKeys = ['a'.repeat(64), 'b'.repeat(64), 'c'.repeat(64)];
+    for (const key of [...sessionHashes, ...rateKeys]) cleanupKeys.add(key);
+    for (const key of challengeIds) cleanupKeys.add(key);
+
+    await pool.query(
+      `INSERT INTO sessions (session_hash, wallet_address, network, csrf_token_hash, expires_at, revoked_at)
+       VALUES
+         ($1, $2, 'testnet', $5, $3, NULL),
+         ($6, $2, 'testnet', $5, $3, NULL),
+         ($7, $2, 'testnet', $5, $3, NOW())`,
+      [sessionHashes[0], wallet.publicKey(), past, future, 'c'.repeat(64), sessionHashes[1], sessionHashes[2]],
+    );
+    await pool.query(
+      `INSERT INTO challenges (challenge_id, nonce, wallet_address, network, signed_message, expires_at, used_at)
+       VALUES
+         ($1, $5, $2, 'testnet', 'msg', $3, NULL),
+         ($6, $5, $2, 'testnet', 'msg', $4, NULL),
+         ($7, $5, $2, 'testnet', 'msg', $4, NOW()),
+         ($8, $5, $2, 'testnet', 'msg', $9, NULL)`,
+      [challengeIds[0], wallet.publicKey(), past, future, 'nonce-' + challengeIds[0], challengeIds[1], challengeIds[2], challengeIds[3], boundary],
+    );
+    await pool.query(
+      `INSERT INTO rate_limits (key_hash, window_start, request_count, expires_at)
+       VALUES
+         ($1, $4, 1, $2),
+         ($5, $4, 1, $3),
+         ($6, $4, 1, $7)`,
+      [rateKeys[0], past, future, new Date(), rateKeys[1], rateKeys[2], boundary],
+    );
+
+    const auditBefore = await pool.query<{ count: string }>(
+      'SELECT COUNT(*)::int AS count FROM audit_events',
+    );
+    const aidBefore = await pool.query<{ count: string }>(
+      'SELECT COUNT(*)::int AS count FROM aid_records',
+    );
+
+    const databaseUrl = process.env.DATABASE_URL!;
+    const first = await cleanupEphemeralRows(databaseUrl);
+
+    expect(first.sessions).toBe(2);
+    expect(first.challenges).toBe(2);
+    expect(first.rateLimits).toBe(1);
+
+    const remaining = await pool.query<{ sessions: string; challenges: string; rate_limits: string }>(
+      `SELECT
+         (SELECT COUNT(*)::int FROM sessions WHERE session_hash = ANY($1::text[])) AS sessions,
+         (SELECT COUNT(*)::int FROM challenges WHERE challenge_id = ANY($2::text[])) AS challenges,
+         (SELECT COUNT(*)::int FROM rate_limits WHERE key_hash = ANY($3::text[])) AS rate_limits`,
+      [sessionHashes, challengeIds, rateKeys],
+    );
+    expect(remaining.rows[0]).toEqual({ sessions: '1', challenges: '2', rate_limits: '2' });
+
+    const auditAfter = await pool.query<{ count: string }>(
+      'SELECT COUNT(*)::int AS count FROM audit_events',
+    );
+    const aidAfter = await pool.query<{ count: string }>(
+      'SELECT COUNT(*)::int AS count FROM aid_records',
+    );
+    expect(auditAfter.rows[0]?.count).toBe(auditBefore.rows[0]?.count);
+    expect(aidAfter.rows[0]?.count).toBe(aidBefore.rows[0]?.count);
+
+    const second = await cleanupEphemeralRows(databaseUrl);
+    expect(second).toEqual({ sessions: 0, challenges: 0, rateLimits: 0 });
+
+    for (const key of cleanupKeys) {
+      await pool.query('DELETE FROM sessions WHERE session_hash = $1', [key]);
+      await pool.query('DELETE FROM challenges WHERE challenge_id = $1', [key]);
+      await pool.query('DELETE FROM rate_limits WHERE key_hash = $1', [key]);
+    }
+    cleanupKeys.clear();
+  }, 60_000);
 });

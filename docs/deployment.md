@@ -57,6 +57,19 @@ Each invocation considers non-voided records with a non-empty transaction hash w
 
 The job refreshes records when explicitly invoked; this repository does not assert that any production scheduler is running.
 
+## Ephemeral row cleanup
+
+There is no hosted scheduler configured. An operator may run `npm run cleanup:ephemeral` as a standalone Node.js job after applying database migrations. Schedule it externally only where the operator controls the environment and can monitor its exit status.
+
+Each invocation deletes only expired or already-revoked rows from the `sessions`, `challenges`, and `rate_limits` tables in bounded batches. The default batch size is 1000 rows per table per iteration; set `CLEANUP_BATCH_SIZE` to override it (1–10000). The cleanup loops per table until no more rows match, so a single run can drain a large backlog. It is idempotent: a second run with no new expired rows deletes nothing.
+
+The cleanup targets only ephemeral rows:
+- `sessions` — rows where `expires_at < NOW()` or `revoked_at IS NOT NULL`
+- `challenges` — rows where `expires_at < NOW()` or `used_at IS NOT NULL`
+- `rate_limits` — rows where `expires_at < NOW()`
+
+Audit events, aid records, verification results, organizations, wallet roles, and unexpired rows are never touched. Each run prints only row counts in the format `sessions=N challenges=N rate_limits=N` and never row contents.
+
 ## Network selection
 
 The UI/API support testnet and mainnet selection. Use testnet for development and tests. Mainnet verification reads public Horizon data, but the application does not send payments. Never describe a matching transaction as proof of identity, consent, intended use, or impact.
