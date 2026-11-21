@@ -2,6 +2,8 @@ export interface ApiResponse<T> {
   data: T;
 }
 
+export type PublicRecordResponse<T> = { record: T };
+
 export class ApiError extends Error {
   constructor(method: string, path: string, status: number, message: string) {
     super(method + ' ' + path + ' failed (' + status + '): ' + message);
@@ -159,6 +161,8 @@ export const api = {
   get: <T>(path: string) => request<T>('GET', path),
   getRecord: <T>(id: string) =>
     request<{ record: T }>('GET', '/api/records/' + encodeURIComponent(id)),
+  getPublicRecord: <T>(id: string) =>
+    request<PublicRecordResponse<T>>('GET', '/api/records/' + encodeURIComponent(id) + '/public'),
   getAllPages,
   getPage,
   post: <T = unknown>(path: string, body?: unknown) => request<T>('POST', path, body),

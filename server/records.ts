@@ -39,6 +39,56 @@ type AidRecord = {
   version: number;
 };
 
+type PublicVerificationRecord = {
+  id: string;
+  network: Network;
+  asset: string;
+  assetIssuer?: string;
+  amount: string;
+  status: RecordStatus;
+  date: string;
+  organizationName?: string;
+  verification?: Pick<
+    Verification,
+    | 'status'
+    | 'checkedAt'
+    | 'differences'
+    | 'createdAt'
+    | 'sourceAccount'
+    | 'amount'
+    | 'asset'
+    | 'assetIssuer'
+  >;
+};
+
+function toPublicVerificationRecord(record: AidRecord): PublicVerificationRecord {
+  const verification = record.verification;
+  return {
+    id: record.id,
+    network: record.network,
+    asset: record.asset,
+    ...(record.assetIssuer ? { assetIssuer: record.assetIssuer } : {}),
+    amount: record.amount,
+    status: record.status,
+    date: record.date,
+    ...(record.organizationName ? { organizationName: record.organizationName } : {}),
+    ...(verification
+      ? {
+          verification: {
+            status: verification.status,
+            checkedAt: verification.checkedAt,
+            differences: [...verification.differences],
+            ...(verification.createdAt ? { createdAt: verification.createdAt } : {}),
+            ...(verification.sourceAccount ? { sourceAccount: verification.sourceAccount } : {}),
+            ...(verification.amount ? { amount: verification.amount } : {}),
+            ...(verification.asset ? { asset: verification.asset } : {}),
+            ...(verification.assetIssuer ? { assetIssuer: verification.assetIssuer } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
 type RecordRow = QueryResultRow & {
   id: string;
   recipient_name: string;
@@ -838,6 +888,27 @@ async function transparencyHandler(request: Request, response: Response): Promis
 
 router.get('/api/transparency', noStore, publicReadIpRateLimit, (request, response) =>
   retryReadOnlyDatabase('/api/transparency', () => transparencyHandler(request, response)),
+);
+
+router.get('/api/records/:id/public', noStore, publicReadIpRateLimit, (request, response) =>
+  retryReadOnlyDatabase('/api/records/:id/public', async () => {
+    const recordId = Array.isArray(request.params.id) ? request.params.id[0] : request.params.id;
+    if (!recordId || !/^[A-Za-z0-9_-]{1,128}$/.test(recordId)) {
+      error(response, 400, 'Invalid record identifier.');
+      return;
+    }
+    const result = await getRecord(recordId);
+    if (!result) {
+      error(response, 404, 'Record not found.');
+      return;
+    }
+    // A shareable page has a stricter, explicit allowlist than the transparency
+    // projection: consent never makes recipient identifiers or transaction locators
+    // part of this endpoint's response.
+    response.json({
+      record: toPublicVerificationRecord(publicRecord(result.record, result.consent)),
+    });
+  }),
 );
 
 router.get('/api/records/:id', noStore, publicReadIpRateLimit, (request, response) =>

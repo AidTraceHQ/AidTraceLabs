@@ -705,6 +705,16 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(verified.status).toBe(201);
     expect(verified.body.record.status).toBe('verified');
     expect(verified.body.record.verification.sourceAccount).toBe(expectedSource);
+    const publicVerified = await request(app).get(
+      '/api/records/' + encodeURIComponent(verified.body.record.id) + '/public',
+    );
+    expect(publicVerified.status).toBe(200);
+    expect(publicVerified.body.record.status).toBe('verified');
+    expect(publicVerified.body.record.verification.sourceAccount).toBe(expectedSource);
+    expect(publicVerified.body.record.verification).not.toHaveProperty('destination');
+    expect(publicVerified.body.record.verification).not.toHaveProperty('ledger');
+    expect(publicVerified.body.record).not.toHaveProperty('recipientAddress');
+    expect(publicVerified.body.record).not.toHaveProperty('txHash');
     const cached = await request(app)
       .post('/api/records/' + verified.body.record.id + '/verify')
       .set('Origin', origin)
@@ -759,6 +769,14 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       amount: '1.25',
       asset: 'XLM',
     });
+    const publicMismatchResponse = await request(app).get(
+      '/api/records/' + encodeURIComponent(mismatch.body.record.id) + '/public',
+    );
+    expect(publicMismatchResponse.status).toBe(200);
+    expect(publicMismatchResponse.body.record.status).toBe('mismatch');
+    expect(publicMismatchResponse.body.record.verification.status).toBe('mismatch');
+    expect(publicMismatchResponse.body.record.verification).not.toHaveProperty('destination');
+    expect(JSON.stringify(publicMismatchResponse.body)).not.toContain(recipient.publicKey());
 
     const adminHash = '4'.padStart(64, '0');
     transactionBodies.set(adminHash, {
@@ -953,6 +971,26 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       memo: largeId,
       memoType: 'id',
     });
+    const consentedShare = await request(app).get(
+      '/api/records/' + encodeURIComponent(consented.body.record.id) + '/public',
+    );
+    expect(consentedShare.status).toBe(200);
+    expect(consentedShare.body.record).toMatchObject({
+      id: consented.body.record.id,
+      network: 'testnet',
+      asset: 'XLM',
+      amount: '1.25',
+      status: 'verified',
+    });
+    expect(consentedShare.body.record).not.toHaveProperty('recipient');
+    expect(consentedShare.body.record).not.toHaveProperty('recipientAddress');
+    expect(consentedShare.body.record).not.toHaveProperty('txHash');
+    expect(consentedShare.body.record).not.toHaveProperty('note');
+    expect(consentedShare.body.record.verification).not.toHaveProperty('memo');
+    expect(consentedShare.body.record.verification).not.toHaveProperty('memoType');
+    expect(consentedShare.body.record.verification).not.toHaveProperty('destination');
+    expect(consentedShare.body.record.verification).not.toHaveProperty('link');
+    expect(consentedShare.body.record.verification).not.toHaveProperty('ledger');
   }, 120_000);
 
   it('returns a filter-bounded total on transparency pages without walking every record', async () => {
@@ -1050,6 +1088,51 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(singlePublicResponse.body.record.recipientAddress).toBe('');
     expect(singlePublicResponse.body.record.txHash).toBe('');
     expect(singlePublicResponse.body.record.note).toBe('');
+
+    const publicPageResponse = await request(app).get(
+      '/api/records/' + encodeURIComponent(privateRecord.body.record.id) + '/public',
+    );
+    expect(publicPageResponse.status).toBe(200);
+    expect(publicPageResponse.body.record).toMatchObject({
+      id: privateRecord.body.record.id,
+      network: 'testnet',
+      asset: 'XLM',
+      amount: '1.25',
+      status: 'unverified',
+      date: '2026-01-15',
+    });
+    for (const withheld of [
+      'recipient',
+      'recipientAddress',
+      'txHash',
+      'note',
+      'purpose',
+      'organization',
+      'createdBy',
+      'recipientConsent',
+      'voidReason',
+      'voidedAt',
+      'version',
+    ]) {
+      expect(publicPageResponse.body.record).not.toHaveProperty(withheld);
+    }
+    expect(JSON.stringify(publicPageResponse.body)).not.toContain('Confidential beneficiary');
+    expect(JSON.stringify(publicPageResponse.body)).not.toContain(recipient.publicKey());
+    expect(JSON.stringify(publicPageResponse.body)).not.toContain('Private contact note');
+
+    const sameWithSession = await request(app)
+      .get('/api/records/' + encodeURIComponent(privateRecord.body.record.id) + '/public')
+      .set('Cookie', session.cookie);
+    expect(sameWithSession.status).toBe(200);
+    expect(sameWithSession.body).toEqual(publicPageResponse.body);
+
+    const unknownPublic = await request(app).get('/api/records/not-a-record/public');
+    expect(unknownPublic.status).toBe(404);
+    expect(unknownPublic.body).toEqual({ error: 'Record not found.' });
+
+    const malformedPublic = await request(app).get('/api/records/%2F/public');
+    expect([400, 404]).toContain(malformedPublic.status);
+    expect(JSON.stringify(malformedPublic.body)).not.toContain(recipient.publicKey());
 
     const missingRecord = await request(app).get('/api/records/not-a-record');
     expect(missingRecord.status).toBe(404);
@@ -1187,6 +1270,14 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(voided.body.record.status).toBe('voided');
     expect(voided.body.record.voidReason).toBe('Duplicate entry');
     expect(voided.body.record.voidedAt).toBeTruthy();
+    const publicVoided = await request(app).get(
+      '/api/records/' + encodeURIComponent(owned.body.record.id) + '/public',
+    );
+    expect(publicVoided.status).toBe(200);
+    expect(publicVoided.body.record.status).toBe('voided');
+    expect(publicVoided.body.record).not.toHaveProperty('voidReason');
+    expect(publicVoided.body.record).not.toHaveProperty('voidedAt');
+    expect(JSON.stringify(publicVoided.body)).not.toContain('Duplicate entry');
     const visibleVoid = await request(app)
       .get('/api/transparency')
       .query({ status: 'voided', q: 'Owner record' });
