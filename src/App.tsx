@@ -7,7 +7,11 @@ import {
   throwFreighterError,
   waitForFreighter,
 } from './freighter';
-import { readNetworkPreference, writeNetworkPreference } from './network-preference';
+import {
+  describeNetworkEnvironment,
+  readNetworkPreference,
+  writeNetworkPreference,
+} from './network-preference';
 import { readThemePreference, writeThemePreference, type Theme } from './theme-preference';
 import {
   Activity,
@@ -1131,6 +1135,7 @@ export default function App() {
       (session.role === 'organization' && selected.organization === session.address));
   const selectedDifferences = selected?.verification?.differences || [];
   const selectedMismatchDetails = selected ? mismatchDetails(selected) : [];
+  const environment = describeNetworkEnvironment(network);
 
   function sortRecords(field: string) {
     if (sortBy === field) setSortDir((current) => (current === 'asc' ? 'desc' : 'asc'));
@@ -1254,6 +1259,17 @@ export default function App() {
           )}
         </div>
       </header>
+
+      <div className={`network-banner ${network}`} role="status" aria-live="polite">
+        {environment.isTestnet ? (
+          <CircleAlert size={16} aria-hidden="true" />
+        ) : (
+          <ShieldCheck size={16} aria-hidden="true" />
+        )}
+        <span>
+          <strong>{environment.label} environment.</strong> {environment.message}
+        </span>
+      </div>
 
       <main>
         <section className="hero">
