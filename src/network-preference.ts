@@ -1,6 +1,12 @@
 export type StellarNetwork = 'testnet' | 'mainnet';
 type StorageLike = Pick<Storage, 'getItem' | 'setItem'>;
 
+export type NetworkEnvironment = {
+  isTestnet: boolean;
+  label: string;
+  message: string;
+};
+
 const storageKey = 'aidtrace.network';
 
 function isStellarNetwork(value: string | null): value is StellarNetwork {
@@ -22,4 +28,18 @@ export function writeNetworkPreference(network: StellarNetwork, storage?: Storag
   } catch {
     // Keep the in-memory selection when browser storage is unavailable.
   }
+}
+
+export function describeNetworkEnvironment(network: StellarNetwork): NetworkEnvironment {
+  return network === 'testnet'
+    ? {
+        isTestnet: true,
+        label: 'Testnet',
+        message: 'Test network. Data shown here is for testing and is not real aid disbursement.',
+      }
+    : {
+        isTestnet: false,
+        label: 'Mainnet',
+        message: 'Live Stellar mainnet.',
+      };
 }
