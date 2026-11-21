@@ -19,7 +19,7 @@ The Vite development server listens on port 5173 and proxies `/api` to port 3001
 
 ## Data Model
 
-All application tables use PostgreSQL. Migration `001_initial_schema.sql` creates the tables and indexes below. The migration runner separately creates `schema_migrations` to track applied files. Migration `002_unique_network_tx_hash.sql` normalizes transaction hashes and adds the unique network/hash constraint. No foreign key declares `ON DELETE CASCADE`; PostgreSQL's default referential behavior applies.
+All application tables use PostgreSQL. Migration `001_initial_schema.sql` creates the tables and indexes below. The migration runner separately creates `schema_migrations` to track applied files. Migration `002_unique_network_tx_hash.sql` normalizes transaction hashes and adds the unique network/hash constraint. Migration `003_wallet_roles_updated_index.sql` adds an index for the admin role-list ordering. No foreign key declares `ON DELETE CASCADE`; PostgreSQL's default referential behavior applies.
 
 ### `schema_migrations`
 
@@ -51,7 +51,7 @@ Indexes: primary-key index on `wallet_address`.
 | `updated_by`     | `TEXT`        | `NOT NULL`; foreign key to `users.wallet_address`                    |
 | `updated_at`     | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()`                                             |
 
-Wallets without a row are treated as donors. Index: `wallet_roles_role_wallet_idx(role, wallet_address)`.
+Wallets without a row are treated as donors. Indexes: `wallet_roles_role_wallet_idx(role, wallet_address)` for role filters and `wallet_roles_updated_wallet_idx(updated_at DESC, wallet_address DESC)` for the admin role-list ordering.
 
 ### `organizations`
 
@@ -140,8 +140,12 @@ Indexes: `aid_records_created_idx(created_at DESC, id DESC)`, `aid_records_organ
 | `amount_stroops`         | `BIGINT`      | Nullable                                                                          |
 | `asset_code`             | `TEXT`        | Nullable                                                                          |
 | `asset_issuer`           | `TEXT`        | Nullable                                                                          |
+| `memo`                   | `TEXT`        | Nullable; migration 003                                                           |
+| `memo_type`              | `TEXT`        | Nullable; check in `text`, `id`, `hash`, `return`; migration 003                  |
 | `checked_at`             | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()`                                                          |
 | `cache_expires_at`       | `TIMESTAMPTZ` | Nullable                                                                          |
+
+Migration 003 adds `memo` and `memo_type` with named checks: `verification_results_memo_type_check` limits the type, and `verification_results_memo_pair_check` requires `memo` to be NULL exactly when `memo_type` is NULL. Existing rows keep NULL for both.
 
 Indexes: `verification_record_checked_idx(aid_record_id, checked_at DESC, id DESC)`, `verification_status_checked_idx(status, checked_at DESC)`, and the primary key.
 
@@ -224,6 +228,8 @@ Eligible operation types are `payment`, `create_account`, `path_payment_strict_r
 | `pending`    | Horizon is unavailable/unreadable, success is not confirmed, operation pagination is incomplete/over budget, or the Horizon URL is invalid. |
 | `voided`     | Aid-record status set by a void operation; it is not a verification-result status. Void preserves the record and history.                   |
 
+The transaction memo is captured as reconciliation evidence only; it is never compared with the record and never changes the result status. When Horizon reports `memo_type` `text`, `id`, `hash`, or `return` with a string memo, `verified` and `mismatch` results that reached the transaction carry `memo` and `memoType`; `none`, unknown types, and missing or non-string values yield no memo. Text memos are stored as given except that NUL characters, which PostgreSQL `TEXT` cannot hold, are removed; `id` memos stay decimal strings because they are uint64 values, and `hash`/`return` memos keep Horizon's base64 encoding. Stored values are bounded to 128 characters. `not-found`, `pending`, and `unverified` results have no memo.
+
 Verified and mismatch results may be cached for one hour. Pending and other statuses do not receive a cache expiry. Verification history is stored in `verification_results`; a later verification updates the record's status unless the record is already voided. `verified` proves only the checked public payment fields, not identity, consent, intended use, or real-world impact.
 
 ## Security and Current Gaps
@@ -231,7 +237,7 @@ Verified and mismatch results may be cached for one hour. Pending and other stat
 - Roles are enforced on the API. Wallets without an explicit role default to donor. Organizations may change only their own records; admins manage role assignments and audit queries. Beneficiary reads are wallet-scoped in SQL. Admin self-demotion/removal is blocked, and no admin can demote or remove the last remaining admin (see API Routes).
 - Mutations require allowed Origin and CSRF. CORS uses exact configured origins and credentials; wildcard credentialed CORS is not used. JSON request bodies are strict and limited to 32 KB. Error responses do not include request bodies by design, although unexpected server errors are logged.
 - `SESSION_SECRET` and `PSEUDONYM_SECRET` are server-only. Never place either in a `VITE_*` setting, logs, or committed env files. The pseudonym HMAC is domain-separated and derived from the beneficiary wallet; it provides stable pseudonyms, not anonymity.
-- Without recipient consent, public transparency replaces the beneficiary name with an HMAC label and withholds recipient wallet, transaction hash, note, and selected verification details. Organization and creator wallet, purpose, amount, and date remain visible. With consent, the public record projection includes the full record.
+- Without recipient consent, public transparency replaces the beneficiary name with an HMAC label and withholds recipient wallet, transaction hash, note, and selected verification details (destination, explorer link, transaction time, ledger, and transaction memo). Organization and creator wallet, purpose, amount, and date remain visible. With consent, the public record projection includes the full record.
 - Database rate limits are atomic and keyed by digests for challenges (8/15m/address), signature verification (12/min/address), writes (60/min/wallet), and record verification (30/min/wallet). General per-IP and public-read rate limits are not implemented.
 - Successful authentication, logout, role change/removal, record create/update/void, and non-cached verification are audited. Challenge attempts, failed auth, admin seeding, and all security rejections are not comprehensively audited. The schema does not enforce append-only access for audit rows.
 - SQL values are parameterized. Application validation covers Stellar public keys, networks, hashes, amounts/stroops, assets/issuers, dates, text sizes, roles, list filters, and cursors. The server health route is process liveness only; a database readiness probe is not implemented.
@@ -242,7 +248,7 @@ Verified and mismatch results may be cached for one hour. Pending and other stat
 - Set `DATABASE_URL` for the runtime pool. The migration command uses `DATABASE_URL_UNPOOLED` when supplied, otherwise `DATABASE_URL`; use a direct (non-pooled) endpoint for migration where available. Remote connection examples should use `sslmode=verify-full`.
 - Configure distinct 32-byte-minimum `SESSION_SECRET` and `PSEUDONYM_SECRET`; exact `PUBLIC_APP_ORIGIN` and `CORS_ALLOWED_ORIGINS`; `PORT`; network-specific Horizon URLs; and optionally `DEFAULT_STELLAR_NETWORK`. Bootstrap the first admin by setting a public Stellar `ADMIN_WALLET` and running `npm run db:seed-admin`; there is no public bootstrap route.
 - Integration tests use `TEST_DATABASE_URL` and require `TEST_DATABASE_BRANCH=test`, `TEST_DATABASE_URL_UNPOOLED`, and `PRODUCTION_DATABASE_HOST`. The test setup rejects a test endpoint that matches the production hostname or runtime endpoint. Use Neon dev for local runtime and a separate Neon test branch for integration tests; never target production.
-- `npm run db:migrate` applies ordered `NNN_name.sql` migrations and records versions in `schema_migrations`. Migration 002 checks for case-insensitive duplicate hashes before creating the unique index and aborts without applying that migration if duplicates exist.
+- `npm run db:migrate` applies ordered `NNN_name.sql` migrations and records versions in `schema_migrations`. Migration 002 checks for case-insensitive duplicate hashes before creating the unique index and aborts without applying that migration if duplicates exist. Migration 003 adds the `wallet_roles` ordering index used by admin role listings.
 - For production, serve the built Vite assets behind HTTPS with Express behind the same-origin `/api` proxy where possible. The cookie is Secure and SameSite=Lax. A cross-site deployment requires a separate cookie/CORS review.
 - Configure PostgreSQL access restrictions, least-privilege app/migration identities, backup retention, and tested restore procedures before production operation. No production deployment, backup/restore exercise, or browser-level Freighter cookie verification is claimed by this design.
 
