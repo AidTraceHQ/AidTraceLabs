@@ -55,5 +55,7 @@ jobs:
       - run: npm run smoke
         env:
           DATABASE_URL: postgresql://aidtrace:aidtrace@localhost:5432/aidtrace_test
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
       # Production dependencies only. Dev-tool advisories are reviewed through Dependabot and tracked separately.
       - run: npm audit --omit=dev --audit-level=high
