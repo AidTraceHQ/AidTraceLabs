@@ -8,6 +8,10 @@ Run the Express API on a Node.js 20+ host/container/VM connected to PostgreSQL, 
 
 `Dockerfile` builds the API. `docker-compose.yml` describes a local API, Vite web server, and PostgreSQL service. Docker is unavailable in the current environment, so Compose has not been run or verified.
 
+## Static asset caching
+
+Vite writes the JavaScript and CSS bundles to `dist/assets/` with content-hashed filenames (for example `index-<hash>.js` and `index-<hash>.css`), so a new build never reuses a filename. `vercel.json` matches `/assets/(.*)` and sends `Cache-Control: public, max-age=31536000, immutable` for those requests, letting repeat visitors keep the bundles for a year without revalidation. `index.html` is deliberately excluded: the response for `/` (and for `/index.html`) is served with `Cache-Control: no-cache`, because the HTML names the current hashed bundle and must be revalidated on each visit or the entry point would keep pointing at a stale build. Any reverse proxy or static host that replaces Vercel must reproduce both rules: long-lived immutable caching for hashed files under `/assets/`, and no long-lived caching for the HTML document.
+
 ## Environment variables
 
 | Variable                           | Purpose                                                                                            |
