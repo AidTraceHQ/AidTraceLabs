@@ -21,6 +21,8 @@ The Vite development server listens on port 5173 and proxies `/api` to port 3001
 
 All application tables use PostgreSQL. Migration `001_initial_schema.sql` creates the tables and indexes below. The migration runner separately creates `schema_migrations` to track applied files. Migration `002_unique_network_tx_hash.sql` normalizes transaction hashes and adds the unique network/hash constraint. No foreign key declares `ON DELETE CASCADE`; PostgreSQL's default referential behavior applies.
 
+The shape below is executable. `tests/schema.test.ts` applies the migration files in an isolated schema on `TEST_DATABASE_URL` and fails, naming the item, when a documented table, column, index, key, or check constraint is missing or differs, or when the migrations add an undocumented table, column, index, key, or constraint. The suite is skipped when `TEST_DATABASE_URL` is unset. Update this section in the same change as any migration.
+
 ### `schema_migrations`
 
 Created by `scripts/migrate.ts` before application migrations.
@@ -246,4 +248,4 @@ Verified and mismatch results may be cached for one hour. Pending and other stat
 
 ## Verification Evidence
 
-The executable checks are `npm run typecheck`, `npm run lint`, `npm run format:check`, `npm test`, `npm run build`, and the aggregate `npm run check` (typecheck, lint, test, build). The backend tests use Supertest/Vitest and mocked Horizon calls; when `TEST_DATABASE_URL` is configured, database integration tests use the guarded test endpoint. Local Docker Compose, production hosting, browser-level Freighter journeys, and the admin seed require their respective environment/account prerequisites and must not be inferred from unit or API test results.
+The executable checks are `npm run typecheck`, `npm run lint`, `npm run format:check`, `npm test`, `npm run build`, and the aggregate `npm run check` (typecheck, lint, test, build). The backend tests use Supertest/Vitest and mocked Horizon calls; when `TEST_DATABASE_URL` is configured, database integration tests use the guarded test endpoint. That includes the schema drift test in `tests/schema.test.ts`, which compares this data-model section with a freshly migrated isolated schema. Local Docker Compose, production hosting, browser-level Freighter journeys, and the admin seed require their respective environment/account prerequisites and must not be inferred from unit or API test results.
