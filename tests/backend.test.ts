@@ -7,7 +7,7 @@ import { applyUniqueNetworkTxHashMigration, migrate } from '../scripts/migrate.j
 import { app } from '../server/app.js';
 import { getSession, verifySep53Signature } from '../server/auth.js';
 import { IDLE_IN_TRANSACTION_TIMEOUT_MS, pool } from '../server/db.js';
-import { checkTransaction } from '../server/stellar-verification.js';
+import { checkTransaction, HORIZON_MAX_RESPONSE_BYTES } from '../server/stellar-verification.js';
 
 const origin = 'http://localhost:5173';
 
@@ -396,6 +396,53 @@ describe('On-chain verification distinguishes matching and mismatching payments'
       created_at: '2026-01-01T00:00:00Z',
     };
     let operations: Record<string, unknown>[] = [];
+  it('bounds the Horizon response size and rejects a non-array operations payload', async () => {
+    const organization = Keypair.random().publicKey();
+    const recipient = Keypair.random().publicKey();
+    const record = {
+      network: 'testnet' as const,
+      txHash: 'e'.repeat(64),
+      organizationWallet: organization,
+      recipientWallet: recipient,
+      amountStroops: '12500000',
+      assetCode: 'XLM',
+      assetIssuer: null,
+    };
+
+    const oversizedFetch = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/operations')) {
+        return new Response(JSON.stringify({ _embedded: { records: [] } }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({
+          successful: true,
+          source_account: organization,
+          padding: 'x'.repeat(HORIZON_MAX_RESPONSE_BYTES),
+        }),
+        { status: 200 },
+      );
+    });
+    vi.stubGlobal('fetch', oversizedFetch);
+    expect((await checkTransaction(record)).status).toBe('pending');
+    // The oversized transaction body is abandoned before the operations request is made.
+    expect(oversizedFetch).toHaveBeenCalledTimes(1);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = new URL(String(input));
+        return url.pathname.endsWith('/operations')
+          ? new Response(JSON.stringify({ _embedded: { records: 'not-an-array' } }), {
+              status: 200,
+            })
+          : new Response(JSON.stringify({ successful: true, source_account: organization }), {
+              status: 200,
+            });
+      }),
+    );
+    expect((await checkTransaction(record)).status).toBe('pending');
+
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input) => {
@@ -565,6 +612,89 @@ describe('Pagination cursor integrity and bounds', () => {
     expect(response.status).toBe(400);
     expect(response.body).toEqual({ error: 'Invalid pagination cursor.' });
   });
+          ? {
+              _embedded: {
+                records: [
+                  {
+                    type: 'payment',
+                    from: organization,
+                    to: recipient,
+                    amount: '1.25',
+                    asset_type: 'native',
+                  },
+                ],
+              },
+            }
+          : {
+              successful: true,
+              source_account: organization,
+              ledger: 21,
+              created_at: '2026-01-01T00:00:00Z',
+            };
+        return new Response(JSON.stringify(body), { status: 200 });
+      }),
+    );
+    expect(await checkTransaction(record)).toMatchObject({
+      status: 'verified',
+      ledger: 21,
+      sourceAccount: organization,
+      destination: recipient,
+      amount: '1.25',
+      asset: 'XLM',
+    });
+  });
+});
+
+describe('Per-IP rate-limit error contract', () => {
+  function expectRateLimitContract(response: request.Response) {
+    expect(response.status).toBe(429);
+    expect(response.body).toEqual({
+      error: expect.any(String),
+      code: 'rate_limit_exceeded',
+    });
+    expect(response.body.error.trim().length).toBeGreaterThan(0);
+    expect(response.body.error).not.toBe('rate_limit_exceeded');
+    expect(Number(response.headers['retry-after'])).toBeGreaterThan(0);
+  }
+
+  it('returns the documented 429 error contract across public read, auth, and API limiters', async () => {
+    vi.resetModules();
+    vi.stubEnv('PUBLIC_READ_RATE_LIMIT_MAX', '1');
+    vi.stubEnv('AUTH_RATE_LIMIT_MAX', '1');
+    vi.stubEnv('API_RATE_LIMIT_MAX', '3');
+
+    const [{ app: rateLimitedApp }, { pool: rateLimitedPool }] = await Promise.all([
+      import('../server/app.js'),
+      import('../server/db.js'),
+    ]);
+
+    try {
+      await request(rateLimitedApp).get('/api/transparency');
+      const transparencyLimited = await request(rateLimitedApp).get('/api/transparency');
+      expectRateLimitContract(transparencyLimited);
+
+      const challengePayload = { address: 'invalid', network: 'testnet' };
+      const authFirst = await request(rateLimitedApp)
+        .post('/api/auth/challenge')
+        .set('Origin', origin)
+        .send(challengePayload);
+      expect(authFirst.status).toBe(400);
+      const authLimited = await request(rateLimitedApp)
+        .post('/api/auth/challenge')
+        .set('Origin', origin)
+        .send(challengePayload);
+      expectRateLimitContract(authLimited);
+
+      const apiAllowed = await request(rateLimitedApp).get('/api/nonexistent-rate-limit-check');
+      expect(apiAllowed.status).toBe(404);
+      const apiLimited = await request(rateLimitedApp).get('/api/nonexistent-rate-limit-check');
+      expectRateLimitContract(apiLimited);
+    } finally {
+      await rateLimitedPool.end();
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
 });
 
 const integration = describe.skipIf(!process.env.TEST_DATABASE_URL);
@@ -619,7 +749,11 @@ integration('Database-backed wallet, records, and authorization flows', () => {
   async function expectAuditEvent(
     action: string,
     actorWallet: string,
-    expected: { subjectWallet?: string; recordId?: string } = {},
+    expected: {
+      subjectWallet?: string;
+      recordId?: string;
+      metadata?: Record<string, unknown>;
+    } = {},
   ) {
     const subjectWallet = expected.subjectWallet ?? null;
     const recordId = expected.recordId ?? null;
@@ -628,8 +762,9 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       actor_wallet: string;
       subject_wallet: string | null;
       record_id: string | null;
+      metadata_json: Record<string, unknown>;
     }>(
-      `SELECT action, actor_wallet, subject_wallet, record_id
+      `SELECT action, actor_wallet, subject_wallet, record_id, metadata_json
        FROM audit_events
        WHERE action = $1 AND actor_wallet = $2
          AND subject_wallet IS NOT DISTINCT FROM $3
@@ -638,11 +773,12 @@ integration('Database-backed wallet, records, and authorization flows', () => {
        LIMIT 1`,
       [action, actorWallet, subjectWallet, recordId],
     );
-    expect(result.rows[0], `Missing ${action} audit event for ${actorWallet}`).toEqual({
+    expect(result.rows[0], `Missing ${action} audit event for ${actorWallet}`).toMatchObject({
       action,
       actor_wallet: actorWallet,
       subject_wallet: subjectWallet,
       record_id: recordId,
+      ...(expected.metadata ? { metadata_json: expected.metadata } : {}),
     });
   }
 
@@ -1441,6 +1577,10 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       [recordId],
     );
     expect(stored.rows[0]).toEqual({ memo, memo_type: 'text' });
+    await expectAuditEvent('record_verification_checked', session.address, {
+      recordId,
+      metadata: { status: 'verified', ledger: 11 },
+    });
 
     const findRecord = (body: { records: { id: string }[] }) =>
       body.records.find((record) => record.id === recordId) as
@@ -1758,6 +1898,19 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         (event: { recordId?: string }) => event.recordId === owned.body.record.id,
       ),
     ).toBe(true);
+    await expectAuditEvent('record_voided', ownerSession.address, {
+      recordId: owned.body.record.id,
+      metadata: { voidReason: 'Duplicate entry' },
+    });
+    const sessionToken = ownerSession.cookie.slice(ownerSession.cookie.indexOf('=') + 1);
+    const leakedSecrets = await pool.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM audit_events
+       WHERE actor_wallet = $1
+         AND (strpos(summary, $2) > 0 OR strpos(metadata_json::text, $2) > 0
+              OR strpos(summary, $3) > 0 OR strpos(metadata_json::text, $3) > 0)`,
+      [ownerSession.address, sessionToken, ownerSession.csrfToken],
+    );
+    expect(Number(leakedSecrets.rows[0].count)).toBe(0);
 
     const removable = Keypair.random();
     await assignRole(adminSession, removable, 'donor');
@@ -1785,6 +1938,40 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       (await request(app).get('/api/me').set('Cookie', ownerSession.cookie)).body.session,
     ).toBeNull();
   }, 120_000);
+
+  it('revokes every session for one wallet on logout-everywhere without touching other wallets', async () => {
+    const wallet = Keypair.random();
+    const otherWallet = Keypair.random();
+    const firstSession = await login(wallet);
+    const secondSession = await login(wallet);
+    const otherWalletSession = await login(otherWallet);
+    expect(firstSession.cookie).not.toBe(secondSession.cookie);
+
+    const firstMe = await request(app).get('/api/me').set('Cookie', firstSession.cookie);
+    const secondMe = await request(app).get('/api/me').set('Cookie', secondSession.cookie);
+    expect(firstMe.body.session.address).toBe(wallet.publicKey());
+    expect(secondMe.body.session.address).toBe(wallet.publicKey());
+
+    const logoutEverywhere = await request(app)
+      .post('/api/auth/logout-everywhere')
+      .set('Origin', origin)
+      .set('Cookie', firstSession.cookie)
+      .send({ csrfToken: firstSession.csrfToken });
+    expect(logoutEverywhere.status).toBe(200);
+
+    expect(
+      (await request(app).get('/api/me').set('Cookie', firstSession.cookie)).body.session,
+    ).toBeNull();
+    expect(
+      (await request(app).get('/api/me').set('Cookie', secondSession.cookie)).body.session,
+    ).toBeNull();
+    const otherWalletMe = await request(app)
+      .get('/api/me')
+      .set('Cookie', otherWalletSession.cookie);
+    expect(otherWalletMe.body.session.address).toBe(otherWallet.publicKey());
+
+    await expectAuditEvent('wallet_logout_everywhere', wallet.publicKey());
+  }, 60_000);
 
   it('enforces the authorization matrix for every protected route', async () => {
     const adminSession = await login(admin);
@@ -2100,6 +2287,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         expect(await roleOf(adminB.address)).toBeUndefined();
         await expectAuditEvent('wallet_role_removed', callerA.address, {
           subjectWallet: adminB.address,
+          metadata: { previousRole: 'admin', newRole: 'donor' },
         });
 
         const demoted = await setRole(callerA, adminC.address, 'organization');
@@ -2107,6 +2295,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         expect(await roleOf(adminC.address)).toBe('organization');
         await expectAuditEvent('wallet_role_changed', callerA.address, {
           subjectWallet: adminC.address,
+          metadata: { previousRole: 'admin', newRole: 'organization' },
         });
 
         expect(await adminCount([callerA.address, adminB.address, adminC.address])).toBe(1);
