@@ -24,6 +24,24 @@ All API responses are configured with `Cache-Control: no-store`. Error responses
 
 The transparency query accepts `q`, `organization`, `asset`, `network`, `status`, `from`, `to`, `limit`, and `cursor`. Admin roles accept `role`, `q`, `limit`, and `cursor`; audit accepts `action`, `address`, `recordId`, `q`, `limit`, and `cursor`. The API validates filters and binds signed cursors to their query filters.
 
+## Error contract
+
+Every error response has the JSON body `{ "error": "..." }`. Rate-limit responses additionally include `"code": "rate_limit_exceeded"`. "Retryable" means the same request may succeed later without modification; "Retry after fixing" means the request must change first.
+
+| Status | Triggering condition | Retryable |
+| ------ | -------------------- | --------- |
+| `400` | Malformed JSON body, or a field or query parameter fails server-side validation (including a non-positive-integer `expectedVersion`). | Retry after fixing the request. |
+| `401` | Session is missing, expired, or invalid on a route that requires authentication. | Retry after signing in again. |
+| `403` | Session is valid but the role or organization does not permit the action, or a protected write has a missing or invalid CSRF token or a disallowed `Origin`. CSRF and Origin failures are reported as `403`, not `401`, and an expired session is not the same as a CSRF failure. | Retry after fixing the Origin or obtaining a fresh CSRF token; role/organization denials are not retryable. |
+| `404` | The record, role assignment, or route does not exist, or is not visible to the caller. | No. |
+| `409` | Record conflict: `expectedVersion` differs from the current `version`, or the write conflicts with the current record state. | Retry after refreshing the record. |
+| `413` | Request body exceeds the allowed size. | Retry after reducing the body size. |
+| `429` | Per-IP rate limit exceeded; the response includes a `Retry-After` header. | Yes, after the `Retry-After` interval. |
+| `503` | Database is unavailable (see `databaseUnavailableResponse`). `GET /api/_healthcheck` does not report this state. | Yes, with backoff. |
+| `500` | Unexpected server error. | Yes, with backoff; report if it persists. |
+
+The cross-check for each row is the handler or test covering it: `server/app.ts` for `400`/`413`/`429`/`500` and CSRF/Origin handling, `server/records.ts` for `404`/`409` and record validation, `server/database-errors.ts` for `503`, and `tests/backend.test.ts` for the contract-level assertions.
+
 List responses include `nextCursor` and `hasMore`. `GET /api/transparency` also includes `total`, the number of records matching the bound filters, independent of `limit` and `cursor`.
 
 Authentication challenge inputs are `{ address, network }`. Signature verification accepts `{ challengeId, address, network, signature }`. Record write fields are validated server-side; mutating request bodies include `csrfToken`.

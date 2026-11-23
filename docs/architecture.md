@@ -19,6 +19,7 @@ flowchart TB
 - `server/records.ts` implements public/beneficiary/admin routes, role checks, record mutation, pagination, rate limits, and audit writes.
 - `server/stellar-verification.ts` reads Horizon transaction and operation data and compares the record fields with a payment operation.
 - `server/db.ts` owns the PostgreSQL pool and transactions. `migrations/` defines the schema; `scripts/` runs migrations and the initial admin seed.
+- The API error and status-code contract (which codes are returned, their triggers, and retry safety) is documented in [api.md](api.md#error-and-status-code-contract). Database-unavailable responses are produced by `databaseUnavailableResponse` in `server/database-errors.ts`, and CSRF/Origin failures on protected writes are distinct from expired-session `401` responses.
 
 ## Data flow
 
