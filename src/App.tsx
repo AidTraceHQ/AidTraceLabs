@@ -469,8 +469,19 @@ export default function App() {
 
   function chooseNetwork(value: string) {
     if (value !== 'testnet' && value !== 'mainnet') return;
+    if (session && value !== session.network) {
+      notify(
+        'Network change blocked. This session is connected to ' +
+          session.network +
+          '. Sign out before switching to ' +
+          value +
+          '.',
+      );
+      return;
+    }
     setNetwork(value);
     writeNetworkPreference(value);
+    if (!session) void loadTransparency();
   }
   function toggleTheme() {
     const nextTheme: Theme = theme === 'dark' ? 'light' : 'dark';
@@ -525,6 +536,7 @@ export default function App() {
       const r = await api.get<{ session: Session | null }>('/api/me');
       const restored = r.data.session;
       setSession(restored);
+      if (restored) setNetwork(restored.network);
     } catch (e) {
       setSession(null);
       setError(messageOf(e));
