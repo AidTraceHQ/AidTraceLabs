@@ -2,14 +2,33 @@ import '../server/environment.js';
 import { readdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Pool, type PoolClient } from 'pg';
+import { Pool, type PoolClient, type PoolConfig } from 'pg';
 
 const migrationDirectory = fileURLToPath(new URL('../migrations/', import.meta.url));
 const migrationUrl = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
 if (!migrationUrl) {
   throw new Error('DATABASE_URL or DATABASE_URL_UNPOOLED is required to run migrations.');
 }
-const migrationPool = new Pool({ connectionString: migrationUrl });
+
+// Bounds a migration that would otherwise wait on a lock or a stalled connection forever.
+// Mirrors the runtime (server/db.ts) and seed (scripts/seed-admin.ts) pools.
+export const MIGRATION_TIMEOUT_MS = 10_000;
+
+type MigrationPoolFactory = (config: PoolConfig) => Pool;
+
+export function createMigrationPool(
+  databaseUrl: string,
+  createPool: MigrationPoolFactory = (config) => new Pool(config),
+): Pool {
+  return createPool({
+    connectionString: databaseUrl,
+    connectionTimeoutMillis: MIGRATION_TIMEOUT_MS,
+    query_timeout: MIGRATION_TIMEOUT_MS,
+    statement_timeout: MIGRATION_TIMEOUT_MS,
+  });
+}
+
+const migrationPool = createMigrationPool(migrationUrl);
 
 async function withTransaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
   const client = await migrationPool.connect();
