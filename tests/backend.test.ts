@@ -1432,3 +1432,34 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     );
   });
 });
+
+integration('API request completion logging', () => {
+  it('logs one safe line per request and skips the healthcheck', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const cookieValue = 'cookie-value-' + 'c'.repeat(24);
+    const signature = 'sig-' + 'd'.repeat(40);
+    try {
+      await request(app).get('/api/_healthcheck').expect(200);
+      expect(info).not.toHaveBeenCalled();
+
+      const response = await request(app)
+        .get('/api/transparency?signature=' + signature)
+        .set('Cookie', 'aidtrace_session=' + cookieValue);
+      expect(response.status).toBe(200);
+
+      expect(info).toHaveBeenCalledTimes(1);
+      const line = info.mock.calls[0].map(String).join(' ');
+      expect(line).toMatch(/^API request completed: GET \/api\/transparency 200 \d+(\.\d+)?ms$/);
+      for (const secret of [
+        process.env.SESSION_SECRET,
+        process.env.DATABASE_URL,
+        cookieValue,
+        signature,
+      ]) {
+        if (secret) expect(line).not.toContain(secret);
+      }
+    } finally {
+      info.mockRestore();
+    }
+  });
+});
