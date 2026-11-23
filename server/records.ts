@@ -787,6 +787,15 @@ async function transparencyHandler(request: Request, response: Response): Promis
      ORDER BY r.status, r.asset_code`,
     values,
   );
+  // Count must run before listRows mutates conditions/values with the cursor clause.
+  const countResult = await pool.query<{ total: number }>(
+    `SELECT COUNT(*)::int AS total
+     FROM aid_records r
+     JOIN organizations o ON o.wallet_address = r.organization_wallet
+     WHERE ${conditions.join(' AND ')}`,
+    values,
+  );
+  const total = countResult.rows[0]?.total ?? 0;
   const result = await listRows<RecordRow>(
     recordSelect,
     conditions,
@@ -840,6 +849,7 @@ async function transparencyHandler(request: Request, response: Response): Promis
     {
       facets: facets.rows[0] || { organizations: [], assets: [] },
       summary,
+      total,
     },
   );
 }
