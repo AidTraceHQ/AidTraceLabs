@@ -1947,3 +1947,130 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     );
   });
 });
+
+describe('Horizon failure-state contracts', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const record = {
+    network: 'testnet' as const,
+    txHash: 'a'.repeat(64),
+    organizationWallet: 'G'.repeat(56),
+    recipientWallet: 'G'.repeat(56),
+    amountStroops: '10000000',
+    assetCode: 'XLM',
+    assetIssuer: null,
+  };
+
+  const successfulTransaction = {
+    successful: true,
+    source_account: 'G'.repeat(56),
+    ledger: 1,
+    created_at: '2026-01-01T00:00:00Z',
+  };
+
+  const ok = (body: unknown) =>
+    new Response(JSON.stringify(body), { status: 200 });
+
+  const stubFetch = (handler: (url: URL) => Response | Promise<Response>) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => handler(new URL(String(input)))),
+    );
+  };
+
+  type PendingCase = {
+    name: string;
+    handler: (url: URL) => Response | Promise<Response>;
+    reason: string;
+  };
+
+  const pendingCases: PendingCase[] = [
+    {
+      name: 'transport failure',
+      handler: () => Promise.reject(new Error('network down')),
+      reason: 'Horizon is unavailable. Retry verification.',
+    },
+    {
+      name: 'malformed JSON body',
+      handler: () => new Response('{not json', { status: 200 }),
+      reason:
+        'Horizon returned an unreadable or unsuccessful transaction response. Retry later.',
+    },
+    {
+      name: 'HTTP 429',
+      handler: () => new Response('{}', { status: 429 }),
+      reason:
+        'Horizon returned an unreadable or unsuccessful transaction response. Retry later.',
+    },
+    {
+      name: 'HTTP 5xx',
+      handler: () => new Response('{}', { status: 503 }),
+      reason:
+        'Horizon returned an unreadable or unsuccessful transaction response. Retry later.',
+    },
+    {
+      name: 'missing success flag',
+      handler: () => ok({ ledger: 1, source_account: 'G'.repeat(56) }),
+      reason: 'Horizon did not confirm transaction success.',
+    },
+    {
+      name: 'operation endpoint error',
+      handler: (url) =>
+        url.pathname.endsWith('/operations')
+          ? new Response('{}', { status: 500 })
+          : ok(successfulTransaction),
+      reason: 'Could not read transaction operations from Horizon.',
+    },
+    {
+      name: 'missing paging cursor',
+      handler: (url) => {
+        if (!url.pathname.endsWith('/operations')) {
+          return ok(successfulTransaction);
+        }
+        const records = Array.from({ length: 200 }, () => ({
+          type: 'payment',
+          from: 'G'.repeat(56),
+          to: 'G'.repeat(56),
+          amount: '1',
+          asset_type: 'native',
+        }));
+        return ok({ _embedded: { records } });
+      },
+      reason: 'Horizon operation pagination was incomplete.',
+    },
+  ];
+
+  it.each(pendingCases)(
+    'returns pending with the documented reason on %s',
+    async ({ handler, reason }) => {
+      stubFetch(handler);
+      const result = await checkTransaction(record);
+      expect(result.status).toBe('pending');
+      expect(result.reason).toBe(reason);
+    },
+  );
+
+  it('returns mismatch with a difference note when the transaction is unsuccessful', async () => {
+    stubFetch(() =>
+      ok({ successful: false, ledger: 9, source_account: 'G'.repeat(56) }),
+    );
+    const result = await checkTransaction(record);
+    expect(result.status).toBe('mismatch');
+    expect(result.reason).toBeUndefined();
+    expect(result.differences).toContain(
+      'Transaction is marked unsuccessful on Stellar.',
+    );
+  });
+
+  it('never returns verified for any of the eight failure shapes', async () => {
+    const allHandlers: Array<(url: URL) => Response | Promise<Response>> = [
+      ...pendingCases.map((testCase) => testCase.handler),
+      () => ok({ successful: false, ledger: 9, source_account: 'G'.repeat(56) }),
+    ];
+    for (const handler of allHandlers) {
+      stubFetch(handler);
+      const result = await checkTransaction(record);
+      expect(result.status).not.toBe('verified');
+    }
+  });
+});
