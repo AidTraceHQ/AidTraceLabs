@@ -1260,19 +1260,7 @@ router.post('/api/admin/roles', noStore, async (request, response) => {
     error(response, 409, 'You cannot demote your own active admin wallet.');
     return;
   }
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    if (
-      !(await assertAdminRemains(
-        client,
-        response,
-        current.session.address,
-        address,
-        role !== 'admin',
-      ))
-    )
-      return;
+  await withTransaction(async (client) => {
     await client.query(
       'INSERT INTO users (wallet_address) VALUES ($1) ON CONFLICT (wallet_address) DO NOTHING',
       [address],
@@ -1298,13 +1286,7 @@ router.post('/api/admin/roles', noStore, async (request, response) => {
       address,
       { previousRole: old.rows[0]?.role || 'donor', newRole: role },
     );
-    await client.query('COMMIT');
-  } catch (errorValue) {
-    await client.query('ROLLBACK');
-    throw errorValue;
-  } finally {
-    client.release();
-  }
+  });
   response.json({ ok: true });
 });
 
@@ -1322,21 +1304,14 @@ router.delete('/api/admin/roles/:address', noStore, async (request, response) =>
     error(response, 409, 'Cannot remove your own active admin role.');
     return;
   }
-  const client = await pool.connect();
-  let oldRole: Role | undefined;
-  try {
-    await client.query('BEGIN');
-    if (!(await assertAdminRemains(client, response, current.session.address, address, true)))
-      return;
+  const oldRole = await withTransaction(async (client) => {
     const old = await client.query<{ role: Role }>(
       'SELECT role FROM wallet_roles WHERE wallet_address = $1 FOR UPDATE',
       [address],
     );
-    oldRole = old.rows[0]?.role;
+    const oldRole = old.rows[0]?.role;
     if (!oldRole) {
-      await client.query('ROLLBACK');
-      error(response, 404, 'Explicit role not found.');
-      return;
+      return undefined;
     }
     await client.query('DELETE FROM wallet_roles WHERE wallet_address = $1', [address]);
     await writeAudit(
@@ -1348,12 +1323,11 @@ router.delete('/api/admin/roles/:address', noStore, async (request, response) =>
       address,
       { previousRole: oldRole, newRole: 'donor' },
     );
-    await client.query('COMMIT');
-  } catch (errorValue) {
-    await client.query('ROLLBACK');
-    throw errorValue;
-  } finally {
-    client.release();
+    return oldRole;
+  });
+  if (!oldRole) {
+    error(response, 404, 'Explicit role not found.');
+    return;
   }
   response.json({ ok: true });
 });
