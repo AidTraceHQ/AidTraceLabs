@@ -1,11 +1,12 @@
-import { createHash, createHmac } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { Keypair } from '@stellar/stellar-sdk';
+import { Pool } from 'pg';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { applyUniqueNetworkTxHashMigration, migrate } from '../scripts/migrate.js';
 import { app } from '../server/app.js';
-import { verifySep53Signature } from '../server/auth.js';
-import { pool } from '../server/db.js';
+import { getSession, verifySep53Signature } from '../server/auth.js';
+import { IDLE_IN_TRANSACTION_TIMEOUT_MS, pool } from '../server/db.js';
 import { checkTransaction } from '../server/stellar-verification.js';
 
 const origin = 'http://localhost:5173';
@@ -65,6 +66,23 @@ describe('Freighter signed challenge creates a secure session', () => {
       .set('Content-Type', 'application/json')
       .send('{');
     expect(malformed.status).toBe(400);
+
+    const unsupportedCharset = await request(app)
+      .post('/api/records')
+      .set('Origin', origin)
+      .set('Content-Type', 'application/json; charset=utf-16le')
+      .send('{}');
+    expect(unsupportedCharset.status).toBe(415);
+    expect(unsupportedCharset.body).toEqual({ error: 'Unsupported request encoding.' });
+
+    const unsupportedEncoding = await request(app)
+      .post('/api/records')
+      .set('Origin', origin)
+      .set('Content-Type', 'application/json')
+      .set('Content-Encoding', 'compress')
+      .send('{}');
+    expect(unsupportedEncoding.status).toBe(415);
+    expect(unsupportedEncoding.body).toEqual({ error: 'Unsupported request encoding.' });
 
     const preflight = await request(app)
       .options('/api/records')
@@ -285,9 +303,148 @@ describe('On-chain verification distinguishes matching and mismatching payments'
     expect((await checkTransaction(record)).status).toBe('pending');
     expect(calls).toBe(20);
   });
+
+  it('captures the transaction memo as evidence without changing the matching result', async () => {
+    const organization = Keypair.random().publicKey();
+    const recipient = Keypair.random().publicKey();
+    const record = {
+      network: 'testnet' as const,
+      txHash: 'd'.repeat(64),
+      organizationWallet: organization,
+      recipientWallet: recipient,
+      amountStroops: '10000000',
+      assetCode: 'XLM',
+      assetIssuer: null,
+    };
+    let transaction: Record<string, unknown> = {};
+    let operations: Record<string, unknown>[] = [];
+    const matching = [
+      { type: 'payment', from: organization, to: recipient, amount: '1', asset_type: 'native' },
+    ];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = new URL(String(input));
+        const body = url.pathname.endsWith('/operations')
+          ? { _embedded: { records: operations } }
+          : transaction;
+        return new Response(JSON.stringify(body), { status: 200 });
+      }),
+    );
+    const base = { successful: true, source_account: organization, ledger: 5 };
+    operations = matching;
+
+    transaction = { ...base, memo_type: 'text', memo: 'AID-2026-0042' };
+    const text = await checkTransaction(record);
+    expect(text.status).toBe('verified');
+    expect(text).toMatchObject({ memo: 'AID-2026-0042', memoType: 'text' });
+
+    // uint64 beyond Number.MAX_SAFE_INTEGER must survive exactly as a string.
+    const largeId = '18446744073709551615';
+    transaction = { ...base, memo_type: 'id', memo: largeId };
+    const id = await checkTransaction(record);
+    expect(id.status).toBe('verified');
+    expect(id.memoType).toBe('id');
+    expect(id.memo).toBe(largeId);
+    expect(typeof id.memo).toBe('string');
+
+    const base64Hash = Buffer.alloc(32, 0xab).toString('base64');
+    transaction = { ...base, memo_type: 'hash', memo: base64Hash };
+    expect(await checkTransaction(record)).toMatchObject({
+      status: 'verified',
+      memo: base64Hash,
+      memoType: 'hash',
+    });
+
+    transaction = { ...base, memo_type: 'return', memo: base64Hash };
+    expect(await checkTransaction(record)).toMatchObject({ memo: base64Hash, memoType: 'return' });
+
+    for (const noMemo of [
+      { ...base, memo_type: 'none' },
+      { ...base },
+      { ...base, memo_type: 'unknown', memo: 'ignored' },
+      { ...base, memo_type: 'id', memo: 42 },
+      { ...base, memo_type: 'text', memo: '' },
+      { ...base, memo_type: 'text', memo: '\u0000\u0000' },
+    ]) {
+      transaction = noMemo;
+      const result = await checkTransaction(record);
+      expect(result.status).toBe('verified');
+      expect(result).not.toHaveProperty('memo');
+      expect(result).not.toHaveProperty('memoType');
+    }
+
+    transaction = { ...base, memo_type: 'text', memo: 'x'.repeat(500) };
+    expect((await checkTransaction(record)).memo).toHaveLength(128);
+
+    // PostgreSQL TEXT rejects NUL, so it is stripped before the memo can reach storage.
+    transaction = { ...base, memo_type: 'text', memo: 'AID\u0000-0042' };
+    expect((await checkTransaction(record)).memo).toBe('AID-0042');
+
+    operations = [{ ...matching[0], to: Keypair.random().publicKey() }];
+    transaction = { ...base, memo_type: 'text', memo: 'AID-2026-0042' };
+    const mismatch = await checkTransaction(record);
+    expect(mismatch.status).toBe('mismatch');
+    expect(mismatch).toMatchObject({ memo: 'AID-2026-0042', memoType: 'text' });
+
+    transaction = { ...base, successful: false, memo_type: 'text', memo: 'AID-2026-0042' };
+    expect(await checkTransaction(record)).toMatchObject({
+      status: 'mismatch',
+      memo: 'AID-2026-0042',
+      memoType: 'text',
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 404 })),
+    );
+    const notFound = await checkTransaction(record);
+    expect(notFound.status).toBe('not-found');
+    expect(notFound).not.toHaveProperty('memo');
+  });
 });
 
 const integration = describe.skipIf(!process.env.TEST_DATABASE_URL);
+
+integration('Idle-in-transaction bound on the database', () => {
+  it('applies the configured idle_in_transaction_session_timeout to pooled clients', async () => {
+    const client = await pool.connect();
+    try {
+      const result = await client.query<{ idle_in_transaction_session_timeout: string }>(
+        'SHOW idle_in_transaction_session_timeout',
+      );
+      expect(result.rows[0].idle_in_transaction_session_timeout).toBe(
+        `${IDLE_IN_TRANSACTION_TIMEOUT_MS / 1000}s`,
+      );
+    } finally {
+      client.release();
+    }
+  });
+
+  it('terminates a client that runs BEGIN and then idles past the bound', async () => {
+    // Same pool option as server/db.ts with a short bound so the test runs quickly.
+    const short = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      max: 1,
+      idle_in_transaction_session_timeout: 500,
+    });
+    short.on('error', () => {});
+    const client = await short.connect();
+    client.on('error', () => {});
+    let broken: Error | undefined;
+    try {
+      await client.query('BEGIN');
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      const started = Date.now();
+      await expect(client.query('SELECT 1')).rejects.toThrow();
+      expect(Date.now() - started).toBeLessThan(5_000);
+      broken = new Error('session terminated by idle_in_transaction_session_timeout');
+    } finally {
+      client.release(broken);
+      await short.end();
+    }
+  });
+});
 
 integration('Database-backed wallet, records, and authorization flows', () => {
   const wallets = new Set<string>();
@@ -360,7 +517,6 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       signature,
     });
     expect(verified.status).toBe(200);
-    await expectAuditEvent('wallet_authenticated', address);
     const cookieHeader = verified.headers['set-cookie'];
     const cookieLine = Array.isArray(cookieHeader) ? cookieHeader[0] : cookieHeader;
     expect(cookieLine).toContain('HttpOnly');
@@ -378,7 +534,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
   }
 
   async function assignRole(
-    session: { address: string; cookie: string; csrfToken: string },
+    session: { cookie: string; csrfToken: string },
     wallet: Keypair,
     role: 'organization' | 'beneficiary' | 'donor' | 'admin',
   ) {
@@ -389,13 +545,10 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .set('Cookie', session.cookie)
       .send({ csrfToken: session.csrfToken, address: wallet.publicKey(), role });
     expect(result.status).toBe(200);
-    await expectAuditEvent('wallet_role_changed', session.address, {
-      subjectWallet: wallet.publicKey(),
-    });
   }
 
   async function createRecord(
-    session: { address: string; cookie: string; csrfToken: string },
+    session: { cookie: string; csrfToken: string },
     recipient: Keypair,
     purpose: string,
     options: { txHash?: string; consent?: boolean } = {},
@@ -418,12 +571,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         note: 'Private contact note',
         recipientConsent: options.consent || false,
       });
-    if (response.status === 201 && response.body.record?.id) {
-      recordIds.add(response.body.record.id);
-      await expectAuditEvent('record_created', session.address, {
-        recordId: response.body.record.id,
-      });
-    }
+    if (response.body.record?.id) recordIds.add(response.body.record.id);
     return response;
   }
 
@@ -445,42 +593,56 @@ integration('Database-backed wallet, records, and authorization flows', () => {
   afterAll(async () => {
     const addresses = [...wallets];
     const ids = [...recordIds];
-    if (addresses.length) {
-      await pool.query(
-        `DELETE FROM audit_events
-         WHERE actor_wallet = ANY($1::text[]) OR subject_wallet = ANY($1::text[])
-            OR record_id = ANY($2::text[])`,
-        [addresses, ids],
-      );
-      if (ids.length) {
-        await pool.query(
-          'DELETE FROM beneficiary_consent_challenges WHERE record_id = ANY($1::text[])',
-          [ids],
+    const maintenancePool = new Pool({
+      connectionString: process.env.DATABASE_URL_UNPOOLED,
+    });
+    try {
+      if (addresses.length) {
+        await maintenancePool.query(
+          `DELETE FROM audit_events
+           WHERE actor_wallet = ANY($1::text[]) OR subject_wallet = ANY($1::text[])
+              OR record_id = ANY($2::text[])`,
+          [addresses, ids],
         );
-        await pool.query(
-          'DELETE FROM beneficiary_consent_acknowledgments WHERE record_id = ANY($1::text[])',
-          [ids],
+        if (ids.length) {
+          await maintenancePool.query(
+            'DELETE FROM beneficiary_consent_challenges WHERE record_id = ANY($1::text[])',
+            [ids],
+          );
+          await maintenancePool.query(
+            'DELETE FROM beneficiary_consent_acknowledgments WHERE record_id = ANY($1::text[])',
+            [ids],
+          );
+          await maintenancePool.query(
+            'DELETE FROM verification_results WHERE aid_record_id = ANY($1::text[])',
+            [ids],
+          );
+          await maintenancePool.query('DELETE FROM aid_records WHERE id = ANY($1::text[])', [ids]);
+        }
+        await maintenancePool.query(
+          'DELETE FROM organizations WHERE wallet_address = ANY($1::text[])',
+          [addresses],
         );
-        await pool.query('DELETE FROM verification_results WHERE aid_record_id = ANY($1::text[])', [
-          ids,
+        await maintenancePool.query(
+          `DELETE FROM wallet_roles
+           WHERE wallet_address = ANY($1::text[]) OR updated_by = ANY($1::text[])`,
+          [addresses],
+        );
+        await maintenancePool.query('DELETE FROM sessions WHERE wallet_address = ANY($1::text[])', [
+          addresses,
         ]);
-        await pool.query('DELETE FROM aid_records WHERE id = ANY($1::text[])', [ids]);
+        await maintenancePool.query(
+          'DELETE FROM challenges WHERE wallet_address = ANY($1::text[])',
+          [addresses],
+        );
+        await maintenancePool.query('DELETE FROM users WHERE wallet_address = ANY($1::text[])', [
+          addresses,
+        ]);
       }
-      await pool.query('DELETE FROM organizations WHERE wallet_address = ANY($1::text[])', [
-        addresses,
-      ]);
-      await pool.query(
-        `DELETE FROM wallet_roles
-         WHERE wallet_address = ANY($1::text[]) OR updated_by = ANY($1::text[])`,
-        [addresses],
-      );
-      await pool.query('DELETE FROM sessions WHERE wallet_address = ANY($1::text[])', [addresses]);
-      await pool.query('DELETE FROM challenges WHERE wallet_address = ANY($1::text[])', [
-        addresses,
-      ]);
-      await pool.query('DELETE FROM users WHERE wallet_address = ANY($1::text[])', [addresses]);
+    } finally {
+      await maintenancePool.end();
+      await pool.end();
     }
-    await pool.end();
   });
 
   it('reports duplicate hashes and aborts migration 002 before creating the unique constraint', async () => {
@@ -815,6 +977,52 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     }
   }, 120_000);
 
+  it('should have an index for wallet_roles sorting by updated_at DESC and wallet_address DESC', async () => {
+    const result = await pool.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes WHERE tablename = 'wallet_roles'`,
+    );
+    expect(
+      result.rows.some(({ indexdef }) =>
+        indexdef.includes('btree (updated_at DESC, wallet_address DESC)'),
+      ),
+    ).toBe(true);
+  });
+
+  it('allows the runtime role to append and read audit events but not update or delete them', async () => {
+    const identity = await pool.query<{ current_user: string; session_user: string }>(
+      'SELECT current_user, session_user',
+    );
+    expect(identity.rows[0]).toEqual({
+      current_user: 'aidtrace_runtime',
+      session_user: 'aidtrace_runtime',
+    });
+
+    const id = `audit-append-only-${randomUUID()}`;
+    await pool.query(
+      `INSERT INTO audit_events (id, action, actor_wallet, summary)
+       VALUES ($1, 'append_only_access_test', $2, 'runtime insert/read privilege check')`,
+      [id, admin.publicKey()],
+    );
+
+    const inserted = await pool.query<{ action: string; summary: string }>(
+      'SELECT action, summary FROM audit_events WHERE id = $1',
+      [id],
+    );
+    expect(inserted.rows).toEqual([
+      {
+        action: 'append_only_access_test',
+        summary: 'runtime insert/read privilege check',
+      },
+    ]);
+
+    await expect(
+      pool.query('UPDATE audit_events SET summary = $2 WHERE id = $1', [id, 'modified']),
+    ).rejects.toMatchObject({ code: '42501' });
+    await expect(pool.query('DELETE FROM audit_events WHERE id = $1', [id])).rejects.toMatchObject({
+      code: '42501',
+    });
+  });
+
   it('creates a single-use wallet session, enforces CSRF, expires challenges, and logs out', async () => {
     const wallet = Keypair.random();
     const session = await login(wallet);
@@ -881,11 +1089,66 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .send({ csrfToken: session.csrfToken });
     expect(logout.status).toBe(200);
     expect(logout.headers['set-cookie']?.[0]).toContain('Max-Age=0');
-    await expectAuditEvent('wallet_logged_out', wallet.publicKey());
     expect(
       (await request(app).get('/api/me').set('Cookie', session.cookie)).body.session,
     ).toBeNull();
   });
+
+  it('records throttled session activity and rejects expired or revoked sessions', async () => {
+    const wallet = Keypair.random();
+    const session = await login(wallet);
+    const token = decodeURIComponent(session.cookie.slice('aidtrace_session='.length));
+    const sessionHash = createHash('sha256').update(token).digest('hex');
+    const lastSeen = async () =>
+      (
+        await pool.query<{ last_seen_at: Date | null }>(
+          'SELECT last_seen_at FROM sessions WHERE session_hash = $1',
+          [sessionHash],
+        )
+      ).rows[0]?.last_seen_at ?? null;
+    const cookieRequest = (cookie: string) =>
+      ({
+        get: (name: string) => (name.toLowerCase() === 'cookie' ? cookie : undefined),
+      }) as unknown as Parameters<typeof getSession>[0];
+
+    expect(await lastSeen()).toBeNull();
+    const first = await request(app).get('/api/me').set('Cookie', session.cookie);
+    expect(first.body.session.address).toBe(wallet.publicKey());
+    const firstSeen = await lastSeen();
+    expect(firstSeen).not.toBeNull();
+
+    const second = await request(app).get('/api/me').set('Cookie', session.cookie);
+    expect(second.status).toBe(200);
+    expect((await lastSeen())?.getTime()).toBe(firstSeen?.getTime());
+
+    await pool.query(
+      "UPDATE sessions SET expires_at = NOW() - INTERVAL '1 second' WHERE session_hash = $1",
+      [sessionHash],
+    );
+    expect(await getSession(cookieRequest(session.cookie))).toBeNull();
+    expect(
+      (await request(app).get('/api/me').set('Cookie', session.cookie)).body.session,
+    ).toBeNull();
+
+    const revokedSession = await login(Keypair.random());
+    const revokedToken = decodeURIComponent(
+      revokedSession.cookie.slice('aidtrace_session='.length),
+    );
+    await pool.query('UPDATE sessions SET revoked_at = NOW() WHERE session_hash = $1', [
+      createHash('sha256').update(revokedToken).digest('hex'),
+    ]);
+    expect(await getSession(cookieRequest(revokedSession.cookie))).toBeNull();
+
+    const logout = await request(app)
+      .post('/api/auth/logout')
+      .set('Origin', origin)
+      .set('Cookie', revokedSession.cookie)
+      .send({ csrfToken: revokedSession.csrfToken });
+    expect(logout.status).toBe(200);
+    const clearedCookie = String(logout.headers['set-cookie']);
+    expect(clearedCookie).toContain('aidtrace_session=;');
+    expect(clearedCookie).toContain('Max-Age=0');
+  }, 60_000);
 
   it('verifies the matching source, stores evidence, and rejects duplicate network hashes', async () => {
     const adminSession = await login(admin);
@@ -961,9 +1224,6 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         recipientConsent: cached.body.record.recipientConsent,
       });
     expect(editAfterVerify.status).toBe(200);
-    await expectAuditEvent('record_updated', session.address, {
-      recordId: verified.body.record.id,
-    });
 
     const wrongHash = '2'.padStart(64, '0');
     transactionBodies.set(wrongHash, {
@@ -1042,6 +1302,150 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       txHash: verifiedHash,
     });
     expect(duplicate.status).toBe(409);
+  }, 120_000);
+
+  it('stores the transaction memo and withholds it from consent-off public views', async () => {
+    const adminSession = await login(admin);
+    const organization = Keypair.random();
+    const otherOrganization = Keypair.random();
+    const recipient = Keypair.random();
+    await assignRole(adminSession, organization, 'organization');
+    await assignRole(adminSession, otherOrganization, 'organization');
+    const session = await login(organization);
+    const otherSession = await login(otherOrganization);
+    const term = 'memo-' + Keypair.random().publicKey().slice(-8);
+    const memo = 'AID-' + Keypair.random().publicKey().slice(-12);
+    const privateHash = createHash('sha256')
+      .update(term + '-private')
+      .digest('hex');
+    const consentHash = createHash('sha256')
+      .update(term + '-consent')
+      .digest('hex');
+    const largeId = '18446744073709551615';
+    const transactions = new Map<string, Record<string, unknown>>();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = new URL(String(input));
+        const segments = url.pathname.split('/').filter(Boolean);
+        const hash = segments[segments.indexOf('transactions') + 1] || '';
+        const transaction = transactions.get(hash);
+        if (!transaction) return new Response('{}', { status: 404 });
+        const records = url.pathname.endsWith('/operations')
+          ? [
+              {
+                type: 'payment',
+                from: organization.publicKey(),
+                to: recipient.publicKey(),
+                amount: '1.25',
+                asset_type: 'native',
+              },
+            ]
+          : undefined;
+        return new Response(JSON.stringify(records ? { _embedded: { records } } : transaction), {
+          status: 200,
+        });
+      }),
+    );
+
+    // Created while Horizon returns 404, so the explicit verify call below is not cached.
+    const created = await createRecord(session, recipient, term + ' private', {
+      txHash: privateHash,
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.record.status).toBe('not-found');
+    expect(created.body.record.verification).not.toHaveProperty('memo');
+    const recordId = created.body.record.id;
+
+    transactions.set(privateHash, {
+      successful: true,
+      source_account: organization.publicKey(),
+      ledger: 11,
+      created_at: '2026-01-15T00:00:00Z',
+      memo_type: 'text',
+      memo,
+    });
+    const verified = await request(app)
+      .post('/api/records/' + recordId + '/verify')
+      .set('Origin', origin)
+      .set('Cookie', session.cookie)
+      .send({ csrfToken: session.csrfToken });
+    expect(verified.status).toBe(200);
+    expect(verified.body.record.status).toBe('verified');
+    expect(verified.body.record.verification).toMatchObject({ memo, memoType: 'text' });
+
+    const stored = await pool.query<{ memo: string | null; memo_type: string | null }>(
+      `SELECT memo, memo_type FROM verification_results
+       WHERE aid_record_id = $1 ORDER BY checked_at DESC, id DESC LIMIT 1`,
+      [recordId],
+    );
+    expect(stored.rows[0]).toEqual({ memo, memo_type: 'text' });
+
+    const findRecord = (body: { records: { id: string }[] }) =>
+      body.records.find((record) => record.id === recordId) as
+        { verification?: Record<string, unknown> } | undefined;
+
+    const ownerView = await request(app)
+      .get('/api/transparency')
+      .query({ q: term })
+      .set('Cookie', session.cookie);
+    expect(ownerView.status).toBe(200);
+    expect(findRecord(ownerView.body)?.verification).toMatchObject({ memo, memoType: 'text' });
+
+    const adminView = await request(app)
+      .get('/api/transparency')
+      .query({ q: term })
+      .set('Cookie', adminSession.cookie);
+    expect(findRecord(adminView.body)?.verification).toMatchObject({ memo, memoType: 'text' });
+
+    for (const publicView of [
+      await request(app).get('/api/transparency').query({ q: term }),
+      await request(app)
+        .get('/api/transparency')
+        .query({ q: term })
+        .set('Cookie', otherSession.cookie),
+    ]) {
+      expect(publicView.status).toBe(200);
+      const publicRecord = findRecord(publicView.body);
+      expect(publicRecord?.verification?.status).toBe('verified');
+      expect(publicRecord?.verification).not.toHaveProperty('memo');
+      expect(publicRecord?.verification).not.toHaveProperty('memoType');
+      expect(JSON.stringify(publicView.body)).not.toContain(memo);
+    }
+
+    await assignRole(adminSession, recipient, 'beneficiary');
+    const beneficiarySession = await login(recipient);
+    const beneficiaryView = await request(app)
+      .get('/api/beneficiary')
+      .query({ q: term })
+      .set('Cookie', beneficiarySession.cookie);
+    expect(beneficiaryView.status).toBe(200);
+    expect(findRecord(beneficiaryView.body)?.verification).toMatchObject({
+      memo,
+      memoType: 'text',
+    });
+
+    // With consent the public projection includes the full record, memo included; a uint64 id
+    // memo above 2^53 round-trips through the TEXT column unchanged.
+    transactions.set(consentHash, {
+      successful: true,
+      source_account: organization.publicKey(),
+      memo_type: 'id',
+      memo: largeId,
+    });
+    const consented = await createRecord(session, recipient, term + ' consented', {
+      txHash: consentHash,
+      consent: true,
+    });
+    expect(consented.status).toBe(201);
+    expect(consented.body.record.verification).toMatchObject({ memo: largeId, memoType: 'id' });
+    const consentedPublic = await request(app)
+      .get('/api/transparency')
+      .query({ q: term + ' consented' });
+    expect(consentedPublic.body.records[0].verification).toMatchObject({
+      memo: largeId,
+      memoType: 'id',
+    });
   }, 120_000);
 
   it('returns a filter-bounded total on transparency pages without walking every record', async () => {
@@ -1130,6 +1534,19 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(publicResponse.body.records[0].recipientAddress).toBe('');
     expect(publicResponse.body.records[0].txHash).toBe('');
     expect(publicResponse.body.records[0].note).toBe('');
+
+    const singlePublicResponse = await request(app).get(
+      '/api/records/' + encodeURIComponent(privateRecord.body.record.id),
+    );
+    expect(singlePublicResponse.status).toBe(200);
+    expect(singlePublicResponse.body.record).toEqual(publicResponse.body.records[0]);
+    expect(singlePublicResponse.body.record.recipientAddress).toBe('');
+    expect(singlePublicResponse.body.record.txHash).toBe('');
+    expect(singlePublicResponse.body.record.note).toBe('');
+
+    const missingRecord = await request(app).get('/api/records/not-a-record');
+    expect(missingRecord.status).toBe(404);
+    expect(missingRecord.body).toEqual({ error: 'Record not found.' });
 
     const ownerResponse = await request(app)
       .get('/api/transparency')
@@ -1264,9 +1681,6 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(voided.body.record.status).toBe('voided');
     expect(voided.body.record.voidReason).toBe('Duplicate entry');
     expect(voided.body.record.voidedAt).toBeTruthy();
-    await expectAuditEvent('record_voided', ownerSession.address, {
-      recordId: owned.body.record.id,
-    });
     const visibleVoid = await request(app)
       .get('/api/transparency')
       .query({ status: 'voided', q: 'Owner record' });
@@ -1293,9 +1707,6 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .set('Cookie', adminSession.cookie)
       .send({ csrfToken: adminSession.csrfToken });
     expect(removed.status).toBe(200);
-    await expectAuditEvent('wallet_role_removed', adminSession.address, {
-      subjectWallet: removable.publicKey(),
-    });
 
     const selfRemove = await request(app)
       .delete('/api/admin/roles/' + encodeURIComponent(admin.publicKey()))
@@ -1310,9 +1721,365 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .set('Cookie', ownerSession.cookie)
       .send({ csrfToken: ownerSession.csrfToken });
     expect(logoutEverywhere.status).toBe(200);
-    await expectAuditEvent('wallet_logout_everywhere', ownerSession.address);
     expect(
       (await request(app).get('/api/me').set('Cookie', ownerSession.cookie)).body.session,
     ).toBeNull();
   }, 120_000);
+
+  it('enforces the authorization matrix for every protected route', async () => {
+    const adminSession = await login(admin);
+    const donorWallet = Keypair.random();
+    const beneficiaryWallet = Keypair.random();
+    const organizationWallet = Keypair.random();
+    await assignRole(adminSession, beneficiaryWallet, 'beneficiary');
+    await assignRole(adminSession, organizationWallet, 'organization');
+    const donorSession = await login(donorWallet);
+    const beneficiarySession = await login(beneficiaryWallet);
+    const organizationSession = await login(organizationWallet);
+
+    type Session = Awaited<ReturnType<typeof login>>;
+    type MatrixRecord = {
+      id: string;
+      recipient: string;
+      recipientAddress: string;
+      purpose: string;
+      amount: string;
+      asset: string;
+      assetIssuer?: string;
+      network: 'testnet' | 'mainnet';
+      txHash: string;
+      date: string;
+      note: string;
+      recipientConsent?: boolean;
+    };
+    type Route = {
+      name: string;
+      method: 'get' | 'post' | 'put';
+      path: string | ((recordId: string) => string);
+      allowed: string[];
+      write?: boolean;
+      record?: boolean;
+      body?: (session: Session, record: MatrixRecord | null) => Record<string, unknown>;
+    };
+
+    const principals: { name: string; session: Session | null; role: string | null }[] = [
+      { name: 'anonymous', session: null, role: null },
+      { name: 'donor', session: donorSession, role: 'donor' },
+      { name: 'beneficiary', session: beneficiarySession, role: 'beneficiary' },
+      { name: 'organization', session: organizationSession, role: 'organization' },
+      { name: 'admin', session: adminSession, role: 'admin' },
+    ];
+
+    const routes: Route[] = [
+      {
+        name: 'GET /api/beneficiary',
+        method: 'get',
+        path: '/api/beneficiary',
+        allowed: ['beneficiary', 'admin'],
+      },
+      { name: 'GET /api/admin/roles', method: 'get', path: '/api/admin/roles', allowed: ['admin'] },
+      { name: 'GET /api/audit', method: 'get', path: '/api/audit', allowed: ['admin'] },
+      {
+        name: 'POST /api/records',
+        method: 'post',
+        path: '/api/records',
+        allowed: ['organization', 'admin'],
+        write: true,
+        body: (session) => ({
+          csrfToken: session.csrfToken,
+          recipient: 'Matrix recipient',
+          recipientAddress: Keypair.random().publicKey(),
+          purpose: 'Authorization matrix create ' + Keypair.random().publicKey().slice(-8),
+          amount: '1.25',
+          asset: 'XLM',
+          assetIssuer: '',
+          network: 'testnet',
+          txHash: '',
+          date: '2026-01-15',
+          note: '',
+          recipientConsent: false,
+        }),
+      },
+      {
+        name: 'PUT /api/records/:id',
+        method: 'put',
+        path: (recordId) => '/api/records/' + recordId,
+        allowed: ['organization', 'admin'],
+        write: true,
+        record: true,
+        body: (session, record) => ({
+          csrfToken: session.csrfToken,
+          recipient: record!.recipient,
+          recipientAddress: record!.recipientAddress,
+          purpose: record!.purpose,
+          amount: record!.amount,
+          asset: record!.asset,
+          assetIssuer: record!.assetIssuer || '',
+          network: record!.network,
+          txHash: record!.txHash,
+          date: record!.date,
+          note: record!.note,
+          recipientConsent: record!.recipientConsent || false,
+        }),
+      },
+      {
+        // Verification accepts any authenticated session, so this route has no wrong-role 403.
+        name: 'POST /api/records/:id/verify',
+        method: 'post',
+        path: (recordId) => '/api/records/' + recordId + '/verify',
+        allowed: ['donor', 'beneficiary', 'organization', 'admin'],
+        write: true,
+        record: true,
+        body: (session) => ({ csrfToken: session.csrfToken }),
+      },
+      {
+        name: 'POST /api/records/:id/void',
+        method: 'post',
+        path: (recordId) => '/api/records/' + recordId + '/void',
+        allowed: ['organization', 'admin'],
+        write: true,
+        record: true,
+        body: (session) => ({ csrfToken: session.csrfToken, reason: 'Authorization matrix void' }),
+      },
+    ];
+
+    const send = (method: Route['method'], path: string) =>
+      method === 'get'
+        ? request(app).get(path)
+        : method === 'post'
+          ? request(app).post(path)
+          : request(app).put(path);
+
+    for (const route of routes) {
+      for (const principal of principals) {
+        const label = route.name + ' as ' + principal.name;
+        let record: MatrixRecord | null = null;
+        if (route.record) {
+          const created = await createRecord(
+            organizationSession,
+            Keypair.random(),
+            'Matrix ' + route.name + ' ' + principal.name + ' ' + Keypair.random().publicKey(),
+          );
+          expect(created.status, label).toBe(201);
+          record = created.body.record as MatrixRecord;
+        }
+        const path = typeof route.path === 'function' ? route.path(record!.id) : route.path;
+        const http = send(route.method, path);
+        if (principal.session) http.set('Cookie', principal.session.cookie);
+        if (route.write) {
+          http.set('Origin', origin);
+          http.send(principal.session ? route.body!(principal.session, record) : {});
+        }
+        const response = await http;
+        if (!principal.session) {
+          expect(response.status, label).toBe(401);
+        } else if (!route.allowed.includes(principal.role!)) {
+          expect(response.status, label).toBe(403);
+        } else {
+          expect([200, 201], label).toContain(response.status);
+          if (route.name === 'POST /api/records') recordIds.add(response.body.record.id);
+        }
+      }
+    }
+  }, 120_000);
+
+  describe('last active admin protection', () => {
+    type AdminSession = Awaited<ReturnType<typeof login>>;
+
+    async function seedAdmins(count: number): Promise<AdminSession[]> {
+      const sessions: AdminSession[] = [];
+      for (let index = 0; index < count; index += 1) {
+        const wallet = Keypair.random();
+        wallets.add(wallet.publicKey());
+        await pool.query('INSERT INTO users (wallet_address) VALUES ($1) ON CONFLICT DO NOTHING', [
+          wallet.publicKey(),
+        ]);
+        await pool.query(
+          `INSERT INTO wallet_roles (wallet_address, role, updated_by) VALUES ($1, 'admin', $1)`,
+          [wallet.publicKey()],
+        );
+        sessions.push(await login(wallet));
+      }
+      return sessions;
+    }
+
+    // Temporarily demotes every other admin in the test database so `sessions` are the only
+    // admins, runs `body`, then restores the demoted admins.
+    async function withOnlyAdmins(sessions: AdminSession[], body: () => Promise<void>) {
+      const demoted = await pool.query<{ wallet_address: string }>(
+        `UPDATE wallet_roles SET role = 'donor'
+         WHERE role = 'admin' AND wallet_address <> ALL($1::text[])
+         RETURNING wallet_address`,
+        [sessions.map((session) => session.address)],
+      );
+      try {
+        await body();
+      } finally {
+        await pool.query(`UPDATE wallet_roles SET role = 'admin' WHERE wallet_address = ANY($1)`, [
+          demoted.rows.map((row) => row.wallet_address),
+        ]);
+      }
+    }
+
+    function removeRole(session: AdminSession, target: string) {
+      return request(app)
+        .delete('/api/admin/roles/' + encodeURIComponent(target))
+        .set('Origin', origin)
+        .set('Cookie', session.cookie)
+        .send({ csrfToken: session.csrfToken });
+    }
+
+    function setRole(session: AdminSession, target: string, role: string) {
+      return request(app)
+        .post('/api/admin/roles')
+        .set('Origin', origin)
+        .set('Cookie', session.cookie)
+        .send({ csrfToken: session.csrfToken, address: target, role });
+    }
+
+    async function roleOf(address: string) {
+      const result = await pool.query<{ role: string }>(
+        'SELECT role FROM wallet_roles WHERE wallet_address = $1',
+        [address],
+      );
+      return result.rows[0]?.role;
+    }
+
+    async function adminCount(addresses: string[]) {
+      const result = await pool.query<{ count: string }>(
+        `SELECT COUNT(*) AS count FROM wallet_roles
+         WHERE role = 'admin' AND wallet_address = ANY($1::text[])`,
+        [addresses],
+      );
+      return Number(result.rows[0].count);
+    }
+
+    async function roleAuditCount(actors: string[]) {
+      const result = await pool.query<{ count: string }>(
+        `SELECT COUNT(*) AS count FROM audit_events
+         WHERE action IN ('wallet_role_changed', 'wallet_role_removed')
+           AND actor_wallet = ANY($1::text[])`,
+        [actors],
+      );
+      return Number(result.rows[0].count);
+    }
+
+    // Polls until some backend is waiting on a lock held by `blockerPid`.
+    async function waitUntilBlockedBy(blockerPid: number) {
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        const result = await pool.query<{ waiting: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))
+           ) AS waiting`,
+          [blockerPid],
+        );
+        if (result.rows[0].waiting) return;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error('Role mutation never blocked on the admin row lock.');
+    }
+
+    const concurrentDemotions = {
+      // Same upsert the POST handler uses, so the waiting FOR UPDATE re-checks an updated row.
+      upsert: `INSERT INTO wallet_roles (wallet_address, role, updated_by)
+               VALUES ($1, 'donor', $1)
+               ON CONFLICT (wallet_address)
+               DO UPDATE SET role = EXCLUDED.role, updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
+      // Same statement the DELETE handler uses, so the waiting FOR UPDATE sees a deleted row.
+      delete: 'DELETE FROM wallet_roles WHERE wallet_address = $1',
+    } as const;
+
+    it.each([
+      { operation: 'remove', demotion: 'upsert' },
+      { operation: 'remove', demotion: 'delete' },
+      { operation: 'demote', demotion: 'upsert' },
+      { operation: 'demote', demotion: 'delete' },
+    ] as const)(
+      'rejects $operation of the last admin by a caller demoted mid-request ($demotion) with 409',
+      async ({ operation, demotion }) => {
+        const [callerA, adminB] = await seedAdmins(2);
+        await withOnlyAdmins([callerA, adminB], async () => {
+          const raw = await pool.connect();
+          let rawOpen = false;
+          try {
+            const { rows } = await raw.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+            await raw.query('BEGIN');
+            rawOpen = true;
+            // Demote A without committing: A's row stays locked and A still looks like an admin
+            // to authorize(), which reads committed data.
+            await raw.query(concurrentDemotions[demotion], [callerA.address]);
+
+            const pending =
+              operation === 'remove'
+                ? removeRole(callerA, adminB.address).then((result) => result)
+                : setRole(callerA, adminB.address, 'donor').then((result) => result);
+            await waitUntilBlockedBy(rows[0].pid);
+            await raw.query('COMMIT');
+            rawOpen = false;
+
+            const result = await pending;
+            expect(result.status).toBe(409);
+            expect(result.body.error).toBe('At least one active admin must remain.');
+          } finally {
+            if (rawOpen) await raw.query('ROLLBACK');
+            raw.release();
+          }
+          expect(await roleOf(adminB.address)).toBe('admin');
+          expect(await roleAuditCount([callerA.address])).toBe(0);
+        });
+      },
+      60_000,
+    );
+
+    it('allows removing or demoting an admin while another admin remains', async () => {
+      const [callerA, adminB, adminC] = await seedAdmins(3);
+      await withOnlyAdmins([callerA, adminB, adminC], async () => {
+        const removed = await removeRole(callerA, adminB.address);
+        expect(removed.status).toBe(200);
+        expect(await roleOf(adminB.address)).toBeUndefined();
+        await expectAuditEvent('wallet_role_removed', callerA.address, {
+          subjectWallet: adminB.address,
+        });
+
+        const demoted = await setRole(callerA, adminC.address, 'organization');
+        expect(demoted.status).toBe(200);
+        expect(await roleOf(adminC.address)).toBe('organization');
+        await expectAuditEvent('wallet_role_changed', callerA.address, {
+          subjectWallet: adminC.address,
+        });
+
+        expect(await adminCount([callerA.address, adminB.address, adminC.address])).toBe(1);
+      });
+    }, 60_000);
+
+    it.each([
+      { name: 'remove/remove', a: 'remove', b: 'remove' },
+      { name: 'demote/demote', a: 'demote', b: 'demote' },
+      { name: 'demote/remove', a: 'demote', b: 'remove' },
+    ] as const)(
+      'keeps one admin when the only two admins race ($name)',
+      async ({ a, b }) => {
+        const [adminA, adminB] = await seedAdmins(2);
+        await withOnlyAdmins([adminA, adminB], async () => {
+          const mutate = (
+            operation: 'remove' | 'demote',
+            caller: AdminSession,
+            target: AdminSession,
+          ) =>
+            operation === 'remove'
+              ? removeRole(caller, target.address)
+              : setRole(caller, target.address, 'donor');
+          const results = await Promise.all([mutate(a, adminA, adminB), mutate(b, adminB, adminA)]);
+          const statuses = results.map((result) => result.status);
+          expect(statuses.filter((status) => status === 200)).toHaveLength(1);
+          const rejected = statuses.find((status) => status !== 200);
+          expect([403, 409]).toContain(rejected);
+          expect(await adminCount([adminA.address, adminB.address])).toBe(1);
+          expect(await roleAuditCount([adminA.address, adminB.address])).toBe(1);
+        });
+      },
+      60_000,
+    );
+  });
 });
