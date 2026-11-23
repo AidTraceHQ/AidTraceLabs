@@ -328,6 +328,22 @@ export default function App() {
     note: '',
     recipientConsent: false,
   });
+  const [formPristine, setFormPristine] = useState(form);
+  const formIsDirty = useMemo(
+    () =>
+      form.recipient !== formPristine.recipient ||
+      form.recipientAddress !== formPristine.recipientAddress ||
+      form.purpose !== formPristine.purpose ||
+      form.amount !== formPristine.amount ||
+      form.asset !== formPristine.asset ||
+      form.assetIssuer !== formPristine.assetIssuer ||
+      form.network !== formPristine.network ||
+      form.txHash !== formPristine.txHash ||
+      form.date !== formPristine.date ||
+      form.note !== formPristine.note ||
+      form.recipientConsent !== formPristine.recipientConsent,
+    [form, formPristine],
+  );
   const [roleAddress, setRoleAddress] = useState('');
   const [roleValue, setRoleValue] = useState<Role>('organization');
   const [auditAction, setAuditAction] = useState('all');
@@ -344,7 +360,10 @@ export default function App() {
   const rolesRequestInFlight = useRef(false);
   const formDialogRef = useRef<HTMLDivElement>(null);
   const detailDialogRef = useRef<HTMLElement>(null);
-  const closeForm = useCallback(() => setShowForm(false), []);
+  const closeForm = useCallback(() => {
+    if (formIsDirty && !window.confirm('You have unsaved changes. Discard them?')) return;
+    setShowForm(false);
+  }, [formIsDirty]);
   const closeDetail = useCallback(() => {
     setSelected(null);
     setRecordConflictId(null);
@@ -1411,7 +1430,10 @@ export default function App() {
                   <button
                     className="button primary compact"
                     id="add-record"
-                    onClick={() => setShowForm(true)}
+                    onClick={() => {
+                      setFormPristine(form);
+                      setShowForm(true);
+                    }}
                   >
                     <Plus size={14} />
                     Add record
