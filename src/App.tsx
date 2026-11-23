@@ -14,6 +14,7 @@ import {
 } from './network-preference';
 import { readThemePreference, writeThemePreference, type Theme } from './theme-preference';
 import { localDateString } from './date';
+import { VerificationDetail } from './verification-detail';
 import {
   Activity,
   ArrowDownToLine,
@@ -2243,7 +2244,7 @@ export default function App() {
                 </dd>
               </div>
               <div>
-                <dt>Created</dt>
+                <dt>Record created</dt>
                 <dd>
                   {selected.createdAt ? new Date(selected.createdAt).toLocaleString() : '—'} by{' '}
                   {short(selected.createdBy)}
@@ -2256,20 +2257,7 @@ export default function App() {
                   {labelStatus(selected.status)}
                 </dd>
               </div>
-              {selected.verification?.reason && (
-                <div>
-                  <dt>Verification note</dt>
-                  <dd>{selected.verification.reason}</dd>
-                </div>
-              )}
-              {selected.verification?.memo && selected.verification.memoType && (
-                <div>
-                  <dt>Memo</dt>
-                  <dd>
-                    {selected.verification.memoType}: {selected.verification.memo}
-                  </dd>
-                </div>
-              )}
+              <VerificationDetail record={selected} />
               {selected.voidReason && (
                 <div>
                   <dt>Void reason</dt>
