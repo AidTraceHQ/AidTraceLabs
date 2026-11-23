@@ -21,6 +21,8 @@ import {
   type RecordFormState,
 } from './record-form';
 import { readThemePreference, writeThemePreference, type Theme } from './theme-preference';
+import { localDateString } from './date';
+import { createToastScheduler } from './toast';
 import {
   Activity,
   ArrowDownToLine,
@@ -336,10 +338,9 @@ export default function App() {
   useDialogFocus(showForm, formDialogRef, closeForm, '#add-record');
   useDialogFocus(!!selected, detailDialogRef, closeDetail, `[data-record-id="${selected?.id}"]`);
 
-  const notify = useCallback((text: string) => {
-    setToast(text);
-    window.setTimeout(() => setToast(''), 3600);
-  }, []);
+  const toastScheduler = useMemo(() => createToastScheduler(setToast), []);
+  const notify = useCallback((text: string) => toastScheduler.show(text), [toastScheduler]);
+  useEffect(() => () => toastScheduler.cancel(), [toastScheduler]);
   const fetchLedgerPage = useCallback(
     async (index: number, cursors: Array<string | null>) => {
       const requestId = ++transparencyRequestId.current;
@@ -1018,6 +1019,7 @@ export default function App() {
       (session.role === 'organization' && selected.organization === session.address));
   const selectedDifferences = selected?.verification?.differences || [];
   const selectedMismatchDetails = selected ? mismatchDetails(selected) : [];
+  const environment = describeNetworkEnvironment(network);
 
   function sortRecords(field: string) {
     if (sortBy === field) setSortDir((current) => (current === 'asc' ? 'desc' : 'asc'));
@@ -1141,6 +1143,17 @@ export default function App() {
           )}
         </div>
       </header>
+
+      <div className={`network-banner ${network}`} role="status" aria-live="polite">
+        {environment.isTestnet ? (
+          <CircleAlert size={16} aria-hidden="true" />
+        ) : (
+          <ShieldCheck size={16} aria-hidden="true" />
+        )}
+        <span>
+          <strong>{environment.label} environment.</strong> {environment.message}
+        </span>
+      </div>
 
       <main>
         <section className="hero">
