@@ -66,6 +66,23 @@ describe('Freighter signed challenge creates a secure session', () => {
       .send('{');
     expect(malformed.status).toBe(400);
 
+    const unsupportedCharset = await request(app)
+      .post('/api/records')
+      .set('Origin', origin)
+      .set('Content-Type', 'application/json; charset=utf-16le')
+      .send('{}');
+    expect(unsupportedCharset.status).toBe(415);
+    expect(unsupportedCharset.body).toEqual({ error: 'Unsupported request encoding.' });
+
+    const unsupportedEncoding = await request(app)
+      .post('/api/records')
+      .set('Origin', origin)
+      .set('Content-Type', 'application/json')
+      .set('Content-Encoding', 'compress')
+      .send('{}');
+    expect(unsupportedEncoding.status).toBe(415);
+    expect(unsupportedEncoding.body).toEqual({ error: 'Unsupported request encoding.' });
+
     const preflight = await request(app)
       .options('/api/records')
       .set('Origin', origin)
