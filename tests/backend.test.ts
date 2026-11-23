@@ -7,7 +7,7 @@ import { applyUniqueNetworkTxHashMigration, migrate } from '../scripts/migrate.j
 import { app } from '../server/app.js';
 import { getSession, verifySep53Signature } from '../server/auth.js';
 import { IDLE_IN_TRANSACTION_TIMEOUT_MS, pool } from '../server/db.js';
-import { checkTransaction } from '../server/stellar-verification.js';
+import { checkTransaction, HORIZON_MAX_RESPONSE_BYTES } from '../server/stellar-verification.js';
 
 const origin = 'http://localhost:5173';
 
@@ -381,6 +381,90 @@ describe('On-chain verification distinguishes matching and mismatching payments'
     const notFound = await checkTransaction(record);
     expect(notFound.status).toBe('not-found');
     expect(notFound).not.toHaveProperty('memo');
+  });
+
+  it('bounds the Horizon response size and rejects a non-array operations payload', async () => {
+    const organization = Keypair.random().publicKey();
+    const recipient = Keypair.random().publicKey();
+    const record = {
+      network: 'testnet' as const,
+      txHash: 'e'.repeat(64),
+      organizationWallet: organization,
+      recipientWallet: recipient,
+      amountStroops: '12500000',
+      assetCode: 'XLM',
+      assetIssuer: null,
+    };
+
+    const oversizedFetch = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/operations')) {
+        return new Response(JSON.stringify({ _embedded: { records: [] } }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({
+          successful: true,
+          source_account: organization,
+          padding: 'x'.repeat(HORIZON_MAX_RESPONSE_BYTES),
+        }),
+        { status: 200 },
+      );
+    });
+    vi.stubGlobal('fetch', oversizedFetch);
+    expect((await checkTransaction(record)).status).toBe('pending');
+    // The oversized transaction body is abandoned before the operations request is made.
+    expect(oversizedFetch).toHaveBeenCalledTimes(1);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = new URL(String(input));
+        return url.pathname.endsWith('/operations')
+          ? new Response(JSON.stringify({ _embedded: { records: 'not-an-array' } }), {
+              status: 200,
+            })
+          : new Response(JSON.stringify({ successful: true, source_account: organization }), {
+              status: 200,
+            });
+      }),
+    );
+    expect((await checkTransaction(record)).status).toBe('pending');
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = new URL(String(input));
+        const body = url.pathname.endsWith('/operations')
+          ? {
+              _embedded: {
+                records: [
+                  {
+                    type: 'payment',
+                    from: organization,
+                    to: recipient,
+                    amount: '1.25',
+                    asset_type: 'native',
+                  },
+                ],
+              },
+            }
+          : {
+              successful: true,
+              source_account: organization,
+              ledger: 21,
+              created_at: '2026-01-01T00:00:00Z',
+            };
+        return new Response(JSON.stringify(body), { status: 200 });
+      }),
+    );
+    expect(await checkTransaction(record)).toMatchObject({
+      status: 'verified',
+      ledger: 21,
+      sourceAccount: organization,
+      destination: recipient,
+      amount: '1.25',
+      asset: 'XLM',
+    });
   });
 });
 
