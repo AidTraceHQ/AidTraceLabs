@@ -1,13 +1,45 @@
-import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
+import { createServer, type Socket } from 'node:net';
 import { Keypair } from '@stellar/stellar-sdk';
 import { Pool } from 'pg';
 import request from 'supertest';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyUniqueNetworkTxHashMigration, migrate } from '../scripts/migrate.js';
 import { app } from '../server/app.js';
-import { getSession, verifySep53Signature } from '../server/auth.js';
-import { IDLE_IN_TRANSACTION_TIMEOUT_MS, pool } from '../server/db.js';
-import { checkTransaction, HORIZON_MAX_RESPONSE_BYTES } from '../server/stellar-verification.js';
+import { verifySep53Signature } from '../server/auth.js';
+import { databaseReadinessTimeoutMs } from '../server/database-errors.js';
+import { pool, withTransaction } from '../server/db.js';
+import { parseNotificationConfig } from '../server/notification-config.js';
+import {
+  classifyStatus,
+  createMemoryReplayStore,
+  decryptField,
+  DELIVERY_HEADER,
+  DeliveryError,
+  encryptField,
+  httpsTransport,
+  isPublicAddress,
+  parseWebhookUrl,
+  retryDelayMs,
+  sendSignedWebhook,
+  SIGNATURE_HEADER,
+  signWebhook,
+  verifyWebhookSignature,
+  type Resolver,
+  type Transport,
+  type TransportRequest,
+  type TransportResponse,
+} from '../server/notification-security.js';
+import {
+  buildRecordEventPayload,
+  enqueueRecordEvent,
+  enqueueStatusChange,
+  lockRecordStatus,
+  processDueDeliveries,
+  resetNotificationDependencies,
+  setNotificationDependencies,
+} from '../server/notifications.js';
+import { checkTransaction } from '../server/stellar-verification.js';
 
 const origin = 'http://localhost:5173';
 
@@ -92,6 +124,79 @@ describe('Freighter signed challenge creates a secure session', () => {
     expect(preflight.status).toBe(204);
     expect(preflight.headers['access-control-allow-origin']).toBe(origin);
     expect(preflight.headers['access-control-allow-credentials']).toBe('true');
+  });
+});
+
+describe('Readiness probe reports database availability separately from liveness', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const leakyError = () =>
+    Object.assign(
+      new Error(
+        'connect ECONNREFUSED db-secret-host.internal:5432 ' +
+          'postgresql://leak_user:leak_password@db-secret-host.internal:5432/leak_db',
+      ),
+      { code: 'ECONNREFUSED' },
+    );
+
+  it('returns 200 with no-store when SELECT 1 succeeds', async () => {
+    const query = vi.spyOn(pool, 'query').mockResolvedValue({ rows: [{ '?column?': 1 }] } as never);
+
+    const response = await request(app).get('/api/_readiness');
+
+    expect(response.status).toBe(200);
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.body).toEqual({ ok: true, service: 'aidtrace-wallet-api', database: 'ready' });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledWith('SELECT 1');
+  });
+
+  it('returns a generic 503 that never echoes the driver error', async () => {
+    vi.spyOn(pool, 'query').mockRejectedValue(leakyError());
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const response = await request(app).get('/api/_readiness');
+
+    expect(response.status).toBe(503);
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.body).toEqual({ ok: false, error: 'database_unavailable' });
+    for (const secret of [
+      'postgresql://',
+      'db-secret-host',
+      'leak_user',
+      'leak_password',
+      'leak_db',
+      'ECONNREFUSED',
+    ]) {
+      expect(response.text).not.toContain(secret);
+    }
+    expect(JSON.stringify(log.mock.calls)).not.toContain('db-secret-host');
+  });
+
+  it('times out a hung query to 503 within the readiness bound', async () => {
+    vi.spyOn(pool, 'query').mockReturnValue(new Promise(() => {}) as never);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const started = Date.now();
+    const response = await request(app).get('/api/_readiness');
+    const elapsed = Date.now() - started;
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ ok: false, error: 'database_unavailable' });
+    expect(elapsed).toBeGreaterThanOrEqual(databaseReadinessTimeoutMs - 50);
+    expect(elapsed).toBeLessThan(databaseReadinessTimeoutMs + 1_500);
+  });
+
+  it('keeps /api/_healthcheck at 200 without touching the database', async () => {
+    const query = vi.spyOn(pool, 'query').mockRejectedValue(leakyError());
+    const connect = vi.spyOn(pool, 'connect');
+
+    const response = await request(app).get('/api/_healthcheck');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ ok: true, service: 'aidtrace-wallet-api' });
+    expect(query).not.toHaveBeenCalled();
+    expect(connect).not.toHaveBeenCalled();
   });
 });
 
@@ -517,6 +622,379 @@ describe('Per-IP rate-limit error contract', () => {
       vi.unstubAllEnvs();
       vi.resetModules();
     }
+  });
+});
+
+const notificationEnvironmentKeys = [
+  'NOTIFICATIONS_ENABLED',
+  'NOTIFICATIONS_ENCRYPTION_KEY',
+  'NOTIFICATIONS_MAX_ATTEMPTS',
+  'NOTIFICATIONS_CONNECT_TIMEOUT_MS',
+  'NOTIFICATIONS_READ_TIMEOUT_MS',
+  'NOTIFICATIONS_RETRY_BASE_MS',
+] as const;
+
+function clearNotificationEnvironment() {
+  for (const key of notificationEnvironmentKeys) delete process.env[key];
+}
+
+const publicResolver: Resolver = async () => [{ address: '93.184.215.14', family: 4 }];
+
+describe('Webhook notifications: signing, SSRF guard, redaction and disabled delivery', () => {
+  const secret = 'whsec_unit-test-signing-secret-value';
+  afterEach(() => {
+    clearNotificationEnvironment();
+    resetNotificationDependencies();
+  });
+
+  it('signs deliveries and rejects tampering, wrong keys, stale timestamps and replays', () => {
+    const now = Date.UTC(2026, 10, 20, 12, 0, 0);
+    const timestamp = Math.floor(now / 1000);
+    const body = JSON.stringify({ id: 'evt_1', type: 'record.created' });
+    const deliveryId = 'dlv_' + 'a'.repeat(32);
+    const header = signWebhook(secret, deliveryId, timestamp, body);
+    expect(header).toMatch(/^t=\d+,v1=[0-9a-f]{64}$/);
+    const store = createMemoryReplayStore(() => now);
+    const check = (overrides: Partial<Parameters<typeof verifyWebhookSignature>[0]> = {}) =>
+      verifyWebhookSignature({
+        secret,
+        signatureHeader: header,
+        deliveryId,
+        body,
+        replayStore: store,
+        nowMs: now,
+        ...overrides,
+      });
+
+    expect(check({ body: body.replace('created', 'voided') })).toEqual({
+      ok: false,
+      reason: 'mismatch',
+    });
+    expect(check({ secret: 'whsec_another-secret' })).toEqual({ ok: false, reason: 'mismatch' });
+    expect(check({ deliveryId: 'dlv_' + 'b'.repeat(32) })).toEqual({
+      ok: false,
+      reason: 'mismatch',
+    });
+    expect(check({ nowMs: now + 301_000 })).toEqual({ ok: false, reason: 'stale' });
+    expect(check({ signatureHeader: 'v1=deadbeef' })).toEqual({ ok: false, reason: 'malformed' });
+    expect(check({ signatureHeader: undefined })).toEqual({ ok: false, reason: 'malformed' });
+    // Failed checks must not consume the delivery id.
+    expect(check()).toEqual({ ok: true });
+    expect(check()).toEqual({ ok: false, reason: 'replayed' });
+    expect(check({ nowMs: now + 60_000 })).toEqual({ ok: false, reason: 'replayed' });
+  });
+
+  it('rejects loopback, private, link-local, unique-local and cloud-metadata addresses', () => {
+    for (const address of [
+      '127.0.0.1',
+      '127.255.0.9',
+      '10.0.0.1',
+      '172.16.4.2',
+      '192.168.1.10',
+      '169.254.169.254',
+      '100.64.0.1',
+      '0.0.0.0',
+      '224.0.0.1',
+      '255.255.255.255',
+      '::',
+      '::1',
+      'fe80::1',
+      'fc00::1',
+      'fd00:ec2::254',
+      '::ffff:127.0.0.1',
+      '::ffff:a9fe:a9fe',
+      '64:ff9b::a9fe:a9fe',
+      '2002:7f00:1::1',
+      'ff02::1',
+      'not-an-ip',
+    ]) {
+      expect(isPublicAddress(address), address).toBe(false);
+    }
+    for (const address of ['93.184.215.14', '8.8.8.8', '2606:4700:4700::1111']) {
+      expect(isPublicAddress(address), address).toBe(true);
+    }
+  });
+
+  it('accepts only HTTPS webhook URLs without embedded credentials', () => {
+    expect(parseWebhookUrl('https://hooks.example.test/aidtrace?x=1#fragment')?.toString()).toBe(
+      'https://hooks.example.test/aidtrace?x=1',
+    );
+    for (const value of [
+      'http://hooks.example.test/aidtrace',
+      'https://user:pass@hooks.example.test/',
+      'ftp://hooks.example.test/',
+      'not a url',
+      'https://' + 'a'.repeat(2100) + '.test/',
+      42,
+    ]) {
+      expect(parseWebhookUrl(value), String(value)).toBeNull();
+    }
+  });
+
+  it('blocks private targets before sending and re-checks every redirect hop', async () => {
+    const base = {
+      secret,
+      deliveryId: 'dlv_' + 'c'.repeat(32),
+      eventType: 'record.created',
+      body: '{}',
+      connectTimeoutMs: 1234,
+      readTimeoutMs: 5678,
+    };
+    const resolver: Resolver = async (host) =>
+      host.endsWith('.internal.test')
+        ? [{ address: '10.0.0.7', family: 4 }]
+        : host === 'mixed.example.test'
+          ? [
+              { address: '93.184.215.14', family: 4 },
+              { address: '127.0.0.1', family: 4 },
+            ]
+          : [{ address: '93.184.215.14', family: 4 }];
+
+    for (const target of [
+      'https://hooks.internal.test/x',
+      'https://mixed.example.test/x',
+      'https://127.0.0.1/x',
+      'https://[::1]/x',
+      'https://169.254.169.254/latest/meta-data',
+    ]) {
+      const transport = vi.fn<Transport>(async () => ({ status: 200, body: '' }));
+      await expect(
+        sendSignedWebhook({ ...base, url: new URL(target), transport, resolver }),
+      ).rejects.toMatchObject({ code: 'blocked_address', retryable: false });
+      expect(transport, target).not.toHaveBeenCalled();
+    }
+
+    for (const location of [
+      'https://hooks.internal.test/next',
+      'https://169.254.169.254/latest/meta-data',
+      'https://[fd00:ec2::254]/',
+    ]) {
+      const transport = vi.fn<Transport>(async () => ({ status: 307, location, body: '' }));
+      await expect(
+        sendSignedWebhook({
+          ...base,
+          url: new URL('https://hooks.example.test/a'),
+          transport,
+          resolver,
+        }),
+      ).rejects.toMatchObject({ code: 'blocked_address' });
+      expect(transport, location).toHaveBeenCalledTimes(1);
+    }
+
+    const insecureRedirect = vi.fn<Transport>(async () => ({
+      status: 308,
+      location: 'http://hooks.example.test/plain',
+      body: '',
+    }));
+    await expect(
+      sendSignedWebhook({
+        ...base,
+        url: new URL('https://hooks.example.test/a'),
+        transport: insecureRedirect,
+        resolver,
+      }),
+    ).rejects.toMatchObject({ code: 'redirect_rejected', retryable: false });
+
+    const loop = vi.fn<Transport>(async () => ({ status: 307, location: '/again', body: '' }));
+    await expect(
+      sendSignedWebhook({
+        ...base,
+        url: new URL('https://hooks.example.test/a'),
+        transport: loop,
+        resolver,
+      }),
+    ).rejects.toMatchObject({ code: 'redirect_limit' });
+    expect(loop).toHaveBeenCalledTimes(4);
+
+    const ok = vi.fn<Transport>(async () => ({ status: 204, body: '' }));
+    await sendSignedWebhook({
+      ...base,
+      url: new URL('https://hooks.example.test/a'),
+      transport: ok,
+      resolver,
+    });
+    const sent = ok.mock.calls[0]![0];
+    expect(sent.address).toEqual({ address: '93.184.215.14', family: 4 });
+    expect(sent.connectTimeoutMs).toBe(1234);
+    expect(sent.readTimeoutMs).toBe(5678);
+    expect(sent.headers[DELIVERY_HEADER]).toBe(base.deliveryId);
+    expect(sent.headers[SIGNATURE_HEADER]).toMatch(/^t=\d+,v1=[0-9a-f]{64}$/);
+  });
+
+  it('enforces an explicit connect timeout on the HTTPS transport', async () => {
+    // A local TCP listener that never answers the TLS handshake; nothing leaves the machine.
+    const sockets = new Set<Socket>();
+    const server = createServer((socket) => sockets.add(socket));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const started = Date.now();
+      await expect(
+        httpsTransport({
+          url: new URL(`https://hooks.example.test:${port}/`),
+          address: { address: '127.0.0.1', family: 4 },
+          headers: {},
+          body: '{}',
+          connectTimeoutMs: 150,
+          readTimeoutMs: 150,
+        }),
+      ).rejects.toMatchObject({ code: 'connect_timeout', retryable: true });
+      expect(Date.now() - started).toBeLessThan(5_000);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('bounds the retry backoff and classifies retryable responses', () => {
+    for (let attempt = 1; attempt <= 30; attempt += 1) {
+      const delay = retryDelayMs(attempt, 30_000, 3_600_000);
+      expect(delay).toBeGreaterThanOrEqual(15_000);
+      expect(delay).toBeLessThanOrEqual(3_600_000);
+    }
+    expect(retryDelayMs(1, 30_000, 3_600_000, () => 1)).toBe(30_000);
+    expect(retryDelayMs(2, 30_000, 3_600_000, () => 1)).toBe(60_000);
+    expect(retryDelayMs(30, 30_000, 3_600_000, () => 1)).toBe(3_600_000);
+    expect(classifyStatus(200)).toBe('delivered');
+    expect(classifyStatus(204)).toBe('delivered');
+    for (const status of [408, 425, 429, 500, 503]) expect(classifyStatus(status)).toBe('retry');
+    for (const status of [301, 400, 401, 403, 404, 410])
+      expect(classifyStatus(status)).toBe('fail');
+  });
+
+  it('minimizes event payloads to identifiers and status', () => {
+    const recipientWallet = Keypair.random().publicKey();
+    const organizationWallet = Keypair.random().publicKey();
+    const payload = buildRecordEventPayload({
+      eventId: 'evt_test',
+      type: 'record.verification_changed',
+      previousStatus: 'pending',
+      occurredAt: new Date('2026-11-20T00:00:00Z'),
+      record: {
+        id: 'record-1',
+        network: 'testnet',
+        status: 'verified',
+        version: 3,
+        recipient_name: 'Amina Example',
+        recipient_wallet: recipientWallet,
+        organization_wallet: organizationWallet,
+        note: 'Private contact note',
+        purpose: 'Medical support',
+        tx_hash: 'f'.repeat(64),
+        amount_stroops: '12500000',
+      },
+    });
+    expect(payload).toEqual({
+      id: 'evt_test',
+      type: 'record.verification_changed',
+      createdAt: '2026-11-20T00:00:00.000Z',
+      data: {
+        recordId: 'record-1',
+        network: 'testnet',
+        status: 'verified',
+        previousStatus: 'pending',
+        version: 3,
+      },
+    });
+    const serialized = JSON.stringify(payload);
+    for (const value of [
+      'Amina Example',
+      recipientWallet,
+      organizationWallet,
+      'Private contact note',
+      'Medical support',
+      'f'.repeat(64),
+      '12500000',
+    ]) {
+      expect(serialized).not.toContain(value);
+    }
+  });
+
+  it('encrypts stored secrets and binds each ciphertext to its row and field', () => {
+    const key = randomBytes(32);
+    const sealed = encryptField(key, secret, 'endpoint-1:secret');
+    expect(sealed).not.toContain(secret);
+    expect(decryptField(key, sealed, 'endpoint-1:secret')).toBe(secret);
+    expect(() => decryptField(key, sealed, 'endpoint-2:secret')).toThrow();
+    expect(() => decryptField(randomBytes(32), sealed, 'endpoint-1:secret')).toThrow();
+  });
+
+  it('validates notification configuration only when delivery is enabled', () => {
+    const base = {
+      SESSION_SECRET: 'session-secret-value-with-at-least-32-bytes',
+      PSEUDONYM_SECRET: 'pseudonym-secret-value-with-at-least-32-bytes',
+    };
+    expect(parseNotificationConfig({ ...base })).toEqual({ enabled: false });
+    expect(parseNotificationConfig({ ...base, NOTIFICATIONS_ENABLED: 'false' })).toEqual({
+      enabled: false,
+    });
+    expect(() => parseNotificationConfig({ ...base, NOTIFICATIONS_ENABLED: 'yes' })).toThrow(
+      'NOTIFICATIONS_ENABLED',
+    );
+    expect(() => parseNotificationConfig({ ...base, NOTIFICATIONS_ENABLED: 'true' })).toThrow(
+      'NOTIFICATIONS_ENCRYPTION_KEY',
+    );
+    expect(() =>
+      parseNotificationConfig({
+        ...base,
+        NOTIFICATIONS_ENABLED: 'true',
+        NOTIFICATIONS_ENCRYPTION_KEY: base.SESSION_SECRET,
+      }),
+    ).toThrow('must differ');
+    const key = 'notification-key-value-with-at-least-32-bytes';
+    expect(() =>
+      parseNotificationConfig({
+        ...base,
+        NOTIFICATIONS_ENABLED: 'true',
+        NOTIFICATIONS_ENCRYPTION_KEY: key,
+        NOTIFICATIONS_MAX_ATTEMPTS: '11',
+      }),
+    ).toThrow('NOTIFICATIONS_MAX_ATTEMPTS');
+    expect(
+      parseNotificationConfig({
+        ...base,
+        NOTIFICATIONS_ENABLED: 'true',
+        NOTIFICATIONS_ENCRYPTION_KEY: key,
+      }),
+    ).toMatchObject({
+      enabled: true,
+      maxAttempts: 5,
+      connectTimeoutMs: 5_000,
+      readTimeoutMs: 10_000,
+    });
+  });
+
+  it('keeps the API unchanged and runs no notification queries when delivery is disabled', async () => {
+    clearNotificationEnvironment();
+    const transport = vi.fn<Transport>(async () => ({ status: 200, body: '' }));
+    setNotificationDependencies({ transport, resolver: publicResolver });
+
+    for (const call of [
+      request(app).get('/api/notifications/endpoints'),
+      request(app)
+        .post('/api/notifications/endpoints')
+        .set('Origin', origin)
+        .send({ url: 'https://hooks.example.test/' }),
+      request(app).post('/api/notifications/deliveries/dlv_x/cancel').set('Origin', origin),
+    ]) {
+      const response = await call;
+      expect(response.status).toBe(404);
+      expect(response.body).toEqual({ error: 'Route not found.' });
+    }
+
+    const client = { query: vi.fn() };
+    expect(await lockRecordStatus(client as never, 'record-1')).toBeNull();
+    await enqueueRecordEvent(client as never, 'record.created', 'record-1');
+    await enqueueStatusChange(client as never, 'record-1', 'pending');
+    expect(client.query).not.toHaveBeenCalled();
+    expect(await processDueDeliveries()).toEqual({
+      claimed: 0,
+      delivered: 0,
+      retried: 0,
+      failed: 0,
+      cancelled: 0,
+    });
+    expect(transport).not.toHaveBeenCalled();
   });
 });
 
@@ -1945,5 +2423,495 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       },
       60_000,
     );
+  });
+  describe('webhook notifications', () => {
+    type TestSession = Awaited<ReturnType<typeof login>>;
+    const sent: TransportRequest[] = [];
+    let respond: (outgoing: TransportRequest) => TransportResponse | Promise<TransportResponse>;
+    const echoChallenge = (outgoing: TransportRequest): TransportResponse => {
+      const parsed = JSON.parse(outgoing.body) as { type: string; data: { challenge?: string } };
+      return parsed.type === 'endpoint.verification'
+        ? { status: 200, body: parsed.data.challenge || '' }
+        : { status: 204, body: '' };
+    };
+    const testOwners = new Set<string>();
+
+    beforeAll(() => {
+      process.env.NOTIFICATIONS_ENABLED = 'true';
+      process.env.NOTIFICATIONS_ENCRYPTION_KEY = 'vitest-notification-encryption-key-32-bytes';
+      process.env.NOTIFICATIONS_MAX_ATTEMPTS = '3';
+      setNotificationDependencies({
+        resolver: async (host) =>
+          host.endsWith('.internal.test')
+            ? [{ address: '10.0.0.8', family: 4 }]
+            : [{ address: '93.184.215.14', family: 4 }],
+        transport: async (outgoing) => {
+          sent.push(outgoing);
+          return respond(outgoing);
+        },
+      });
+    });
+
+    beforeEach(() => {
+      sent.length = 0;
+      respond = echoChallenge;
+    });
+
+    afterEach(async () => {
+      vi.restoreAllMocks();
+      // Leave no due work behind for the next test's worker run.
+      await pool.query(
+        `UPDATE notification_deliveries SET status = 'cancelled'
+         WHERE status IN ('pending', 'delivering')
+           AND endpoint_id IN (
+             SELECT id FROM notification_endpoints WHERE owner_wallet = ANY($1::text[]))`,
+        [[...testOwners]],
+      );
+    });
+
+    afterAll(async () => {
+      await pool.query('DELETE FROM notification_endpoints WHERE owner_wallet = ANY($1::text[])', [
+        [...testOwners],
+      ]);
+      clearNotificationEnvironment();
+      resetNotificationDependencies();
+    });
+
+    const uniqueHost = () => `hooks-${randomBytes(4).toString('hex')}.example.test`;
+    const sentTo = (host: string) => sent.filter((outgoing) => outgoing.url.hostname === host);
+
+    // The challenge endpoint allows eight challenges per wallet per 15 minutes, so reuse one.
+    let cachedAdminSession: TestSession | undefined;
+    async function adminSessionOnce() {
+      cachedAdminSession ??= await login(admin);
+      return cachedAdminSession;
+    }
+
+    async function organizationSession() {
+      const adminSession = await adminSessionOnce();
+      const wallet = Keypair.random();
+      await assignRole(adminSession, wallet, 'organization');
+      const session = await login(wallet);
+      testOwners.add(session.address);
+      return session;
+    }
+
+    function registerEndpoint(session: TestSession, body: Record<string, unknown>) {
+      return request(app)
+        .post('/api/notifications/endpoints')
+        .set('Origin', origin)
+        .set('Cookie', session.cookie)
+        .send({ csrfToken: session.csrfToken, ...body });
+    }
+
+    function endpointAction(session: TestSession, method: 'post' | 'delete', path: string) {
+      return request(app)
+        [method](path)
+        .set('Origin', origin)
+        .set('Cookie', session.cookie)
+        .send({ csrfToken: session.csrfToken });
+    }
+
+    async function activeEndpoint(session: TestSession, body: Record<string, unknown> = {}) {
+      const host = uniqueHost();
+      const created = await registerEndpoint(session, { url: `https://${host}/aidtrace`, ...body });
+      expect(created.status).toBe(201);
+      const verified = await endpointAction(
+        session,
+        'post',
+        `/api/notifications/endpoints/${created.body.endpoint.id}/verify`,
+      );
+      expect(verified.status).toBe(200);
+      expect(verified.body.endpoint.status).toBe('active');
+      sent.length = 0;
+      return {
+        id: created.body.endpoint.id as string,
+        host,
+        secret: created.body.signingSecret as string,
+      };
+    }
+
+    async function deliveriesFor(endpointId: string) {
+      const result = await pool.query<{
+        id: string;
+        event_type: string;
+        status: string;
+        attempts: number;
+        last_error: string | null;
+        next_attempt_at: Date;
+      }>(
+        `SELECT id, event_type, status, attempts, last_error, next_attempt_at
+         FROM notification_deliveries WHERE endpoint_id = $1 ORDER BY created_at, id`,
+        [endpointId],
+      );
+      return result.rows;
+    }
+
+    it('authorizes endpoint management and verifies recipients before any delivery', async () => {
+      const owner = await organizationSession();
+      const other = await organizationSession();
+      const donorWallet = Keypair.random();
+      const donor = await login(donorWallet);
+
+      expect((await registerEndpoint(donor, { url: 'https://hooks.example.test/' })).status).toBe(
+        403,
+      );
+      const noCsrf = await request(app)
+        .post('/api/notifications/endpoints')
+        .set('Origin', origin)
+        .set('Cookie', owner.cookie)
+        .send({ url: 'https://hooks.example.test/' });
+      expect(noCsrf.status).toBe(403);
+      for (const url of [
+        'http://hooks.example.test/',
+        'https://user:pass@hooks.example.test/',
+        'https://hooks.internal.test/',
+        'https://169.254.169.254/latest/meta-data',
+      ]) {
+        expect((await registerEndpoint(owner, { url })).status, url).toBe(400);
+      }
+      expect(
+        (await registerEndpoint(owner, { url: 'https://hooks.example.test/', scope: 'all' }))
+          .status,
+      ).toBe(400);
+      expect(
+        (await registerEndpoint(owner, { url: 'https://hooks.example.test/', events: ['nope'] }))
+          .status,
+      ).toBe(400);
+      expect(sent).toHaveLength(0);
+
+      const host = uniqueHost();
+      const urlToken = 'url-path-credential-' + randomBytes(6).toString('hex');
+      const created = await registerEndpoint(owner, {
+        url: `https://${host}/aidtrace?token=${urlToken}`,
+      });
+      expect(created.status).toBe(201);
+      const endpointId = created.body.endpoint.id as string;
+      const signingSecret = created.body.signingSecret as string;
+      expect(signingSecret).toMatch(/^whsec_[A-Za-z0-9_-]{43}$/);
+      expect(created.body.endpoint).toMatchObject({
+        host,
+        scope: 'organization',
+        status: 'pending_verification',
+      });
+      expect(JSON.stringify(created.body)).not.toContain(urlToken);
+
+      const stored = await pool.query<{ url_ciphertext: string; secret_ciphertext: string }>(
+        'SELECT url_ciphertext, secret_ciphertext FROM notification_endpoints WHERE id = $1',
+        [endpointId],
+      );
+      expect(JSON.stringify(stored.rows[0])).not.toContain(urlToken);
+      expect(JSON.stringify(stored.rows[0])).not.toContain(signingSecret);
+
+      // Unverified endpoints receive nothing.
+      const beforeVerification = await createRecord(owner, Keypair.random(), 'Pre-verify record');
+      expect(beforeVerification.status).toBe(201);
+      expect(await deliveriesFor(endpointId)).toHaveLength(0);
+
+      for (const [method, path] of [
+        ['post', `/api/notifications/endpoints/${endpointId}/verify`],
+        ['post', `/api/notifications/endpoints/${endpointId}/rotate-secret`],
+        ['delete', `/api/notifications/endpoints/${endpointId}`],
+      ] as const) {
+        expect((await endpointAction(other, method, path)).status, path).toBe(404);
+      }
+      const foreignDeliveries = await request(app)
+        .get('/api/notifications/deliveries')
+        .query({ endpointId })
+        .set('Cookie', other.cookie);
+      expect(foreignDeliveries.status).toBe(404);
+
+      respond = () => ({ status: 200, body: 'wrong-challenge' });
+      const mismatch = await endpointAction(
+        owner,
+        'post',
+        `/api/notifications/endpoints/${endpointId}/verify`,
+      );
+      expect(mismatch.status).toBe(422);
+      expect(mismatch.body.error).toContain('challenge_mismatch');
+
+      respond = echoChallenge;
+      sent.length = 0;
+      const verified = await endpointAction(
+        owner,
+        'post',
+        `/api/notifications/endpoints/${endpointId}/verify`,
+      );
+      expect(verified.status).toBe(200);
+      expect(verified.body.endpoint.status).toBe('active');
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.url.searchParams.get('token')).toBe(urlToken);
+      expect(
+        verifyWebhookSignature({
+          secret: signingSecret,
+          signatureHeader: sent[0]!.headers[SIGNATURE_HEADER],
+          deliveryId: sent[0]!.headers[DELIVERY_HEADER],
+          body: sent[0]!.body,
+          replayStore: createMemoryReplayStore(),
+        }),
+      ).toEqual({ ok: true });
+
+      const list = await request(app)
+        .get('/api/notifications/endpoints')
+        .set('Cookie', owner.cookie);
+      expect(list.status).toBe(200);
+      expect(list.body.endpoints).toHaveLength(1);
+      expect(JSON.stringify(list.body)).not.toContain(urlToken);
+      expect(JSON.stringify(list.body)).not.toContain(signingSecret);
+
+      const rotated = await endpointAction(
+        owner,
+        'post',
+        `/api/notifications/endpoints/${endpointId}/rotate-secret`,
+      );
+      expect(rotated.status).toBe(200);
+      expect(rotated.body.signingSecret).toMatch(/^whsec_/);
+      expect(rotated.body.signingSecret).not.toBe(signingSecret);
+
+      const audits = await pool.query<{ summary: string; metadata_json: unknown }>(
+        `SELECT summary, metadata_json FROM audit_events
+         WHERE actor_wallet = $1 AND action LIKE 'notification_%'`,
+        [owner.address],
+      );
+      expect(audits.rows.length).toBeGreaterThanOrEqual(3);
+      const auditText = JSON.stringify(audits.rows);
+      for (const value of [urlToken, signingSecret, rotated.body.signingSecret]) {
+        expect(auditText).not.toContain(value);
+      }
+    }, 120_000);
+
+    it('delivers signed, minimized events once and lets receivers reject replays', async () => {
+      const owner = await organizationSession();
+      const other = await organizationSession();
+      const endpoint = await activeEndpoint(owner);
+      const adminSession = await adminSessionOnce();
+      testOwners.add(adminSession.address);
+      const adminEndpoint = await activeEndpoint(adminSession, { scope: 'all' });
+      const logged: string[] = [];
+      for (const method of ['log', 'info', 'warn', 'error'] as const) {
+        vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
+          logged.push(args.map(String).join(' '));
+        });
+      }
+
+      const beneficiary = Keypair.random();
+      const created = await createRecord(owner, beneficiary, 'Confidential purpose text');
+      expect(created.status).toBe(201);
+      const recordId = created.body.record.id as string;
+      const foreign = await createRecord(other, Keypair.random(), 'Other organization record');
+      expect(foreign.status).toBe(201);
+
+      expect((await deliveriesFor(endpoint.id)).map((row) => row.event_type)).toEqual([
+        'record.created',
+      ]);
+      const adminEvents = (await deliveriesFor(adminEndpoint.id)).map((row) => row.event_type);
+      expect(adminEvents.filter((type) => type === 'record.created')).toHaveLength(2);
+
+      const summary = await processDueDeliveries();
+      expect(summary.delivered).toBeGreaterThanOrEqual(3);
+      const toOwner = sentTo(endpoint.host);
+      expect(toOwner).toHaveLength(1);
+      const delivery = toOwner[0]!;
+      expect(delivery.address).toEqual({ address: '93.184.215.14', family: 4 });
+      expect(delivery.connectTimeoutMs).toBe(5_000);
+      expect(delivery.readTimeoutMs).toBe(10_000);
+      expect(JSON.parse(delivery.body)).toMatchObject({
+        type: 'record.created',
+        data: { recordId, network: 'testnet', status: 'unverified', version: 1 },
+      });
+      for (const value of [
+        'Confidential beneficiary',
+        beneficiary.publicKey(),
+        owner.address,
+        'Private contact note',
+        'Confidential purpose text',
+      ]) {
+        expect(delivery.body).not.toContain(value);
+      }
+
+      const receiverStore = createMemoryReplayStore();
+      const receive = (outgoing: TransportRequest, body = outgoing.body) =>
+        verifyWebhookSignature({
+          secret: endpoint.secret,
+          signatureHeader: outgoing.headers[SIGNATURE_HEADER],
+          deliveryId: outgoing.headers[DELIVERY_HEADER],
+          body,
+          replayStore: receiverStore,
+        });
+      expect(receive(delivery, delivery.body.replace('unverified', 'verified'))).toEqual({
+        ok: false,
+        reason: 'mismatch',
+      });
+      expect(receive(delivery)).toEqual({ ok: true });
+      expect(receive(delivery)).toEqual({ ok: false, reason: 'replayed' });
+
+      expect((await deliveriesFor(endpoint.id))[0]).toMatchObject({
+        status: 'delivered',
+        attempts: 1,
+      });
+      sent.length = 0;
+      await processDueDeliveries();
+      expect(sentTo(endpoint.host)).toHaveLength(0);
+
+      const voided = await request(app)
+        .post(`/api/records/${recordId}/void`)
+        .set('Origin', origin)
+        .set('Cookie', owner.cookie)
+        .send({ csrfToken: owner.csrfToken, reason: 'Duplicate entry for testing' });
+      expect(voided.status).toBe(200);
+      await processDueDeliveries();
+      const voidEvents = sentTo(endpoint.host).map((outgoing) => JSON.parse(outgoing.body));
+      expect(voidEvents).toMatchObject([{ type: 'record.voided', data: { recordId } }]);
+      expect(JSON.stringify(voidEvents)).not.toContain('Duplicate entry for testing');
+
+      const logText = logged.join('\n');
+      for (const value of [endpoint.secret, adminEndpoint.secret, endpoint.host, delivery.body]) {
+        expect(logText).not.toContain(value);
+      }
+    }, 120_000);
+
+    it('emits a verification change only when the status flips', async () => {
+      const owner = await organizationSession();
+      const endpoint = await activeEndpoint(owner);
+      const created = await createRecord(owner, Keypair.random(), 'Status flip record');
+      expect(created.status).toBe(201);
+      const recordId = created.body.record.id as string;
+      // Simulate a verifier result through the same write path the API and scheduler use.
+      await withTransaction(async (client) => {
+        const previous = await lockRecordStatus(client, recordId);
+        await client.query(`UPDATE aid_records SET status = 'verified' WHERE id = $1`, [recordId]);
+        await enqueueStatusChange(client, recordId, previous);
+      });
+      await withTransaction(async (client) => {
+        const previous = await lockRecordStatus(client, recordId);
+        await enqueueStatusChange(client, recordId, previous);
+      });
+      await processDueDeliveries();
+      const events = sentTo(endpoint.host).map((outgoing) => JSON.parse(outgoing.body));
+      expect(events.map((event) => event.type)).toEqual([
+        'record.created',
+        'record.verification_changed',
+      ]);
+      expect(events[1].data).toMatchObject({
+        recordId,
+        status: 'verified',
+        previousStatus: 'unverified',
+      });
+    }, 120_000);
+
+    it('retries transient failures within a bounded budget and fails fast on client errors', async () => {
+      const owner = await organizationSession();
+      const endpoint = await activeEndpoint(owner);
+      respond = () => ({ status: 503, body: 'unavailable' });
+
+      expect((await createRecord(owner, Keypair.random(), 'Retry record')).status).toBe(201);
+      const [pending] = await deliveriesFor(endpoint.id);
+      expect(pending).toBeDefined();
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        await processDueDeliveries();
+        const [row] = await deliveriesFor(endpoint.id);
+        expect(row!.attempts).toBe(attempt);
+        expect(row!.last_error).toBe('http_503');
+        if (attempt < 3) {
+          expect(row!.status).toBe('pending');
+          expect(row!.next_attempt_at.getTime()).toBeGreaterThan(Date.now());
+          await pool.query(
+            'UPDATE notification_deliveries SET next_attempt_at = NOW() WHERE id = $1',
+            [row!.id],
+          );
+        } else {
+          expect(row!.status).toBe('failed');
+        }
+      }
+      expect(sentTo(endpoint.host)).toHaveLength(3);
+      await pool.query('UPDATE notification_deliveries SET next_attempt_at = NOW() WHERE id = $1', [
+        pending!.id,
+      ]);
+      await processDueDeliveries();
+      expect(sentTo(endpoint.host)).toHaveLength(3);
+
+      respond = () => {
+        throw new DeliveryError('connect_timeout', true);
+      };
+      expect((await createRecord(owner, Keypair.random(), 'Timeout record')).status).toBe(201);
+      await processDueDeliveries();
+      expect((await deliveriesFor(endpoint.id)).at(-1)).toMatchObject({
+        status: 'pending',
+        attempts: 1,
+        last_error: 'connect_timeout',
+      });
+      await pool.query(
+        `UPDATE notification_deliveries SET status = 'cancelled'
+         WHERE endpoint_id = $1 AND status = 'pending'`,
+        [endpoint.id],
+      );
+
+      sent.length = 0;
+      respond = () => ({ status: 410, body: '' });
+      expect((await createRecord(owner, Keypair.random(), 'Gone record')).status).toBe(201);
+      await processDueDeliveries();
+      expect((await deliveriesFor(endpoint.id)).at(-1)).toMatchObject({
+        status: 'failed',
+        attempts: 1,
+        last_error: 'http_410',
+      });
+      expect(sentTo(endpoint.host)).toHaveLength(1);
+    }, 120_000);
+
+    it('cancels pending deliveries, and stops on revocation or a lost role', async () => {
+      const owner = await organizationSession();
+      const other = await organizationSession();
+      const endpoint = await activeEndpoint(owner);
+
+      expect((await createRecord(owner, Keypair.random(), 'Cancel record')).status).toBe(201);
+      const [pending] = await deliveriesFor(endpoint.id);
+      const cancelPath = `/api/notifications/deliveries/${pending!.id}/cancel`;
+      expect((await endpointAction(other, 'post', cancelPath)).status).toBe(404);
+      const cancelled = await endpointAction(owner, 'post', cancelPath);
+      expect(cancelled.status).toBe(200);
+      expect(cancelled.body.delivery).toEqual({ id: pending!.id, status: 'cancelled' });
+      expect((await endpointAction(owner, 'post', cancelPath)).status).toBe(409);
+      await processDueDeliveries();
+      expect(sentTo(endpoint.host)).toHaveLength(0);
+      const listed = await request(app)
+        .get('/api/notifications/deliveries')
+        .query({ endpointId: endpoint.id })
+        .set('Cookie', owner.cookie);
+      expect(listed.status).toBe(200);
+      expect(listed.body.deliveries[0]).toMatchObject({ id: pending!.id, status: 'cancelled' });
+      expect(listed.body.deliveries[0]).not.toHaveProperty('payload');
+
+      expect((await createRecord(owner, Keypair.random(), 'Revoke record')).status).toBe(201);
+      const revoked = await endpointAction(
+        owner,
+        'delete',
+        `/api/notifications/endpoints/${endpoint.id}`,
+      );
+      expect(revoked.status).toBe(200);
+      expect(revoked.body.endpoint.status).toBe('revoked');
+      expect((await deliveriesFor(endpoint.id)).map((row) => row.status)).toEqual([
+        'cancelled',
+        'cancelled',
+      ]);
+      expect((await createRecord(owner, Keypair.random(), 'After revoke')).status).toBe(201);
+      expect(await deliveriesFor(endpoint.id)).toHaveLength(2);
+      await processDueDeliveries();
+      expect(sentTo(endpoint.host)).toHaveLength(0);
+
+      // A queued delivery is cancelled, not sent, once its owner loses the organization role.
+      const demoted = await organizationSession();
+      const demotedEndpoint = await activeEndpoint(demoted);
+      expect((await createRecord(demoted, Keypair.random(), 'Demoted record')).status).toBe(201);
+      expect(await deliveriesFor(demotedEndpoint.id)).toHaveLength(1);
+      await pool.query(`UPDATE wallet_roles SET role = 'donor' WHERE wallet_address = $1`, [
+        demoted.address,
+      ]);
+      await processDueDeliveries();
+      expect(sentTo(demotedEndpoint.host)).toHaveLength(0);
+      expect((await deliveriesFor(demotedEndpoint.id))[0]).toMatchObject({
+        status: 'cancelled',
+        last_error: 'endpoint_inactive',
+      });
+    }, 120_000);
   });
 });
