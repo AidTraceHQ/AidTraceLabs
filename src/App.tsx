@@ -14,6 +14,7 @@ import {
 } from './network-preference';
 import { readThemePreference, writeThemePreference, type Theme } from './theme-preference';
 import { localDateString } from './date';
+import { activityRequestUrls, resolveHorizonEndpoints } from './horizon';
 import {
   Activity,
   ArrowDownToLine,
@@ -106,10 +107,7 @@ type AuditItem = {
   recordId?: string;
   createdAt: string;
 };
-const horizon: Record<Network, string> = {
-  testnet: 'https://horizon-testnet.stellar.org',
-  mainnet: 'https://horizon.stellar.org',
-};
+const horizon = resolveHorizonEndpoints();
 const explorer = (network: Network, hash: string) =>
   (network === 'mainnet'
     ? 'https://stellar.expert/explorer/public/tx/'
@@ -548,22 +546,11 @@ export default function App() {
     async (address: string, selectedNetwork: Network) => {
       setActivityLoading(true);
       try {
-        const base = horizon[selectedNetwork];
+        const urls = activityRequestUrls(horizon[selectedNetwork], address);
         const [accountRes, paymentsRes, txRes] = await Promise.all([
-          fetch(base + '/accounts/' + encodeURIComponent(address), {
-            headers: { Accept: 'application/json' },
-          }),
-          fetch(
-            base + '/accounts/' + encodeURIComponent(address) + '/payments?order=desc&limit=50',
-            { headers: { Accept: 'application/json' } },
-          ),
-          fetch(
-            base +
-              '/accounts/' +
-              encodeURIComponent(address) +
-              '/transactions?order=desc&limit=50&include_failed=true',
-            { headers: { Accept: 'application/json' } },
-          ),
+          fetch(urls.account, { headers: { Accept: 'application/json' } }),
+          fetch(urls.payments, { headers: { Accept: 'application/json' } }),
+          fetch(urls.transactions, { headers: { Accept: 'application/json' } }),
         ]);
         if (accountRes.status === 404)
           throw new Error(
@@ -649,12 +636,7 @@ export default function App() {
     };
     void loadActivity(session.address, network);
     try {
-      source = new EventSource(
-        horizon[network] +
-          '/accounts/' +
-          encodeURIComponent(session.address) +
-          '/payments?cursor=now',
-      );
+      source = new EventSource(activityRequestUrls(horizon[network], session.address).stream);
       source.onopen = () => {
         setActivityStream('live');
         if (pollTimer) {
