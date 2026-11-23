@@ -49,6 +49,8 @@ The API limits use express-rate-limit's default in-memory store, which is per pr
 
 Run `npm run db:migrate` as a deployment step before starting the API. Migrations should be run by an appropriately restricted deployment identity. Set `ADMIN_WALLET` to a public G-address and run `npm run db:seed-admin` for first-time bootstrap; do not expose this command as a public route.
 
+Migration runs take a PostgreSQL session advisory lock before reading versions or applying DDL. A second runner that cannot take the lock exits without applying anything, so concurrent deployments cannot execute the same migration twice. The runner releases the lock in a `finally` block; if the explicit unlock fails, it destroys the database session so PostgreSQL releases the lock anyway. Applied versions are recorded in `schema_migrations`, and an already-recorded version is skipped on the next run.
+
 ## Scheduled verification refresh
 
 There is no hosted scheduler configured. An operator may run `npm run records:reverify` as a standalone Node.js job after applying database migrations. Schedule it externally only where the operator controls the environment and can monitor its exit status and JSON summary.
