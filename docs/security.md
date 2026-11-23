@@ -14,6 +14,7 @@ AidTrace handles wallet public addresses, session state, role assignments, aid r
 - Transaction checks compare source, destination, amount, asset, and issuer against a matching operation on the selected network. Horizon failures or incomplete pagination are not reported as verified.
 - Consent-off public projections use an HMAC pseudonym keyed by `PSEUDONYM_SECRET`, separate from `SESSION_SECRET`, and withhold selected direct identifiers. This is data minimization, not anonymity.
 - Rate limits use database-backed counters for selected authentication, write, and verification operations. Responses disable caching.
+- The `aidtrace_runtime` database role can read and append audit events but cannot update or delete them. The separate `aidtrace_migration` owner role retains maintenance access; this does not protect against that owner or a database superuser.
 
 ## Outbound notifications
 
