@@ -1554,6 +1554,40 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     ).toBeNull();
   }, 120_000);
 
+  it('revokes every session for one wallet on logout-everywhere without touching other wallets', async () => {
+    const wallet = Keypair.random();
+    const otherWallet = Keypair.random();
+    const firstSession = await login(wallet);
+    const secondSession = await login(wallet);
+    const otherWalletSession = await login(otherWallet);
+    expect(firstSession.cookie).not.toBe(secondSession.cookie);
+
+    const firstMe = await request(app).get('/api/me').set('Cookie', firstSession.cookie);
+    const secondMe = await request(app).get('/api/me').set('Cookie', secondSession.cookie);
+    expect(firstMe.body.session.address).toBe(wallet.publicKey());
+    expect(secondMe.body.session.address).toBe(wallet.publicKey());
+
+    const logoutEverywhere = await request(app)
+      .post('/api/auth/logout-everywhere')
+      .set('Origin', origin)
+      .set('Cookie', firstSession.cookie)
+      .send({ csrfToken: firstSession.csrfToken });
+    expect(logoutEverywhere.status).toBe(200);
+
+    expect(
+      (await request(app).get('/api/me').set('Cookie', firstSession.cookie)).body.session,
+    ).toBeNull();
+    expect(
+      (await request(app).get('/api/me').set('Cookie', secondSession.cookie)).body.session,
+    ).toBeNull();
+    const otherWalletMe = await request(app)
+      .get('/api/me')
+      .set('Cookie', otherWalletSession.cookie);
+    expect(otherWalletMe.body.session.address).toBe(otherWallet.publicKey());
+
+    await expectAuditEvent('wallet_logout_everywhere', wallet.publicKey());
+  }, 60_000);
+
   it('enforces the authorization matrix for every protected route', async () => {
     const adminSession = await login(admin);
     const donorWallet = Keypair.random();
