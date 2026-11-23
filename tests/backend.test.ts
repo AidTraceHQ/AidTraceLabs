@@ -1427,6 +1427,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
 
     // With consent the public projection includes the full record, memo included; a uint64 id
     // memo above 2^53 round-trips through the TEXT column unchanged.
+    vi.stubEnv('CONSENT_ACKNOWLEDGMENTS_ENABLED', 'true');
     transactions.set(consentHash, {
       successful: true,
       source_account: organization.publicKey(),
@@ -1439,6 +1440,29 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     });
     expect(consented.status).toBe(201);
     expect(consented.body.record.verification).toMatchObject({ memo: largeId, memoType: 'id' });
+    await assignRole(adminSession, recipient, 'beneficiary');
+    const consentedBeneficiarySession = await login(recipient);
+    const consentChallenge = await request(app)
+      .post('/api/records/' + consented.body.record.id + '/consent/challenge')
+      .set('Origin', origin)
+      .set('Cookie', consentedBeneficiarySession.cookie)
+      .send({ csrfToken: consentedBeneficiarySession.csrfToken, action: 'acknowledge' });
+    expect(consentChallenge.status).toBe(200);
+    const consentDigest = createHash('sha256')
+      .update('Stellar Signed Message:\n')
+      .update(consentChallenge.body.message)
+      .digest();
+    const consentSignature = Buffer.from(recipient.sign(consentDigest)).toString('base64');
+    const acknowledgment = await request(app)
+      .post('/api/records/' + consented.body.record.id + '/consent/verify')
+      .set('Origin', origin)
+      .set('Cookie', consentedBeneficiarySession.cookie)
+      .send({
+        csrfToken: consentedBeneficiarySession.csrfToken,
+        challengeId: consentChallenge.body.challengeId,
+        signature: consentSignature,
+      });
+    expect(acknowledgment.status).toBe(200);
     const consentedPublic = await request(app)
       .get('/api/transparency')
       .query({ q: term + ' consented' });
