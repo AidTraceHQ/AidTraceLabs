@@ -58,6 +58,68 @@ describe('Freighter signed challenge creates a secure session', () => {
     expect(protectedRequest.status).toBe(401);
   });
 
+  it('rejects a valid signature from a different keypair', () => {
+    const walletA = Keypair.random();
+    const walletB = Keypair.random();
+    const message = [
+      'AidTrace wallet login',
+      'Domain: http://localhost:5173',
+      'Address: ' + walletA.publicKey(),
+      'Network: testnet',
+      'Nonce: ' + 'b'.repeat(64),
+      'Issued At: 2026-10-28T09:55:00.000Z',
+      'Expires: 2026-10-28T10:00:00.000Z',
+      'Purpose: prove wallet ownership; no transaction will be sent.',
+    ].join('\n');
+    const digest = createHash('sha256')
+      .update('Stellar Signed Message:\n')
+      .update(message)
+      .digest();
+    // Wallet B signs the message intended for wallet A
+    const signatureByB = Buffer.from(walletB.sign(digest)).toString('base64');
+    expect(verifySep53Signature(walletA.publicKey(), message, signatureByB)).toBe(false);
+    // Sanity check: wallet B's own signature verifies against wallet B
+    expect(verifySep53Signature(walletB.publicKey(), message, signatureByB)).toBe(true);
+  });
+
+  it('rejects malformed challengeId and over-length signature at the verify endpoint', async () => {
+    const wallet = Keypair.random();
+    const address = wallet.publicKey();
+
+    const badChallengeId = await request(app)
+      .post('/api/auth/verify')
+      .set('Origin', origin)
+      .send({
+        challengeId: 'not-hex',
+        address,
+        network: 'testnet',
+        signature: 'a'.repeat(88),
+      });
+    expect(badChallengeId.status).toBe(400);
+
+    const tooShortChallengeId = await request(app)
+      .post('/api/auth/verify')
+      .set('Origin', origin)
+      .send({
+        challengeId: 'a'.repeat(40),
+        address,
+        network: 'testnet',
+        signature: 'a'.repeat(88),
+      });
+    expect(tooShortChallengeId.status).toBe(400);
+
+    const longSignature = await request(app)
+      .post('/api/auth/verify')
+      .set('Origin', origin)
+      .send({
+        challengeId: 'a'.repeat(48),
+        address,
+        network: 'testnet',
+        signature: 'x'.repeat(1001),
+      });
+    expect(longSignature.status).toBe(400);
+  });
+
   it('rejects malformed JSON and returns a credentialed CORS preflight', async () => {
     const malformed = await request(app)
       .post('/api/records')
@@ -540,6 +602,61 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       await pool.query('DELETE FROM users WHERE wallet_address = ANY($1::text[])', [addresses]);
     }
     await pool.end();
+  });
+
+  it('rejects verify with mismatched address or network', async () => {
+    const walletA = Keypair.random();
+    const walletB = Keypair.random();
+    wallets.add(walletA.publicKey());
+    wallets.add(walletB.publicKey());
+
+    const challenge = await request(app)
+      .post('/api/auth/challenge')
+      .set('Origin', origin)
+      .send({ address: walletA.publicKey(), network: 'testnet' });
+    expect(challenge.status).toBe(200);
+
+    const digest = createHash('sha256')
+      .update('Stellar Signed Message:\n')
+      .update(challenge.body.message)
+      .digest();
+    const signature = Buffer.from(walletA.sign(digest)).toString('base64');
+
+    // Correct signature submitted with a different address
+    const wrongAddress = await request(app)
+      .post('/api/auth/verify')
+      .set('Origin', origin)
+      .send({
+        challengeId: challenge.body.challengeId,
+        address: walletB.publicKey(),
+        network: 'testnet',
+        signature,
+      });
+    expect(wrongAddress.status).toBe(401);
+
+    // Correct signature submitted with a different network
+    const wrongNetwork = await request(app)
+      .post('/api/auth/verify')
+      .set('Origin', origin)
+      .send({
+        challengeId: challenge.body.challengeId,
+        address: walletA.publicKey(),
+        network: 'mainnet',
+        signature,
+      });
+    expect(wrongNetwork.status).toBe(401);
+
+    // Correct address and network should still succeed
+    const ok = await request(app)
+      .post('/api/auth/verify')
+      .set('Origin', origin)
+      .send({
+        challengeId: challenge.body.challengeId,
+        address: walletA.publicKey(),
+        network: 'testnet',
+        signature,
+      });
+    expect(ok.status).toBe(200);
   });
 
   it('reports duplicate hashes and aborts migration 002 before creating the unique constraint', async () => {
