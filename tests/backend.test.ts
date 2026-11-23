@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID } from 'node:crypto';
-import { Keypair } from '@stellar/stellar-sdk';
+import { Account, Keypair, MuxedAccount } from '@stellar/stellar-sdk';
 import { Pool } from 'pg';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -381,6 +381,96 @@ describe('On-chain verification distinguishes matching and mismatching payments'
     const notFound = await checkTransaction(record);
     expect(notFound.status).toBe('not-found');
     expect(notFound).not.toHaveProperty('memo');
+  });
+
+  it('matches muxed recipients only when the payment names the same muxed account', async () => {
+    const organization = Keypair.random().publicKey();
+    const base = Keypair.random();
+    const muxed = new MuxedAccount(new Account(base.publicKey(), '0'), '42').accountId();
+    const otherMuxed = new MuxedAccount(new Account(base.publicKey(), '0'), '43').accountId();
+    const txHash = 'b'.repeat(64);
+    const transaction = {
+      successful: true,
+      source_account: organization,
+      ledger: 50,
+      created_at: '2026-01-01T00:00:00Z',
+    };
+    let operations: Record<string, unknown>[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = new URL(String(input));
+        const body = url.pathname.endsWith('/operations')
+          ? { _embedded: { records: operations } }
+          : transaction;
+        return new Response(JSON.stringify(body), { status: 200 });
+      }),
+    );
+    const record = (recipientWallet: string) => ({
+      network: 'testnet' as const,
+      txHash,
+      organizationWallet: organization,
+      recipientWallet,
+      amountStroops: '12500000',
+      assetCode: 'XLM',
+      assetIssuer: null,
+    });
+
+    operations = [
+      {
+        type: 'payment',
+        from: organization,
+        to: base.publicKey(),
+        to_muxed: muxed,
+        to_muxed_id: '42',
+        amount: '1.25',
+        asset_type: 'native',
+      },
+    ];
+    const muxedMatch = await checkTransaction(record(muxed));
+    expect(muxedMatch.status).toBe('verified');
+    expect(muxedMatch.destination).toBe(muxed);
+
+    operations = [
+      {
+        type: 'payment',
+        from: organization,
+        to: base.publicKey(),
+        amount: '1.25',
+        asset_type: 'native',
+      },
+    ];
+    const bareDestination = await checkTransaction(record(muxed));
+    expect(bareDestination.status).toBe('mismatch');
+    expect(bareDestination.differences).toContain(
+      'Destination differs from the recorded beneficiary.',
+    );
+
+    operations = [
+      {
+        type: 'payment',
+        from: organization,
+        to: base.publicKey(),
+        to_muxed: muxed,
+        to_muxed_id: '42',
+        amount: '1.25',
+        asset_type: 'native',
+      },
+    ];
+    expect((await checkTransaction(record(base.publicKey()))).status).toBe('verified');
+
+    operations = [
+      {
+        type: 'payment',
+        from: organization,
+        to: base.publicKey(),
+        to_muxed: otherMuxed,
+        to_muxed_id: '43',
+        amount: '1.25',
+        asset_type: 'native',
+      },
+    ];
+    expect((await checkTransaction(record(muxed))).status).toBe('mismatch');
   });
 });
 
@@ -1073,6 +1163,123 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       txHash: verifiedHash,
     });
     expect(duplicate.status).toBe(409);
+  }, 120_000);
+
+  it('accepts muxed recipients and verifies only the matching muxed destination', async () => {
+    const adminSession = await login(admin);
+    const organization = Keypair.random();
+    await assignRole(adminSession, organization, 'organization');
+    const session = await login(organization);
+    const base = Keypair.random();
+    const muxed = new MuxedAccount(new Account(base.publicKey(), '0'), '9').accountId();
+    const token = 'muxed-' + Keypair.random().publicKey().slice(-8);
+    const matchedHash = createHash('sha256')
+      .update(token + '-matched')
+      .digest('hex');
+    const bareHash = createHash('sha256')
+      .update(token + '-bare')
+      .digest('hex');
+    const transactions = new Map<string, Record<string, unknown>>();
+    const operationBodies = new Map<string, Record<string, unknown>[]>();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = new URL(String(input));
+        const segments = url.pathname.split('/').filter(Boolean);
+        const hash = segments[segments.indexOf('transactions') + 1] || '';
+        if (url.pathname.endsWith('/operations')) {
+          return new Response(
+            JSON.stringify({ _embedded: { records: operationBodies.get(hash) || [] } }),
+            { status: 200 },
+          );
+        }
+        const transaction = transactions.get(hash);
+        return transaction
+          ? new Response(JSON.stringify(transaction), { status: 200 })
+          : new Response('{}', { status: 404 });
+      }),
+    );
+    for (const hash of [matchedHash, bareHash]) {
+      transactions.set(hash, {
+        successful: true,
+        source_account: organization.publicKey(),
+        ledger: 12,
+        created_at: '2026-01-15T00:00:00Z',
+      });
+    }
+    operationBodies.set(matchedHash, [
+      {
+        type: 'payment',
+        from: organization.publicKey(),
+        to: base.publicKey(),
+        to_muxed: muxed,
+        to_muxed_id: '9',
+        amount: '1.25',
+        asset_type: 'native',
+      },
+    ]);
+    operationBodies.set(bareHash, [
+      {
+        type: 'payment',
+        from: organization.publicKey(),
+        to: base.publicKey(),
+        amount: '1.25',
+        asset_type: 'native',
+      },
+    ]);
+
+    const createMuxed = (purpose: string, txHash: string) =>
+      request(app).post('/api/records').set('Origin', origin).set('Cookie', session.cookie).send({
+        csrfToken: session.csrfToken,
+        recipient: 'Muxed beneficiary',
+        recipientAddress: muxed,
+        purpose,
+        amount: '1.25',
+        asset: 'XLM',
+        assetIssuer: '',
+        network: 'testnet',
+        txHash,
+        date: '2026-01-15',
+        note: 'Muxed note',
+        recipientConsent: false,
+      });
+
+    const matched = await createMuxed(token + ' matched', matchedHash);
+    expect(matched.status).toBe(201);
+    expect(matched.body.record.recipientAddress).toBe(muxed);
+    expect(matched.body.record.status).toBe('verified');
+    expect(matched.body.record.verification.destination).toBe(muxed);
+    if (matched.body.record?.id) recordIds.add(matched.body.record.id);
+
+    const bare = await createMuxed(token + ' bare', bareHash);
+    expect(bare.status).toBe(201);
+    expect(bare.body.record.status).toBe('mismatch');
+    expect(bare.body.record.verification.differences).toContain(
+      'Destination differs from the recorded beneficiary.',
+    );
+    if (bare.body.record?.id) recordIds.add(bare.body.record.id);
+
+    const malformedAddress = await request(app)
+      .post('/api/records')
+      .set('Origin', origin)
+      .set('Cookie', session.cookie)
+      .send({
+        csrfToken: session.csrfToken,
+        recipient: 'Muxed beneficiary',
+        recipientAddress: muxed.slice(0, -1),
+        purpose: token + ' malformed address',
+        amount: '1.25',
+        asset: 'XLM',
+        assetIssuer: '',
+        network: 'testnet',
+        txHash: createHash('sha256')
+          .update(token + '-malformed')
+          .digest('hex'),
+        date: '2026-01-15',
+        note: 'Muxed note',
+        recipientConsent: false,
+      });
+    expect(malformedAddress.status).toBe(400);
   }, 120_000);
 
   it('caches not-found results for a bounded window but never caches pending results', async () => {

@@ -219,6 +219,8 @@ List limit defaults to 20 and must be an integer from 1 to 100. Cursors are sign
 
 Eligible operation types are `payment`, `create_account`, `path_payment_strict_receive`, and `path_payment_strict_send`. One operation must match all of: source organization wallet, recipient wallet, exact amount in stroops, asset code, and issuer. Path strict-send uses destination amount/asset fields. Create-account uses account, starting balance, native XLM, and funder/source. Fields from separate operations are never combined. Reaching the operation page bound without a complete read yields `pending`.
 
+Record validation accepts Stellar muxed recipients (`M...`) as well as base accounts (`G...`). A muxed record matches only a payment whose `to_muxed` equals the recorded address, so it does not match a payment addressed to the bare base account. A `G...` record continues to match the operation's base destination, including when the operation also carries a muxed destination.
+
 | Status       | Implemented meaning                                                                                                                         |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `verified`   | Successful transaction has one operation matching all checked record fields.                                                                |
@@ -240,7 +242,7 @@ Verified and mismatch results may be cached for one hour. `not-found` results ar
 - Without recipient consent, public transparency replaces the beneficiary name with an HMAC label and withholds recipient wallet, transaction hash, note, and selected verification details (destination, explorer link, transaction time, ledger, and transaction memo). Organization and creator wallet, purpose, amount, and date remain visible. With consent, the public record projection includes the full record.
 - Database rate limits are atomic and keyed by digests for challenges (8/15m/address), signature verification (12/min/address), writes (60/min/wallet), and record verification (30/min/wallet). General per-IP and public-read rate limits are not implemented.
 - Successful authentication, logout, role change/removal, record create/update/void, and non-cached verification are audited. Challenge attempts, failed auth, admin seeding, and all security rejections are not comprehensively audited. The schema does not enforce append-only access for audit rows.
-- SQL values are parameterized. Application validation covers Stellar public keys, networks, hashes, amounts/stroops, assets/issuers, dates, text sizes, roles, list filters, and cursors. The server health route is process liveness only; a database readiness probe is not implemented.
+- SQL values are parameterized. Application validation covers Stellar public keys and muxed recipient addresses, networks, hashes, amounts/stroops, assets/issuers, dates, text sizes, roles, list filters, and cursors. The server health route is process liveness only; a database readiness probe is not implemented.
 
 ## Deployment Requirements
 

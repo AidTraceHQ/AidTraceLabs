@@ -136,6 +136,13 @@ function validAddress(value: unknown): value is string {
   return typeof value === 'string' && StrKey.isValidEd25519PublicKey(value);
 }
 
+function validRecipientAddress(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    (StrKey.isValidEd25519PublicKey(value) || StrKey.isValidMed25519PublicKey(value))
+  );
+}
+
 function validVersion(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1;
 }
@@ -157,7 +164,7 @@ function validateRecord(value: unknown) {
   if (
     !recipient ||
     !purpose ||
-    !validAddress(value.recipientAddress) ||
+    !validRecipientAddress(value.recipientAddress) ||
     !amountStroops ||
     !/^[A-Z0-9]{1,12}$/.test(asset) ||
     !validNetwork(value.network) ||
