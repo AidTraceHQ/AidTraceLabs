@@ -65,4 +65,28 @@ describe('runtime environment validation', () => {
       } as NodeJS.ProcessEnv),
     ).not.toThrow();
   });
+
+  it('rejects a placeholder SESSION_SECRET without printing the value', () => {
+    const placeholderSecret = 'replace-with-at-least-32-random-bytes';
+    let message = '';
+    try {
+      validateEnvironment({
+        ...baseEnvironment,
+        SESSION_SECRET: placeholderSecret,
+      } as NodeJS.ProcessEnv);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain('SESSION_SECRET');
+    expect(message).not.toContain(placeholderSecret);
+  });
+
+  it('accepts a non-placeholder SESSION_SECRET of at least 32 bytes', () => {
+    expect(() =>
+      validateEnvironment({
+        ...baseEnvironment,
+        SESSION_SECRET: 'random-session-secret-with-at-least-thirty-two-bytes',
+      } as NodeJS.ProcessEnv),
+    ).not.toThrow();
+  });
 });
