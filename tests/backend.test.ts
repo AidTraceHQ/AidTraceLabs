@@ -1,11 +1,12 @@
 import { createHash, createHmac } from 'node:crypto';
 import { Keypair } from '@stellar/stellar-sdk';
+import { Pool } from 'pg';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { applyUniqueNetworkTxHashMigration, migrate } from '../scripts/migrate.js';
 import { app } from '../server/app.js';
 import { verifySep53Signature } from '../server/auth.js';
-import { pool } from '../server/db.js';
+import { IDLE_IN_TRANSACTION_TIMEOUT_MS, pool } from '../server/db.js';
 import { checkTransaction } from '../server/stellar-verification.js';
 
 const origin = 'http://localhost:5173';
@@ -384,6 +385,46 @@ describe('On-chain verification distinguishes matching and mismatching payments'
 });
 
 const integration = describe.skipIf(!process.env.TEST_DATABASE_URL);
+
+integration('Idle-in-transaction bound on the database', () => {
+  it('applies the configured idle_in_transaction_session_timeout to pooled clients', async () => {
+    const client = await pool.connect();
+    try {
+      const result = await client.query<{ idle_in_transaction_session_timeout: string }>(
+        'SHOW idle_in_transaction_session_timeout',
+      );
+      expect(result.rows[0].idle_in_transaction_session_timeout).toBe(
+        `${IDLE_IN_TRANSACTION_TIMEOUT_MS / 1000}s`,
+      );
+    } finally {
+      client.release();
+    }
+  });
+
+  it('terminates a client that runs BEGIN and then idles past the bound', async () => {
+    // Same pool option as server/db.ts with a short bound so the test runs quickly.
+    const short = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      max: 1,
+      idle_in_transaction_session_timeout: 500,
+    });
+    short.on('error', () => {});
+    const client = await short.connect();
+    client.on('error', () => {});
+    let broken: Error | undefined;
+    try {
+      await client.query('BEGIN');
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      const started = Date.now();
+      await expect(client.query('SELECT 1')).rejects.toThrow();
+      expect(Date.now() - started).toBeLessThan(5_000);
+      broken = new Error('session terminated by idle_in_transaction_session_timeout');
+    } finally {
+      client.release(broken);
+      await short.end();
+    }
+  });
+});
 
 integration('Database-backed wallet, records, and authorization flows', () => {
   const wallets = new Set<string>();
