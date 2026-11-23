@@ -24,6 +24,13 @@ import {
   type ActivitySnapshot,
 } from './activity';
 import { activityRequestUrls, resolveHorizonEndpoints } from './horizon';
+import { createToastScheduler } from './toast';
+import {
+  HORIZON_ACTIVITY_PAGE_SIZE,
+  mergeActivityItems,
+  parseHorizonActivityPage,
+  type HorizonActivityRecord,
+} from './activity';
 import {
   Activity,
   ArrowDownToLine,
@@ -250,6 +257,9 @@ export default function App() {
   const [ledgerPageLoading, setLedgerPageLoading] = useState(false);
   const [beneficiaryRecords, setBeneficiaryRecords] = useState<AidRecord[]>([]);
   const [activity, setActivity] = useState<ActivityItem<AidRecord>[]>([]);
+  const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [activityHasMore, setActivityHasMore] = useState(false);
+  const [activityPageLoading, setActivityPageLoading] = useState(false);
   const [audit, setAudit] = useState<AuditItem[]>([]);
   const [auditActionOptions, setAuditActionOptions] = useState<string[]>([]);
   const [auditCursor, setAuditCursor] = useState<string | null>(null);
@@ -284,6 +294,17 @@ export default function App() {
   const [activityStream, setActivityStream] = useState<
     'connecting' | 'live' | 'polling' | 'offline'
   >('offline');
+  const activitySelectionRef = useRef('');
+  const activityRequestRef = useRef(0);
+  const activityPageRequestRef = useRef(false);
+  const activityCursorsRef = useRef<{
+    selection: string;
+    payments: string | null;
+    transactions: string | null;
+  }>({ selection: '', payments: null, transactions: null });
+  const recordsRef = useRef(records);
+  recordsRef.current = records;
+  activitySelectionRef.current = `${session?.address ?? ''}:${network}`;
   const [selected, setSelected] = useState<AidRecord | null>(null);
   const [recordConflictId, setRecordConflictId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -300,6 +321,22 @@ export default function App() {
     note: '',
     recipientConsent: false,
   });
+  const [formPristine, setFormPristine] = useState(form);
+  const formIsDirty = useMemo(
+    () =>
+      form.recipient !== formPristine.recipient ||
+      form.recipientAddress !== formPristine.recipientAddress ||
+      form.purpose !== formPristine.purpose ||
+      form.amount !== formPristine.amount ||
+      form.asset !== formPristine.asset ||
+      form.assetIssuer !== formPristine.assetIssuer ||
+      form.network !== formPristine.network ||
+      form.txHash !== formPristine.txHash ||
+      form.date !== formPristine.date ||
+      form.note !== formPristine.note ||
+      form.recipientConsent !== formPristine.recipientConsent,
+    [form, formPristine],
+  );
   const [roleAddress, setRoleAddress] = useState('');
   const [roleValue, setRoleValue] = useState<Role>('organization');
   const [auditAction, setAuditAction] = useState('all');
@@ -330,7 +367,10 @@ export default function App() {
   }
   const formDialogRef = useRef<HTMLDivElement>(null);
   const detailDialogRef = useRef<HTMLElement>(null);
-  const closeForm = useCallback(() => setShowForm(false), []);
+  const closeForm = useCallback(() => {
+    if (formIsDirty && !window.confirm('You have unsaved changes. Discard them?')) return;
+    setShowForm(false);
+  }, [formIsDirty]);
   const closeDetail = useCallback(() => {
     setSelected(null);
     setRecordConflictId(null);
@@ -338,10 +378,9 @@ export default function App() {
   useDialogFocus(showForm, formDialogRef, closeForm, '#add-record');
   useDialogFocus(!!selected, detailDialogRef, closeDetail, `[data-record-id="${selected?.id}"]`);
 
-  const notify = useCallback((text: string) => {
-    setToast(text);
-    window.setTimeout(() => setToast(''), 3600);
-  }, []);
+  const toastScheduler = useMemo(() => createToastScheduler(setToast), []);
+  const notify = useCallback((text: string) => toastScheduler.show(text), [toastScheduler]);
+  useEffect(() => () => toastScheduler.cancel(), [toastScheduler]);
   const fetchLedgerPage = useCallback(
     async (index: number, cursors: Array<string | null>) => {
       const requestId = ++transparencyRequestId.current;
@@ -437,8 +476,19 @@ export default function App() {
 
   function chooseNetwork(value: string) {
     if (value !== 'testnet' && value !== 'mainnet') return;
+    if (session && value !== session.network) {
+      notify(
+        'Network change blocked. This session is connected to ' +
+          session.network +
+          '. Sign out before switching to ' +
+          value +
+          '.',
+      );
+      return;
+    }
     setNetwork(value);
     writeNetworkPreference(value);
+    if (!session) void loadTransparency();
   }
   function toggleTheme() {
     const nextTheme: Theme = theme === 'dark' ? 'light' : 'dark';
@@ -493,6 +543,7 @@ export default function App() {
       const r = await api.get<{ session: Session | null }>('/api/me');
       const restored = r.data.session;
       setSession(restored);
+      if (restored) setNetwork(restored.network);
     } catch (e) {
       setSession(null);
       setError(messageOf(e));
@@ -569,11 +620,185 @@ export default function App() {
   useEffect(() => {
     publishedRecords.current = records;
   }, [records]);
+  const loadActivity = useCallback(
+    async (
+      address: string,
+      selectedNetwork: Network,
+      mode: 'reset' | 'refresh' | 'older' = 'reset',
+    ) => {
+      const selection = `${address}:${selectedNetwork}`;
+      if (activitySelectionRef.current !== selection) return;
+      if (mode === 'older' && activityPageRequestRef.current) return;
+      const requestId = ++activityRequestRef.current;
+      if (mode === 'older') {
+        activityPageRequestRef.current = true;
+        setActivityPageLoading(true);
+      } else if (mode === 'reset') {
+        activityCursorsRef.current = { selection, payments: null, transactions: null };
+        setActivityHasMore(false);
+        setActivityLoading(true);
+      }
 
-  useEffect(() => {
+      try {
+        const base = horizon[selectedNetwork];
+        const accountUrl = base + '/accounts/' + encodeURIComponent(address);
+        const cursors =
+          activityCursorsRef.current.selection === selection
+            ? activityCursorsRef.current
+            : { selection, payments: null, transactions: null };
+        const paramsFor = (cursor: string | null, includeFailed = false) => {
+          const params = new URLSearchParams({
+            order: 'desc',
+            limit: String(HORIZON_ACTIVITY_PAGE_SIZE + 1),
+          });
+          if (cursor) params.set('cursor', cursor);
+          if (includeFailed) params.set('include_failed', 'true');
+          return params.toString();
+        };
+        const pageUrl = (resource: 'payments' | 'transactions', cursor: string | null) =>
+          `${accountUrl}/${resource}?${paramsFor(cursor, resource === 'transactions')}`;
+        const [accountRes, paymentsRes, txRes] = await Promise.all([
+          mode === 'older'
+            ? Promise.resolve(null)
+            : fetch(accountUrl, { headers: { Accept: 'application/json' } }),
+          cursors.payments || mode !== 'older'
+            ? fetch(pageUrl('payments', mode === 'older' ? cursors.payments : null), {
+                headers: { Accept: 'application/json' },
+              })
+            : Promise.resolve(null),
+          cursors.transactions || mode !== 'older'
+            ? fetch(pageUrl('transactions', mode === 'older' ? cursors.transactions : null), {
+                headers: { Accept: 'application/json' },
+              })
+            : Promise.resolve(null),
+        ]);
+        if (accountRes?.status === 404)
+          throw new Error(
+            'Wallet account not found on ' +
+              selectedNetwork +
+              '. Switch network or fund the Testnet account.',
+          );
+        if (
+          (accountRes && !accountRes.ok) ||
+          (paymentsRes && !paymentsRes.ok) ||
+          (txRes && !txRes.ok)
+        )
+          throw new Error('Horizon is unavailable. Your records are safe; activity will retry.');
+        const account = accountRes
+          ? ((await accountRes.json()) as {
+              balances?: { asset_type: string; balance: string }[];
+            })
+          : null;
+        const paymentsPage = paymentsRes
+          ? parseHorizonActivityPage(
+              (await paymentsRes.json()) as { _embedded?: { records?: HorizonActivityRecord[] } },
+            )
+          : { records: [], nextCursor: null };
+        const txPage = txRes
+          ? parseHorizonActivityPage(
+              (await txRes.json()) as { _embedded?: { records?: HorizonActivityRecord[] } },
+            )
+          : { records: [], nextCursor: null };
+        if (activitySelectionRef.current !== selection || requestId !== activityRequestRef.current)
+          return;
+        if (account) {
+          setBalance(account.balances?.find((b) => b.asset_type === 'native')?.balance || '0');
+        }
+        const published = recordsRef.current.filter(
+          (r) => r.network === selectedNetwork && r.txHash,
+        );
+        const payItems: ActivityItem[] = paymentsPage.records.map((p, i) => {
+          const hash = String(p.transaction_hash || '');
+          const source = String(p.from || p.source_account || '');
+          const dest = String(p.to || '');
+          const sent = source === address;
+          const code = p.asset_type === 'native' ? 'XLM' : String(p.asset_code || 'Unknown');
+          return {
+            id: String(p.id || hash + i),
+            hash,
+            date: String(p.created_at || ''),
+            type: sent ? 'sent' : 'received',
+            amount: String(p.amount || '—'),
+            asset: code,
+            counterparty: short(sent ? dest : source),
+            status: 'Successful',
+            network: selectedNetwork,
+            publishedRecord: published.find((r) => r.txHash === hash),
+          };
+        });
+        const hashes = new Set(payItems.map((p) => p.hash));
+        const txItems: ActivityItem[] = txPage.records
+          .filter((t) => !t.hash || !hashes.has(String(t.hash)))
+          .map((t, i) => ({
+            id: String(t.id || t.hash || i),
+            hash: String(t.hash || ''),
+            date: String(t.created_at || ''),
+            type: 'transaction',
+            amount: '—',
+            asset: '—',
+            counterparty: short(String(t.source_account || '')),
+            status: t.successful ? 'Successful' : 'Failed',
+            network: selectedNetwork,
+          }));
+        const incoming = [...payItems, ...txItems];
+        setActivity((previous) =>
+          mode === 'older' || mode === 'refresh'
+            ? mergeActivityItems(previous, incoming)
+            : mergeActivityItems([], incoming),
+        );
+        if (mode !== 'refresh') {
+          activityCursorsRef.current = {
+            selection,
+            payments: mode === 'older' && !paymentsRes ? cursors.payments : paymentsPage.nextCursor,
+            transactions: mode === 'older' && !txRes ? cursors.transactions : txPage.nextCursor,
+          };
+        } else if (activityCursorsRef.current.selection !== selection) {
+          activityCursorsRef.current = {
+            selection,
+            payments: paymentsPage.nextCursor,
+            transactions: txPage.nextCursor,
+          };
+        } else {
+          activityCursorsRef.current = {
+            ...activityCursorsRef.current,
+            payments: activityCursorsRef.current.payments ?? paymentsPage.nextCursor,
+            transactions: activityCursorsRef.current.transactions ?? txPage.nextCursor,
+          };
+        }
+        setActivityHasMore(
+          Boolean(activityCursorsRef.current.payments || activityCursorsRef.current.transactions),
+        );
+        setError('');
+      } catch (e) {
+        if (activitySelectionRef.current === selection && requestId === activityRequestRef.current)
+          setError(messageOf(e));
+      } finally {
+        if (mode === 'older' && activitySelectionRef.current === selection) {
+          activityPageRequestRef.current = false;
+          setActivityPageLoading(false);
+        } else if (requestId === activityRequestRef.current) {
+          if (mode === 'reset') {
+            setActivityLoading(false);
+          }
+        }
+      }
+    },
+    [],
+  );
+
+  useLayoutEffect(() => {
     if (!session) {
       activityCoordinator.current?.invalidate();
+      activityRequestRef.current += 1;
+      activityCursorsRef.current = {
+        selection: `:${network}`,
+        payments: null,
+        transactions: null,
+      };
       setActivity([]);
+      setActivityHasMore(false);
+      setActivityLoading(false);
+      setActivityPageLoading(false);
       setBalance('0');
       setActivityStream('offline');
       setActivityLoading(false);
@@ -582,14 +807,27 @@ export default function App() {
     let source: EventSource | null = null;
     let pollTimer: number | undefined;
     let closed = false;
+    activityRequestRef.current += 1;
+    activityCursorsRef.current = {
+      selection: `${session.address}:${network}`,
+      payments: null,
+      transactions: null,
+    };
+    activityPageRequestRef.current = false;
+    setActivity([]);
+    setActivityHasMore(false);
+    setActivityPageLoading(false);
     setActivityStream('connecting');
     const startPolling = () => {
       if (closed) return;
       setActivityStream('polling');
       if (pollTimer) window.clearInterval(pollTimer);
-      pollTimer = window.setInterval(() => void loadActivity(session.address, network), 30000);
+      pollTimer = window.setInterval(
+        () => void loadActivity(session.address, network, 'refresh'),
+        30000,
+      );
     };
-    void loadActivity(session.address, network);
+    void loadActivity(session.address, network, 'reset');
     try {
       source = new EventSource(activityRequestUrls(horizon[network], session.address).stream);
       source.onopen = () => {
@@ -602,7 +840,7 @@ export default function App() {
       source.onmessage = (event) => {
         try {
           const payment = JSON.parse(event.data) as { transaction_hash?: string };
-          if (payment.transaction_hash) void loadActivity(session.address, network);
+          if (payment.transaction_hash) void loadActivity(session.address, network, 'refresh');
         } catch {
           /* Ignore malformed stream frames and keep listening. */
         }
@@ -1228,7 +1466,10 @@ export default function App() {
                   <button
                     className="button primary compact"
                     id="add-record"
-                    onClick={() => setShowForm(true)}
+                    onClick={() => {
+                      setFormPristine(form);
+                      setShowForm(true);
+                    }}
                   >
                     <Plus size={14} />
                     Add record
@@ -1597,6 +1838,17 @@ export default function App() {
                 </tbody>
               </table>
             </div>
+            {activityHasMore && (
+              <div className="activity-pagination">
+                <button
+                  className="button secondary"
+                  disabled={activityPageLoading || activityLoading}
+                  onClick={() => void loadActivity(session.address, network, 'older')}
+                >
+                  {activityPageLoading ? 'Loading older activity…' : 'Load older activity'}
+                </button>
+              </div>
+            )}
             {!activityLoading && !filteredActivity.length && (
               <div className="empty-state">
                 <Activity size={22} />

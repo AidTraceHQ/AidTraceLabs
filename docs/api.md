@@ -1,6 +1,6 @@
 # API
 
-All API responses are configured with `Cache-Control: no-store`. Error responses use `{ "error": "..." }`. Protected writes require an allowed `Origin`, an authenticated session, and a valid CSRF token unless noted. List routes use bounded cursor pagination.
+All API responses are configured with `Cache-Control: no-store`. Error responses use `{ "error": "..." }` (per-IP rate-limit responses also include `"code": "rate_limit_exceeded"`). Protected writes require an allowed `Origin`, an authenticated session, and a valid CSRF token unless noted. List routes use bounded cursor pagination.
 
 | Method and path                    | Access                                        | Purpose                                                         |
 | ---------------------------------- | --------------------------------------------- | --------------------------------------------------------------- |
@@ -30,5 +30,7 @@ Authentication challenge inputs are `{ address, network }`. Signature verificati
 
 Record responses may include a `verification` object with the latest check's evidence. When Horizon reports a transaction memo, `verification.memo` holds its value and `verification.memoType` holds one of `text`, `id`, `hash`, or `return`; both are omitted when the transaction has no memo (`none`) or the result did not reach a transaction (`not-found`, `pending`, `unverified`). An `id` memo is a uint64 returned as a decimal string, and `hash`/`return` memos keep Horizon's base64 encoding. The memo is capture-only evidence for reconciliation and never affects whether a record is `verified` or `mismatch`. Consent-off public projections omit both fields, like the other withheld verification details. `verification.checkedAt` is the time of the latest check; it is distinct from the record's `createdAt` and from `verification.createdAt`, which is the on-chain transaction's creation time. Consent-off projections retain `checkedAt` but still withhold the destination, ledger, explorer link, and memo.
 Every record in list, single-record, create, edit, verify and void responses includes `version`, a positive integer that starts at `1`. Each successful `PUT /api/records/:id` and `POST /api/records/:id/void` increases it by one; verification checks do not change it. `PUT /api/records/:id` accepts an optional `expectedVersion`: send the `version` the edit started from. A value that is not a positive integer returns `400`. If the record's current `version` differs, the edit is rejected with `409` and `{ "error": "Record changed concurrently. Refresh before editing." }`, and nothing is changed. Without `expectedVersion`, the server checks against the version it read at the start of the same request, so the edit succeeds unless another write lands during that request.
+
+When a per-IP rate limit is exceeded, the API responds with HTTP `429`, a `Retry-After` header, and `{ "error": "Too many requests. Wait a few minutes and try again.", "code": "rate_limit_exceeded" }`.
 
 See the route handlers in `server/auth.ts` and `server/records.ts` for exact schemas and response fields. Contract-level integration tests are in `tests/backend.test.ts`.
