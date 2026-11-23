@@ -7,11 +7,19 @@ import {
   throwFreighterError,
   waitForFreighter,
 } from './freighter';
+import { readNetworkPreference, writeNetworkPreference } from './network-preference';
 import {
-  describeNetworkEnvironment,
-  readNetworkPreference,
-  writeNetworkPreference,
-} from './network-preference';
+  buildRecordPayload,
+  chooseRecordFormNetwork,
+  createRecordFormState,
+  isStellarNetwork,
+  openRecordForm,
+  resetRecordFormAfterSave,
+  resolveRecordFormNetwork,
+  updateRecordFormFields,
+  type RecordFormFields,
+  type RecordFormState,
+} from './record-form';
 import { readThemePreference, writeThemePreference, type Theme } from './theme-preference';
 import { localDateString } from './date';
 import { createToastScheduler } from './toast';
@@ -296,19 +304,9 @@ export default function App() {
   const [selected, setSelected] = useState<AidRecord | null>(null);
   const [recordConflictId, setRecordConflictId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({
-    recipient: '',
-    recipientAddress: '',
-    purpose: '',
-    amount: '',
-    asset: 'USDC',
-    assetIssuer: '',
-    network,
-    txHash: '',
-    date: localDateString(),
-    note: '',
-    recipientConsent: false,
-  });
+  const [formState, setFormState] = useState<RecordFormState>(() => createRecordFormState());
+  const form = formState.fields;
+  const formNetwork = resolveRecordFormNetwork(network, formState.networkOverride);
   const [roleAddress, setRoleAddress] = useState('');
   const [roleValue, setRoleValue] = useState<Role>('organization');
   const [auditAction, setAuditAction] = useState('all');
@@ -325,6 +323,13 @@ export default function App() {
   const rolesRequestInFlight = useRef(false);
   const formDialogRef = useRef<HTMLDivElement>(null);
   const detailDialogRef = useRef<HTMLElement>(null);
+  const openForm = useCallback(() => {
+    setFormState(openRecordForm);
+    setShowForm(true);
+  }, []);
+  const updateForm = useCallback((patch: Partial<RecordFormFields>) => {
+    setFormState((previous) => updateRecordFormFields(previous, patch));
+  }, []);
   const closeForm = useCallback(() => setShowForm(false), []);
   const closeDetail = useCallback(() => {
     setSelected(null);
@@ -805,27 +810,9 @@ export default function App() {
     setBusy(true);
     setError('');
     try {
-      await api.post('/api/records', {
-        ...form,
-        csrfToken: session.csrfToken,
-        recipient: form.recipient.trim(),
-        recipientAddress: form.recipientAddress.trim(),
-        purpose: form.purpose.trim(),
-        amount: String(form.amount),
-        txHash: form.txHash.trim(),
-        note: form.note.trim(),
-      });
+      await api.post('/api/records', buildRecordPayload(formState, network, session.csrfToken));
       setShowForm(false);
-      setForm({
-        ...form,
-        recipient: '',
-        recipientAddress: '',
-        purpose: '',
-        amount: '',
-        txHash: '',
-        note: '',
-        recipientConsent: false,
-      });
+      setFormState(resetRecordFormAfterSave);
       await loadTransparency();
       notify('Disbursement saved and audit-logged.');
     } catch (e) {
@@ -1287,11 +1274,7 @@ export default function App() {
                   Export CSV
                 </button>
                 {canManageRecords && (
-                  <button
-                    className="button primary compact"
-                    id="add-record"
-                    onClick={() => setShowForm(true)}
-                  >
+                  <button className="button primary compact" id="add-record" onClick={openForm}>
                     <Plus size={14} />
                     Add record
                   </button>
@@ -2013,7 +1996,7 @@ export default function App() {
                 Recipient name
                 <input
                   value={form.recipient}
-                  onChange={(event) => setForm({ ...form, recipient: event.target.value })}
+                  onChange={(event) => updateForm({ recipient: event.target.value })}
                   required
                   maxLength={160}
                 />
@@ -2022,7 +2005,7 @@ export default function App() {
                 Beneficiary Stellar address
                 <input
                   value={form.recipientAddress}
-                  onChange={(event) => setForm({ ...form, recipientAddress: event.target.value })}
+                  onChange={(event) => updateForm({ recipientAddress: event.target.value })}
                   required
                   maxLength={56}
                   placeholder="G…"
@@ -2032,7 +2015,7 @@ export default function App() {
                 Purpose
                 <input
                   value={form.purpose}
-                  onChange={(event) => setForm({ ...form, purpose: event.target.value })}
+                  onChange={(event) => updateForm({ purpose: event.target.value })}
                   required
                   maxLength={240}
                 />
@@ -2044,7 +2027,7 @@ export default function App() {
                   min="0.0000001"
                   step="0.0000001"
                   value={form.amount}
-                  onChange={(event) => setForm({ ...form, amount: event.target.value })}
+                  onChange={(event) => updateForm({ amount: event.target.value })}
                   required
                 />
               </label>
@@ -2053,11 +2036,13 @@ export default function App() {
                 <select
                   value={form.asset === 'XLM' || form.asset === 'USDC' ? form.asset : 'other'}
                   onChange={(event) =>
-                    setForm({
-                      ...form,
-                      asset: event.target.value === 'other' ? '' : event.target.value,
-                      assetIssuer: event.target.value === 'XLM' ? '' : form.assetIssuer,
-                    })
+                    setFormState((previous) =>
+                      updateRecordFormFields(previous, {
+                        asset: event.target.value === 'other' ? '' : event.target.value,
+                        assetIssuer:
+                          event.target.value === 'XLM' ? '' : previous.fields.assetIssuer,
+                      }),
+                    )
                   }
                 >
                   <option value="XLM">XLM</option>
@@ -2070,9 +2055,7 @@ export default function App() {
                   Asset code
                   <input
                     value={form.asset === 'USDC' ? 'USDC' : form.asset}
-                    onChange={(event) =>
-                      setForm({ ...form, asset: event.target.value.toUpperCase() })
-                    }
+                    onChange={(event) => updateForm({ asset: event.target.value.toUpperCase() })}
                     required
                     maxLength={12}
                   />
@@ -2083,7 +2066,7 @@ export default function App() {
                   Asset issuer
                   <input
                     value={form.assetIssuer}
-                    onChange={(event) => setForm({ ...form, assetIssuer: event.target.value })}
+                    onChange={(event) => updateForm({ assetIssuer: event.target.value })}
                     required
                     placeholder="G…"
                   />
@@ -2092,8 +2075,13 @@ export default function App() {
               <label>
                 Network
                 <select
-                  value={form.network}
-                  onChange={(event) => setForm({ ...form, network: event.target.value as Network })}
+                  value={formNetwork}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    if (isStellarNetwork(value)) {
+                      setFormState((previous) => chooseRecordFormNetwork(previous, value));
+                    }
+                  }}
                 >
                   <option value="testnet">Testnet</option>
                   <option value="mainnet">Mainnet</option>
@@ -2104,7 +2092,7 @@ export default function App() {
                 <input
                   type="date"
                   value={form.date}
-                  onChange={(event) => setForm({ ...form, date: event.target.value })}
+                  onChange={(event) => updateForm({ date: event.target.value })}
                   required
                 />
               </label>
@@ -2112,7 +2100,7 @@ export default function App() {
                 Stellar transaction hash (optional)
                 <input
                   value={form.txHash}
-                  onChange={(event) => setForm({ ...form, txHash: event.target.value })}
+                  onChange={(event) => updateForm({ txHash: event.target.value })}
                   maxLength={64}
                   placeholder="64 hexadecimal characters"
                 />
@@ -2121,7 +2109,7 @@ export default function App() {
                 Note
                 <textarea
                   value={form.note}
-                  onChange={(event) => setForm({ ...form, note: event.target.value })}
+                  onChange={(event) => updateForm({ note: event.target.value })}
                   maxLength={500}
                   rows={3}
                 />
@@ -2130,7 +2118,7 @@ export default function App() {
                 <input
                   type="checkbox"
                   checked={form.recipientConsent}
-                  onChange={(event) => setForm({ ...form, recipientConsent: event.target.checked })}
+                  onChange={(event) => updateForm({ recipientConsent: event.target.checked })}
                 />{' '}
                 I have explicit consent to publish the beneficiary name, wallet address, note and
                 transaction link.
