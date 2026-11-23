@@ -21,6 +21,10 @@ export const pool = new Pool({
   statement_timeout: 15_000,
 });
 
+pool.on('error', (err) => {
+  console.error(`Idle pool client error: ${err.message}`);
+});
+
 export function query<Row extends QueryResultRow = QueryResultRow>(
   text: string,
   values?: unknown[],
