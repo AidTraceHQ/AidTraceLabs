@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import js from '@eslint/js';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
@@ -20,6 +21,24 @@ export default tseslint.config(
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'warn',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+    },
+  },
+  {
+    files: ['**/*.{ts,tsx}'],
+    languageOptions: {
+      parserOptions: {
+        project: [
+          './tsconfig.json',
+          './tsconfig.server.json',
+          './tsconfig.test.json',
+          './tsconfig.eslint.json',
+        ],
+        tsconfigRootDir: fileURLToPath(new URL('.', import.meta.url)),
+      },
+    },
+    rules: {
+      '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/no-misused-promises': 'error',
     },
   },
   {

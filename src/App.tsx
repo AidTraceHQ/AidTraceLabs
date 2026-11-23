@@ -2121,7 +2121,7 @@ export default function App() {
             }
           }}
         >
-          <form className="form modal-large" onSubmit={saveRecord}>
+          <form className="form modal-large" onSubmit={(event) => void saveRecord(event)}>
             <div className="modal-head">
               <div>
                 <p className="eyebrow">PUBLISH AID RECORD</p>
@@ -2460,7 +2460,7 @@ export default function App() {
               canManageRecords &&
               (session.role === 'admin' || selected.organization === session.address) &&
               !selected.voidedAt && (
-                <form className="inline-edit" onSubmit={editRecord}>
+                <form className="inline-edit" onSubmit={(event) => void editRecord(event)}>
                   <h3>Edit record</h3>
                   <label>
                     Recipient
