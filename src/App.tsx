@@ -286,13 +286,14 @@ export default function App() {
   const [toast, setToast] = useState('');
   const [theme, setTheme] = useState<Theme>(readThemePreference);
   const dark = theme === 'dark';
-  const [search, setSearch] = useState('');
-  const [orgFilter, setOrgFilter] = useState('all');
-  const [assetFilter, setAssetFilter] = useState('all');
-  const [networkFilter, setNetworkFilter] = useState('all');
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [fromDate, setFromDate] = useState('');
-  const [toDate, setToDate] = useState('');
+  const initialLedgerParams = typeof window === 'undefined' ? new URLSearchParams() : new URLSearchParams(window.location.search);
+  const [search, setSearch] = useState(initialLedgerParams.get('q') ?? '');
+  const [orgFilter, setOrgFilter] = useState(initialLedgerParams.get('org') ?? 'all');
+  const [assetFilter, setAssetFilter] = useState(initialLedgerParams.get('asset') ?? 'all');
+  const [networkFilter, setNetworkFilter] = useState(initialLedgerParams.get('network') ?? 'all');
+  const [statusFilter, setStatusFilter] = useState(initialLedgerParams.get('status') ?? 'all');
+  const [fromDate, setFromDate] = useState(initialLedgerParams.get('from') ?? '');
+  const [toDate, setToDate] = useState(initialLedgerParams.get('to') ?? '');
   const [sortBy, setSortBy] = useState('date');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [activityType, setActivityType] = useState('all');
@@ -311,6 +312,29 @@ export default function App() {
   }>({ selection: '', payments: null, transactions: null });
   const recordsRef = useRef(records);
   recordsRef.current = records;
+
+  // Mirror the ledger filter state into the URL without leaking session data.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams();
+    const entries: Array<[string, string, string]> = [
+      ['q', search, ''],
+      ['org', orgFilter, 'all'],
+      ['asset', assetFilter, 'all'],
+      ['network', networkFilter, 'all'],
+      ['status', statusFilter, 'all'],
+      ['from', fromDate, ''],
+      ['to', toDate, ''],
+    ];
+    for (const [key, value, fallback] of entries) {
+      if (value && value !== fallback) params.set(key, value);
+    }
+    const query = params.toString();
+    const next = window.location.pathname + (query ? `?${query}` : '') + window.location.hash;
+    if (next !== window.location.pathname + window.location.search + window.location.hash) {
+      window.history.replaceState(window.history.state, '', next);
+    }
+  }, [search, orgFilter, assetFilter, networkFilter, statusFilter, fromDate, toDate]);
   activitySelectionRef.current = `${session?.address ?? ''}:${network}`;
   const [selected, setSelected] = useState<AidRecord | null>(null);
   const [recordConflictId, setRecordConflictId] = useState<string | null>(null);
