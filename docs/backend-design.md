@@ -175,6 +175,8 @@ Index: `rate_limits_expiry_idx(expires_at)`. The application stores digests of r
 
 Indexes: `audit_events_created_idx(created_at DESC, id DESC)`, `audit_events_actor_created_idx(actor_wallet, created_at DESC, id DESC)`, `audit_events_record_created_idx(record_id, created_at DESC, id DESC)`, `audit_events_action_created_idx(action, created_at DESC, id DESC)`, and the primary key. Migration 005 gives `aidtrace_runtime` `SELECT` and `INSERT` only; `aidtrace_migration` owns the table and retains maintenance access.
 
+Audit writes pass structured detail in `metadata_json` as a parameterized `$n::jsonb` argument, never by interpolating values into SQL text. Role changes store `previousRole` and `newRole`; record voids store `voidReason`; verification checks store `status` and `ledger`; record creates and updates store `network` and `status` (updates also store `version`); and session events store `network` (logout-everywhere also stores `scope`). Session tokens and CSRF tokens are never written to audit rows. The `GET /api/audit` response contract does not include `metadata_json`.
+
 ## API Routes
 
 All handlers use `Cache-Control: no-store`; errors generally return `{ "error": "..." }`. The `Origin` allowlist comes from `CORS_ALLOWED_ORIGINS` (defaulting to `PUBLIC_APP_ORIGIN`). Protected writes require a valid session, allowed Origin, session-bound CSRF token, and applicable role. The API does not expose a database-readiness health route.
