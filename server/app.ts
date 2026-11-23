@@ -1,15 +1,33 @@
 import { integerEnvironmentVariable } from './environment.js';
-import express, { type ErrorRequestHandler } from 'express';
+import express, { type ErrorRequestHandler, type RequestHandler } from 'express';
 import { authRouter } from './auth.js';
 import { cors } from './http-security.js';
 import { apiIpRateLimit, authIpRateLimit, publicReadIpRateLimit } from './rate-limits.js';
 import { recordsRouter } from './records.js';
 import { databaseUnavailableResponse } from './database-errors.js';
 
+// Per-request completion log. Only method, matched route pattern, status and
+// duration are emitted: never the raw URL/query, headers, cookies or bodies.
+const requestLogger: RequestHandler = (request, response, next) => {
+  const startedAt = process.hrtime.bigint();
+  const method = request.method;
+  response.once('finish', () => {
+    const route = request.route?.path;
+    const path = typeof route === 'string' ? request.baseUrl + route : '(unmatched)';
+    if (path === '/api/_healthcheck') return;
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+    console.info(
+      `API request completed: ${method} ${path} ${response.statusCode} ${durationMs.toFixed(1)}ms`,
+    );
+  });
+  next();
+};
+
 const app = express();
 
 app.disable('x-powered-by');
 app.set('trust proxy', integerEnvironmentVariable('TRUST_PROXY_HOPS', 0, 0));
+app.use(requestLogger);
 app.use(cors);
 app.use('/api', apiIpRateLimit);
 app.use('/api/auth', authIpRateLimit);
