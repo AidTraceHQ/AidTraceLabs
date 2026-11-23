@@ -16,6 +16,7 @@
     "records:reverify": "tsx scripts/reverify.ts",
     "notifications:deliver": "tsx scripts/deliver-notifications.ts",
     "smoke": "tsx scripts/smoke.ts",
+    "smoke:remote": "tsx scripts/smoke-remote.ts",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.test.json",
     "lint": "eslint .",
     "format": "prettier --write .",

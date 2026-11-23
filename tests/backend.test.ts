@@ -487,6 +487,142 @@ describe('On-chain verification distinguishes matching and mismatching payments'
     expect(notFound.status).toBe('not-found');
     expect(notFound).not.toHaveProperty('memo');
   });
+
+  it('bounds the Horizon response size and rejects a non-array operations payload', async () => {
+    const organization = Keypair.random().publicKey();
+    const recipient = Keypair.random().publicKey();
+    const record = {
+      network: 'testnet' as const,
+      txHash: 'e'.repeat(64),
+      organizationWallet: organization,
+      recipientWallet: recipient,
+      amountStroops: '12500000',
+      assetCode: 'XLM',
+      assetIssuer: null,
+    };
+
+    const oversizedFetch = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/operations')) {
+        return new Response(JSON.stringify({ _embedded: { records: [] } }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({
+          successful: true,
+          source_account: organization,
+          padding: 'x'.repeat(HORIZON_MAX_RESPONSE_BYTES),
+        }),
+        { status: 200 },
+      );
+    });
+    vi.stubGlobal('fetch', oversizedFetch);
+    expect((await checkTransaction(record)).status).toBe('pending');
+    // The oversized transaction body is abandoned before the operations request is made.
+    expect(oversizedFetch).toHaveBeenCalledTimes(1);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = new URL(String(input));
+        return url.pathname.endsWith('/operations')
+          ? new Response(JSON.stringify({ _embedded: { records: 'not-an-array' } }), {
+              status: 200,
+            })
+          : new Response(JSON.stringify({ successful: true, source_account: organization }), {
+              status: 200,
+            });
+      }),
+    );
+    expect((await checkTransaction(record)).status).toBe('pending');
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = new URL(String(input));
+        const body = url.pathname.endsWith('/operations')
+          ? {
+              _embedded: {
+                records: [
+                  {
+                    type: 'payment',
+                    from: organization,
+                    to: recipient,
+                    amount: '1.25',
+                    asset_type: 'native',
+                  },
+                ],
+              },
+            }
+          : {
+              successful: true,
+              source_account: organization,
+              ledger: 21,
+              created_at: '2026-01-01T00:00:00Z',
+            };
+        return new Response(JSON.stringify(body), { status: 200 });
+      }),
+    );
+    expect(await checkTransaction(record)).toMatchObject({
+      status: 'verified',
+      ledger: 21,
+      sourceAccount: organization,
+      destination: recipient,
+      amount: '1.25',
+      asset: 'XLM',
+    });
+  });
+});
+
+describe('Per-IP rate-limit error contract', () => {
+  function expectRateLimitContract(response: request.Response) {
+    expect(response.status).toBe(429);
+    expect(response.body).toEqual({
+      error: expect.any(String),
+      code: 'rate_limit_exceeded',
+    });
+    expect(response.body.error.trim().length).toBeGreaterThan(0);
+    expect(response.body.error).not.toBe('rate_limit_exceeded');
+    expect(Number(response.headers['retry-after'])).toBeGreaterThan(0);
+  }
+
+  it('returns the documented 429 error contract across public read, auth, and API limiters', async () => {
+    vi.resetModules();
+    vi.stubEnv('PUBLIC_READ_RATE_LIMIT_MAX', '1');
+    vi.stubEnv('AUTH_RATE_LIMIT_MAX', '1');
+    vi.stubEnv('API_RATE_LIMIT_MAX', '3');
+
+    const [{ app: rateLimitedApp }, { pool: rateLimitedPool }] = await Promise.all([
+      import('../server/app.js'),
+      import('../server/db.js'),
+    ]);
+
+    try {
+      await request(rateLimitedApp).get('/api/transparency');
+      const transparencyLimited = await request(rateLimitedApp).get('/api/transparency');
+      expectRateLimitContract(transparencyLimited);
+
+      const challengePayload = { address: 'invalid', network: 'testnet' };
+      const authFirst = await request(rateLimitedApp)
+        .post('/api/auth/challenge')
+        .set('Origin', origin)
+        .send(challengePayload);
+      expect(authFirst.status).toBe(400);
+      const authLimited = await request(rateLimitedApp)
+        .post('/api/auth/challenge')
+        .set('Origin', origin)
+        .send(challengePayload);
+      expectRateLimitContract(authLimited);
+
+      const apiAllowed = await request(rateLimitedApp).get('/api/nonexistent-rate-limit-check');
+      expect(apiAllowed.status).toBe(404);
+      const apiLimited = await request(rateLimitedApp).get('/api/nonexistent-rate-limit-check');
+      expectRateLimitContract(apiLimited);
+    } finally {
+      await rateLimitedPool.end();
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
 });
 
 const notificationEnvironmentKeys = [
@@ -914,7 +1050,11 @@ integration('Database-backed wallet, records, and authorization flows', () => {
   async function expectAuditEvent(
     action: string,
     actorWallet: string,
-    expected: { subjectWallet?: string; recordId?: string } = {},
+    expected: {
+      subjectWallet?: string;
+      recordId?: string;
+      metadata?: Record<string, unknown>;
+    } = {},
   ) {
     const subjectWallet = expected.subjectWallet ?? null;
     const recordId = expected.recordId ?? null;
@@ -923,8 +1063,9 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       actor_wallet: string;
       subject_wallet: string | null;
       record_id: string | null;
+      metadata_json: Record<string, unknown>;
     }>(
-      `SELECT action, actor_wallet, subject_wallet, record_id
+      `SELECT action, actor_wallet, subject_wallet, record_id, metadata_json
        FROM audit_events
        WHERE action = $1 AND actor_wallet = $2
          AND subject_wallet IS NOT DISTINCT FROM $3
@@ -933,11 +1074,12 @@ integration('Database-backed wallet, records, and authorization flows', () => {
        LIMIT 1`,
       [action, actorWallet, subjectWallet, recordId],
     );
-    expect(result.rows[0], `Missing ${action} audit event for ${actorWallet}`).toEqual({
+    expect(result.rows[0], `Missing ${action} audit event for ${actorWallet}`).toMatchObject({
       action,
       actor_wallet: actorWallet,
       subject_wallet: subjectWallet,
       record_id: recordId,
+      ...(expected.metadata ? { metadata_json: expected.metadata } : {}),
     });
   }
 
@@ -1048,34 +1190,48 @@ integration('Database-backed wallet, records, and authorization flows', () => {
   afterAll(async () => {
     const addresses = [...wallets];
     const ids = [...recordIds];
-    if (addresses.length) {
-      await pool.query(
-        `DELETE FROM audit_events
-         WHERE actor_wallet = ANY($1::text[]) OR subject_wallet = ANY($1::text[])
-            OR record_id = ANY($2::text[])`,
-        [addresses, ids],
-      );
-      if (ids.length) {
-        await pool.query('DELETE FROM verification_results WHERE aid_record_id = ANY($1::text[])', [
-          ids,
+    const maintenancePool = new Pool({
+      connectionString: process.env.DATABASE_URL_UNPOOLED,
+    });
+    try {
+      if (addresses.length) {
+        await maintenancePool.query(
+          `DELETE FROM audit_events
+           WHERE actor_wallet = ANY($1::text[]) OR subject_wallet = ANY($1::text[])
+              OR record_id = ANY($2::text[])`,
+          [addresses, ids],
+        );
+        if (ids.length) {
+          await maintenancePool.query(
+            'DELETE FROM verification_results WHERE aid_record_id = ANY($1::text[])',
+            [ids],
+          );
+          await maintenancePool.query('DELETE FROM aid_records WHERE id = ANY($1::text[])', [ids]);
+        }
+        await maintenancePool.query(
+          'DELETE FROM organizations WHERE wallet_address = ANY($1::text[])',
+          [addresses],
+        );
+        await maintenancePool.query(
+          `DELETE FROM wallet_roles
+           WHERE wallet_address = ANY($1::text[]) OR updated_by = ANY($1::text[])`,
+          [addresses],
+        );
+        await maintenancePool.query('DELETE FROM sessions WHERE wallet_address = ANY($1::text[])', [
+          addresses,
         ]);
-        await pool.query('DELETE FROM aid_records WHERE id = ANY($1::text[])', [ids]);
+        await maintenancePool.query(
+          'DELETE FROM challenges WHERE wallet_address = ANY($1::text[])',
+          [addresses],
+        );
+        await maintenancePool.query('DELETE FROM users WHERE wallet_address = ANY($1::text[])', [
+          addresses,
+        ]);
       }
-      await pool.query('DELETE FROM organizations WHERE wallet_address = ANY($1::text[])', [
-        addresses,
-      ]);
-      await pool.query(
-        `DELETE FROM wallet_roles
-         WHERE wallet_address = ANY($1::text[]) OR updated_by = ANY($1::text[])`,
-        [addresses],
-      );
-      await pool.query('DELETE FROM sessions WHERE wallet_address = ANY($1::text[])', [addresses]);
-      await pool.query('DELETE FROM challenges WHERE wallet_address = ANY($1::text[])', [
-        addresses,
-      ]);
-      await pool.query('DELETE FROM users WHERE wallet_address = ANY($1::text[])', [addresses]);
+    } finally {
+      await maintenancePool.end();
+      await pool.end();
     }
-    await pool.end();
   });
 
   it('audits security rejections with bounded, non-sensitive fields', async () => {
@@ -1400,6 +1556,41 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     ).toBe(true);
   });
 
+  it('allows the runtime role to append and read audit events but not update or delete them', async () => {
+    const identity = await pool.query<{ current_user: string; session_user: string }>(
+      'SELECT current_user, session_user',
+    );
+    expect(identity.rows[0]).toEqual({
+      current_user: 'aidtrace_runtime',
+      session_user: 'aidtrace_runtime',
+    });
+
+    const id = `audit-append-only-${randomUUID()}`;
+    await pool.query(
+      `INSERT INTO audit_events (id, action, actor_wallet, summary)
+       VALUES ($1, 'append_only_access_test', $2, 'runtime insert/read privilege check')`,
+      [id, admin.publicKey()],
+    );
+
+    const inserted = await pool.query<{ action: string; summary: string }>(
+      'SELECT action, summary FROM audit_events WHERE id = $1',
+      [id],
+    );
+    expect(inserted.rows).toEqual([
+      {
+        action: 'append_only_access_test',
+        summary: 'runtime insert/read privilege check',
+      },
+    ]);
+
+    await expect(
+      pool.query('UPDATE audit_events SET summary = $2 WHERE id = $1', [id, 'modified']),
+    ).rejects.toMatchObject({ code: '42501' });
+    await expect(pool.query('DELETE FROM audit_events WHERE id = $1', [id])).rejects.toMatchObject({
+      code: '42501',
+    });
+  });
+
   it('creates a single-use wallet session, enforces CSRF, expires challenges, and logs out', async () => {
     const wallet = Keypair.random();
     const session = await login(wallet);
@@ -1470,6 +1661,62 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       (await request(app).get('/api/me').set('Cookie', session.cookie)).body.session,
     ).toBeNull();
   });
+
+  it('records throttled session activity and rejects expired or revoked sessions', async () => {
+    const wallet = Keypair.random();
+    const session = await login(wallet);
+    const token = decodeURIComponent(session.cookie.slice('aidtrace_session='.length));
+    const sessionHash = createHash('sha256').update(token).digest('hex');
+    const lastSeen = async () =>
+      (
+        await pool.query<{ last_seen_at: Date | null }>(
+          'SELECT last_seen_at FROM sessions WHERE session_hash = $1',
+          [sessionHash],
+        )
+      ).rows[0]?.last_seen_at ?? null;
+    const cookieRequest = (cookie: string) =>
+      ({
+        get: (name: string) => (name.toLowerCase() === 'cookie' ? cookie : undefined),
+      }) as unknown as Parameters<typeof getSession>[0];
+
+    expect(await lastSeen()).toBeNull();
+    const first = await request(app).get('/api/me').set('Cookie', session.cookie);
+    expect(first.body.session.address).toBe(wallet.publicKey());
+    const firstSeen = await lastSeen();
+    expect(firstSeen).not.toBeNull();
+
+    const second = await request(app).get('/api/me').set('Cookie', session.cookie);
+    expect(second.status).toBe(200);
+    expect((await lastSeen())?.getTime()).toBe(firstSeen?.getTime());
+
+    await pool.query(
+      "UPDATE sessions SET expires_at = NOW() - INTERVAL '1 second' WHERE session_hash = $1",
+      [sessionHash],
+    );
+    expect(await getSession(cookieRequest(session.cookie))).toBeNull();
+    expect(
+      (await request(app).get('/api/me').set('Cookie', session.cookie)).body.session,
+    ).toBeNull();
+
+    const revokedSession = await login(Keypair.random());
+    const revokedToken = decodeURIComponent(
+      revokedSession.cookie.slice('aidtrace_session='.length),
+    );
+    await pool.query('UPDATE sessions SET revoked_at = NOW() WHERE session_hash = $1', [
+      createHash('sha256').update(revokedToken).digest('hex'),
+    ]);
+    expect(await getSession(cookieRequest(revokedSession.cookie))).toBeNull();
+
+    const logout = await request(app)
+      .post('/api/auth/logout')
+      .set('Origin', origin)
+      .set('Cookie', revokedSession.cookie)
+      .send({ csrfToken: revokedSession.csrfToken });
+    expect(logout.status).toBe(200);
+    const clearedCookie = String(logout.headers['set-cookie']);
+    expect(clearedCookie).toContain('aidtrace_session=;');
+    expect(clearedCookie).toContain('Max-Age=0');
+  }, 60_000);
 
   it('verifies the matching source, stores evidence, and rejects duplicate network hashes', async () => {
     const adminSession = await login(admin);
@@ -1701,6 +1948,10 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       [recordId],
     );
     expect(stored.rows[0]).toEqual({ memo, memo_type: 'text' });
+    await expectAuditEvent('record_verification_checked', session.address, {
+      recordId,
+      metadata: { status: 'verified', ledger: 11 },
+    });
 
     const findRecord = (body: { records: { id: string }[] }) =>
       body.records.find((record) => record.id === recordId) as
@@ -2018,6 +2269,19 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         (event: { recordId?: string }) => event.recordId === owned.body.record.id,
       ),
     ).toBe(true);
+    await expectAuditEvent('record_voided', ownerSession.address, {
+      recordId: owned.body.record.id,
+      metadata: { voidReason: 'Duplicate entry' },
+    });
+    const sessionToken = ownerSession.cookie.slice(ownerSession.cookie.indexOf('=') + 1);
+    const leakedSecrets = await pool.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM audit_events
+       WHERE actor_wallet = $1
+         AND (strpos(summary, $2) > 0 OR strpos(metadata_json::text, $2) > 0
+              OR strpos(summary, $3) > 0 OR strpos(metadata_json::text, $3) > 0)`,
+      [ownerSession.address, sessionToken, ownerSession.csrfToken],
+    );
+    expect(Number(leakedSecrets.rows[0].count)).toBe(0);
 
     const removable = Keypair.random();
     await assignRole(adminSession, removable, 'donor');
@@ -2044,6 +2308,197 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(
       (await request(app).get('/api/me').set('Cookie', ownerSession.cookie)).body.session,
     ).toBeNull();
+  }, 120_000);
+
+  it('revokes every session for one wallet on logout-everywhere without touching other wallets', async () => {
+    const wallet = Keypair.random();
+    const otherWallet = Keypair.random();
+    const firstSession = await login(wallet);
+    const secondSession = await login(wallet);
+    const otherWalletSession = await login(otherWallet);
+    expect(firstSession.cookie).not.toBe(secondSession.cookie);
+
+    const firstMe = await request(app).get('/api/me').set('Cookie', firstSession.cookie);
+    const secondMe = await request(app).get('/api/me').set('Cookie', secondSession.cookie);
+    expect(firstMe.body.session.address).toBe(wallet.publicKey());
+    expect(secondMe.body.session.address).toBe(wallet.publicKey());
+
+    const logoutEverywhere = await request(app)
+      .post('/api/auth/logout-everywhere')
+      .set('Origin', origin)
+      .set('Cookie', firstSession.cookie)
+      .send({ csrfToken: firstSession.csrfToken });
+    expect(logoutEverywhere.status).toBe(200);
+
+    expect(
+      (await request(app).get('/api/me').set('Cookie', firstSession.cookie)).body.session,
+    ).toBeNull();
+    expect(
+      (await request(app).get('/api/me').set('Cookie', secondSession.cookie)).body.session,
+    ).toBeNull();
+    const otherWalletMe = await request(app)
+      .get('/api/me')
+      .set('Cookie', otherWalletSession.cookie);
+    expect(otherWalletMe.body.session.address).toBe(otherWallet.publicKey());
+
+    await expectAuditEvent('wallet_logout_everywhere', wallet.publicKey());
+  }, 60_000);
+
+  it('enforces the authorization matrix for every protected route', async () => {
+    const adminSession = await login(admin);
+    const donorWallet = Keypair.random();
+    const beneficiaryWallet = Keypair.random();
+    const organizationWallet = Keypair.random();
+    await assignRole(adminSession, beneficiaryWallet, 'beneficiary');
+    await assignRole(adminSession, organizationWallet, 'organization');
+    const donorSession = await login(donorWallet);
+    const beneficiarySession = await login(beneficiaryWallet);
+    const organizationSession = await login(organizationWallet);
+
+    type Session = Awaited<ReturnType<typeof login>>;
+    type MatrixRecord = {
+      id: string;
+      recipient: string;
+      recipientAddress: string;
+      purpose: string;
+      amount: string;
+      asset: string;
+      assetIssuer?: string;
+      network: 'testnet' | 'mainnet';
+      txHash: string;
+      date: string;
+      note: string;
+      recipientConsent?: boolean;
+    };
+    type Route = {
+      name: string;
+      method: 'get' | 'post' | 'put';
+      path: string | ((recordId: string) => string);
+      allowed: string[];
+      write?: boolean;
+      record?: boolean;
+      body?: (session: Session, record: MatrixRecord | null) => Record<string, unknown>;
+    };
+
+    const principals: { name: string; session: Session | null; role: string | null }[] = [
+      { name: 'anonymous', session: null, role: null },
+      { name: 'donor', session: donorSession, role: 'donor' },
+      { name: 'beneficiary', session: beneficiarySession, role: 'beneficiary' },
+      { name: 'organization', session: organizationSession, role: 'organization' },
+      { name: 'admin', session: adminSession, role: 'admin' },
+    ];
+
+    const routes: Route[] = [
+      {
+        name: 'GET /api/beneficiary',
+        method: 'get',
+        path: '/api/beneficiary',
+        allowed: ['beneficiary', 'admin'],
+      },
+      { name: 'GET /api/admin/roles', method: 'get', path: '/api/admin/roles', allowed: ['admin'] },
+      { name: 'GET /api/audit', method: 'get', path: '/api/audit', allowed: ['admin'] },
+      {
+        name: 'POST /api/records',
+        method: 'post',
+        path: '/api/records',
+        allowed: ['organization', 'admin'],
+        write: true,
+        body: (session) => ({
+          csrfToken: session.csrfToken,
+          recipient: 'Matrix recipient',
+          recipientAddress: Keypair.random().publicKey(),
+          purpose: 'Authorization matrix create ' + Keypair.random().publicKey().slice(-8),
+          amount: '1.25',
+          asset: 'XLM',
+          assetIssuer: '',
+          network: 'testnet',
+          txHash: '',
+          date: '2026-01-15',
+          note: '',
+          recipientConsent: false,
+        }),
+      },
+      {
+        name: 'PUT /api/records/:id',
+        method: 'put',
+        path: (recordId) => '/api/records/' + recordId,
+        allowed: ['organization', 'admin'],
+        write: true,
+        record: true,
+        body: (session, record) => ({
+          csrfToken: session.csrfToken,
+          recipient: record!.recipient,
+          recipientAddress: record!.recipientAddress,
+          purpose: record!.purpose,
+          amount: record!.amount,
+          asset: record!.asset,
+          assetIssuer: record!.assetIssuer || '',
+          network: record!.network,
+          txHash: record!.txHash,
+          date: record!.date,
+          note: record!.note,
+          recipientConsent: record!.recipientConsent || false,
+        }),
+      },
+      {
+        // Verification accepts any authenticated session, so this route has no wrong-role 403.
+        name: 'POST /api/records/:id/verify',
+        method: 'post',
+        path: (recordId) => '/api/records/' + recordId + '/verify',
+        allowed: ['donor', 'beneficiary', 'organization', 'admin'],
+        write: true,
+        record: true,
+        body: (session) => ({ csrfToken: session.csrfToken }),
+      },
+      {
+        name: 'POST /api/records/:id/void',
+        method: 'post',
+        path: (recordId) => '/api/records/' + recordId + '/void',
+        allowed: ['organization', 'admin'],
+        write: true,
+        record: true,
+        body: (session) => ({ csrfToken: session.csrfToken, reason: 'Authorization matrix void' }),
+      },
+    ];
+
+    const send = (method: Route['method'], path: string) =>
+      method === 'get'
+        ? request(app).get(path)
+        : method === 'post'
+          ? request(app).post(path)
+          : request(app).put(path);
+
+    for (const route of routes) {
+      for (const principal of principals) {
+        const label = route.name + ' as ' + principal.name;
+        let record: MatrixRecord | null = null;
+        if (route.record) {
+          const created = await createRecord(
+            organizationSession,
+            Keypair.random(),
+            'Matrix ' + route.name + ' ' + principal.name + ' ' + Keypair.random().publicKey(),
+          );
+          expect(created.status, label).toBe(201);
+          record = created.body.record as MatrixRecord;
+        }
+        const path = typeof route.path === 'function' ? route.path(record!.id) : route.path;
+        const http = send(route.method, path);
+        if (principal.session) http.set('Cookie', principal.session.cookie);
+        if (route.write) {
+          http.set('Origin', origin);
+          http.send(principal.session ? route.body!(principal.session, record) : {});
+        }
+        const response = await http;
+        if (!principal.session) {
+          expect(response.status, label).toBe(401);
+        } else if (!route.allowed.includes(principal.role!)) {
+          expect(response.status, label).toBe(403);
+        } else {
+          expect([200, 201], label).toContain(response.status);
+          if (route.name === 'POST /api/records') recordIds.add(response.body.record.id);
+        }
+      }
+    }
   }, 120_000);
 
   describe('last active admin protection', () => {
@@ -2203,6 +2658,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         expect(await roleOf(adminB.address)).toBeUndefined();
         await expectAuditEvent('wallet_role_removed', callerA.address, {
           subjectWallet: adminB.address,
+          metadata: { previousRole: 'admin', newRole: 'donor' },
         });
 
         const demoted = await setRole(callerA, adminC.address, 'organization');
@@ -2210,6 +2666,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         expect(await roleOf(adminC.address)).toBe('organization');
         await expectAuditEvent('wallet_role_changed', callerA.address, {
           subjectWallet: adminC.address,
+          metadata: { previousRole: 'admin', newRole: 'organization' },
         });
 
         expect(await adminCount([callerA.address, adminB.address, adminC.address])).toBe(1);

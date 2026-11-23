@@ -54,7 +54,9 @@ The API limits use express-rate-limit's default in-memory store, which is per pr
 
 ## Migrations and administrator seed
 
-Run `npm run db:migrate` as a deployment step before starting the API. Migrations should be run by an appropriately restricted deployment identity. Set `ADMIN_WALLET` to a public G-address and run `npm run db:seed-admin` for first-time bootstrap; do not expose this command as a public route.
+Provision distinct PostgreSQL login roles before the first migration: `aidtrace_migration` owns migrated objects and has the privileges required to apply schema changes; `aidtrace_runtime` is the application's non-owner, non-superuser login. Configure `DATABASE_URL` with the runtime login and `DATABASE_URL_UNPOOLED` with the migration login. The runtime role must not own `audit_events`, inherit migration-owner privileges, or receive `UPDATE`/`DELETE` through another role. The same separation applies to `TEST_DATABASE_URL` (runtime) and `TEST_DATABASE_URL_UNPOOLED` (migration) on the dedicated test branch.
+
+Run `npm run db:migrate` as a deployment step before starting the API, using only the isolated development/test branch during development. Migration `005_audit_events_append_only` transfers `audit_events` ownership to the migration identity, removes public/runtime privileges, and grants the runtime role only `SELECT` and `INSERT`. For emergency audit maintenance, use the controlled `aidtrace_migration` owner credential through an approved operator session; never grant that credential to the application. This owner-level path can change or remove audit rows and does not protect against a database superuser. Set `ADMIN_WALLET` to a public G-address and run `npm run db:seed-admin` for first-time bootstrap; do not expose this command as a public route.
 
 ## Scheduled verification refresh
 
