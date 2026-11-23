@@ -384,6 +384,109 @@ describe('On-chain verification distinguishes matching and mismatching payments'
   });
 });
 
+describe('Pagination cursor integrity and bounds', () => {
+  const digest = (value: string) =>
+    createHmac('sha256', process.env.SESSION_SECRET || '')
+      .update(value)
+      .digest('base64url');
+  const envelope = (payloadObject: unknown, signature?: string) => {
+    const payload = Buffer.from(JSON.stringify(payloadObject)).toString('base64url');
+    return Buffer.from(
+      JSON.stringify({ payload, signature: signature ?? digest(payload) }),
+    ).toString('base64url');
+  };
+  const validCursor = (overrides: Record<string, unknown> = {}) =>
+    envelope({
+      version: 1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      id: 'a'.repeat(32),
+      filters: digest(JSON.stringify([])),
+      ...overrides,
+    });
+  const decodeEnvelope = (cursor: string) =>
+    JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as {
+      payload: string;
+      signature: string;
+    };
+
+  it('rejects non-integer and out-of-range limits with the documented message', async () => {
+    for (const limit of ['0', '101', 'abc']) {
+      const response = await request(app).get('/api/transparency').query({ limit });
+      expect(response.status, `limit=${limit}`).toBe(400);
+      expect(response.body).toEqual({ error: 'limit must be an integer between 1 and 100.' });
+    }
+  });
+
+  it('rejects garbage, non-enveloped, and oversized cursors', async () => {
+    const garbage = await request(app).get('/api/transparency').query({ cursor: 'not-a-cursor' });
+    expect(garbage.status).toBe(400);
+    expect(garbage.body).toEqual({ error: 'Invalid pagination cursor.' });
+
+    const nonEnveloped = Buffer.from(
+      JSON.stringify({ createdAt: '2026-01-01T00:00:00.000Z', id: 'a'.repeat(32) }),
+    ).toString('base64url');
+    const nonEnvelopedResponse = await request(app)
+      .get('/api/transparency')
+      .query({ cursor: nonEnveloped });
+    expect(nonEnvelopedResponse.status).toBe(400);
+    expect(nonEnvelopedResponse.body).toEqual({ error: 'Invalid pagination cursor.' });
+
+    const oversized = await request(app)
+      .get('/api/transparency')
+      .query({ cursor: 'a'.repeat(513) });
+    expect(oversized.status).toBe(400);
+    expect(oversized.body).toEqual({ error: 'Invalid pagination cursor.' });
+  });
+
+  it('rejects a byte-flipped cursor signature', async () => {
+    const { payload, signature } = decodeEnvelope(validCursor());
+    const flipped = (signature[0] === 'A' ? 'B' : 'A') + signature.slice(1);
+    const tampered = Buffer.from(JSON.stringify({ payload, signature: flipped })).toString(
+      'base64url',
+    );
+    const response = await request(app).get('/api/transparency').query({ cursor: tampered });
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ error: 'Invalid pagination cursor.' });
+  });
+
+  it('rejects a re-encoded payload whose id or createdAt changed', async () => {
+    const { payload, signature } = decodeEnvelope(validCursor());
+    for (const change of [{ id: 'b'.repeat(32) }, { createdAt: '2026-02-02T00:00:00.000Z' }]) {
+      const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as Record<
+        string,
+        unknown
+      >;
+      const tamperedPayload = Buffer.from(JSON.stringify({ ...parsed, ...change })).toString(
+        'base64url',
+      );
+      const tampered = Buffer.from(
+        JSON.stringify({ payload: tamperedPayload, signature }),
+      ).toString('base64url');
+      const response = await request(app).get('/api/transparency').query({ cursor: tampered });
+      expect(response.status, JSON.stringify(change)).toBe(400);
+      expect(response.body).toEqual({ error: 'Invalid pagination cursor.' });
+    }
+  });
+
+  it('rejects a correctly signed cursor with an unsupported version', async () => {
+    const response = await request(app)
+      .get('/api/transparency')
+      .query({ cursor: validCursor({ version: 2 }) });
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ error: 'Invalid pagination cursor.' });
+  });
+
+  it('does not reject a correctly signed cursor as invalid', async () => {
+    // A valid cursor reaches the query, so it must not produce the cursor validation error.
+    // Without a database the handler returns 503 instead of a page.
+    const response = await request(app)
+      .get('/api/transparency')
+      .query({ cursor: validCursor() });
+    expect(response.body?.error).not.toBe('Invalid pagination cursor.');
+    expect([200, 503]).toContain(response.status);
+  });
+});
+
 const integration = describe.skipIf(!process.env.TEST_DATABASE_URL);
 
 integration('Idle-in-transaction bound on the database', () => {
