@@ -58,6 +58,45 @@
   padding: 8px;
   background: white;
 }
+.network-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 10px 14px;
+  border: 1px solid #e1e4ec;
+  border-radius: 10px;
+  background: #f7f8fb;
+  color: #5d6472;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.network-banner svg {
+  flex-shrink: 0;
+}
+.network-banner strong {
+  font-weight: 800;
+}
+.network-banner.testnet {
+  border-color: #f0d9a8;
+  background: #fff8e6;
+  color: #6b4d12;
+}
+.network-banner.mainnet {
+  border-color: #ded9fb;
+  background: #f2f0ff;
+  color: #5c50c8;
+}
+.app.dark .network-banner.testnet {
+  border-color: #66512b;
+  background: #3b3223;
+  color: #f0d8a2;
+}
+.app.dark .network-banner.mainnet {
+  border-color: #46406f;
+  background: #302b50;
+  color: #d4ceff;
+}
 .empty-state {
   display: grid;
   justify-items: center;
@@ -115,6 +154,38 @@
   border-color: #e2defd;
   color: #6255a6;
 }
+.pagination-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.pagination-actions .button:disabled,
+.load-more:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.pagination-retry,
+.load-more {
+  margin-left: 4px;
+}
+.list-pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 0 22px 18px;
+}
+.list-end {
+  margin: 0;
+  color: #8a90a0;
+  font-size: 11px;
+  font-weight: 600;
+}
+.pagination .list-end {
+  width: 100%;
+  margin-top: 6px;
+}
 @media (max-width: 700px) {
   .role-form {
     grid-template-columns: 1fr;
@@ -140,5 +211,8 @@
   }
   .section-head {
     gap: 12px;
+  }
+  .list-pager {
+    padding: 0 16px 16px;
   }
 }

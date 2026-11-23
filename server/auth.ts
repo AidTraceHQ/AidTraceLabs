@@ -20,11 +20,20 @@ const router = Router();
 const cookieName = 'aidtrace_session';
 const challengeTtlMs = 5 * 60 * 1000;
 const sessionTtlMs = 7 * 24 * 60 * 60 * 1000;
+// Session recency is best-effort telemetry, so it is written at most once per window
+// instead of adding an UPDATE to every authenticated request.
+const sessionActivityThrottleMs = 60 * 1000;
 const sessionSecret = process.env.SESSION_SECRET;
 const publicAppOrigin = new URL(process.env.PUBLIC_APP_ORIGIN || 'http://localhost:5173').origin;
 
-if (!sessionSecret || Buffer.byteLength(sessionSecret) < 32) {
-  throw new Error('SESSION_SECRET must contain at least 32 bytes.');
+if (
+  !sessionSecret ||
+  Buffer.byteLength(sessionSecret) < 32 ||
+  sessionSecret.startsWith('replace-with-')
+) {
+  throw new Error(
+    'SESSION_SECRET must contain at least 32 bytes and must not use a placeholder value.',
+  );
 }
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -109,8 +118,10 @@ async function getSession(
     role: Role | null;
     csrf_token_hash: string;
     expires_at: Date;
+    last_seen_at: Date | null;
   }>(
-    `SELECT s.wallet_address AS address, s.network, r.role, s.csrf_token_hash, s.expires_at
+    `SELECT s.wallet_address AS address, s.network, r.role, s.csrf_token_hash, s.expires_at,
+            s.last_seen_at
      FROM sessions s
      LEFT JOIN wallet_roles r ON r.wallet_address = s.wallet_address
      WHERE s.session_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > NOW()`,
@@ -118,6 +129,13 @@ async function getSession(
   );
   const row = result.rows[0];
   if (!row) return null;
+  if (!row.last_seen_at || Date.now() - row.last_seen_at.getTime() >= sessionActivityThrottleMs) {
+    await pool.query(
+      `UPDATE sessions SET last_seen_at = NOW()
+       WHERE session_hash = $1 AND revoked_at IS NULL AND expires_at > NOW()`,
+      [sessionHash],
+    );
+  }
   const session: Session = {
     sessionHash,
     address: row.address,
