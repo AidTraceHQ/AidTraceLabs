@@ -426,6 +426,160 @@ integration('Idle-in-transaction bound on the database', () => {
   });
 });
 
+integration('Database-backed per-address rate limits', () => {
+  const addresses = new Set<string>();
+
+  const keyHash = (key: string) => createHash('sha256').update(key).digest('hex');
+  const windowStartFor = (windowMs: number) => {
+    const now = Date.now();
+    return new Date(Math.floor(now / windowMs) * windowMs);
+  };
+
+  async function challengeRequest(address: string) {
+    return request(app)
+      .post('/api/auth/challenge')
+      .set('Origin', origin)
+      .send({ address, network: 'testnet' });
+  }
+
+  async function orgSession(wallet: Keypair) {
+    const address = wallet.publicKey();
+    const challenge = await challengeRequest(address);
+    expect(challenge.status).toBe(200);
+    const digest = createHash('sha256')
+      .update('Stellar Signed Message:\n')
+      .update(challenge.body.message)
+      .digest();
+    const signature = Buffer.from(wallet.sign(digest)).toString('base64');
+    const verified = await request(app)
+      .post('/api/auth/verify')
+      .set('Origin', origin)
+      .send({ challengeId: challenge.body.challengeId, address, network: 'testnet', signature });
+    expect(verified.status).toBe(200);
+    const cookieHeader = verified.headers['set-cookie'];
+    const cookieLine = Array.isArray(cookieHeader) ? cookieHeader[0] : cookieHeader;
+    const cookie = cookieLine?.split(';')[0];
+    if (!cookie) throw new Error('Authentication response did not set a session cookie.');
+    addresses.add(address);
+    return { address, cookie, csrfToken: verified.body.session.csrfToken };
+  }
+
+  beforeAll(async () => {
+    await migrate();
+  });
+
+  afterAll(async () => {
+    if (addresses.size) {
+      const keyHashes = [...addresses].flatMap((address) => [
+        keyHash('challenge:' + address),
+        keyHash('write:' + address),
+      ]);
+      await pool.query('DELETE FROM rate_limits WHERE key_hash = ANY($1::text[])', [keyHashes]);
+      await pool.query('DELETE FROM challenges WHERE wallet_address = ANY($1::text[])', [
+        [...addresses],
+      ]);
+      await pool.query('DELETE FROM users WHERE wallet_address = ANY($1::text[])', [[...addresses]]);
+      await pool.query('DELETE FROM wallet_roles WHERE wallet_address = ANY($1::text[])', [
+        [...addresses],
+      ]);
+      await pool.query('DELETE FROM sessions WHERE wallet_address = ANY($1::text[])', [
+        [...addresses],
+      ]);
+    }
+  });
+
+  it('throttles challenges per address, isolates buckets, and records the count', async () => {
+    const alice = Keypair.random();
+    const bob = Keypair.random();
+    addresses.add(alice.publicKey());
+    addresses.add(bob.publicKey());
+
+    for (let i = 0; i < 8; i += 1) {
+      expect((await challengeRequest(alice.publicKey())).status).toBe(200);
+    }
+    // A different address has its own bucket and is unaffected.
+    expect((await challengeRequest(bob.publicKey())).status).toBe(200);
+    // The 9th challenge for Alice is rejected.
+    const limited = await challengeRequest(alice.publicKey());
+    expect(limited.status).toBe(429);
+    expect(limited.body).toEqual({
+      error: 'Too many challenges. Wait a few minutes and try again.',
+    });
+
+    // The rate_limits row was created and incremented up to the limit.
+    const windowMs = 15 * 60 * 1000;
+    const windowStart = windowStartFor(windowMs);
+    const row = await pool.query<{ request_count: string }>(
+      'SELECT request_count FROM rate_limits WHERE key_hash = $1 AND window_start = $2',
+      [keyHash('challenge:' + alice.publicKey()), windowStart],
+    );
+    expect(Number(row.rows[0]?.request_count)).toBe(8);
+  });
+
+  it('resets the counter when the window rolls over', async () => {
+    const carol = Keypair.random();
+    addresses.add(carol.publicKey());
+    const windowMs = 15 * 60 * 1000;
+    const windowStart = windowStartFor(windowMs);
+    const previousWindow = new Date(windowStart.getTime() - windowMs);
+    const hash = keyHash('challenge:' + carol.publicKey());
+
+    // A row left over from the previous window must not block the current window.
+    await pool.query(
+      'INSERT INTO rate_limits (key_hash, window_start, request_count, expires_at) VALUES ($1, $2, $3, $4)',
+      [hash, previousWindow, 8, new Date(previousWindow.getTime() + windowMs)],
+    );
+
+    const allowed = await challengeRequest(carol.publicKey());
+    expect(allowed.status).toBe(200);
+
+    const current = await pool.query<{ request_count: string }>(
+      'SELECT request_count FROM rate_limits WHERE key_hash = $1 AND window_start = $2',
+      [hash, windowStart],
+    );
+    expect(Number(current.rows[0]?.request_count)).toBe(1);
+  });
+
+  it('throttles record writes per address', async () => {
+    const orgWallet = Keypair.random();
+    const address = orgWallet.publicKey();
+    addresses.add(address);
+    await pool.query('INSERT INTO users (wallet_address) VALUES ($1) ON CONFLICT DO NOTHING', [
+      address,
+    ]);
+    await pool.query(
+      'INSERT INTO wallet_roles (wallet_address, role, updated_by) VALUES ($1, $2, $1) ON CONFLICT (wallet_address) DO UPDATE SET role = $2',
+      [address, 'organization'],
+    );
+
+    const session = await orgSession(orgWallet);
+
+    const windowMs = 60 * 1000;
+    const windowStart = windowStartFor(windowMs);
+    await pool.query(
+      'INSERT INTO rate_limits (key_hash, window_start, request_count, expires_at) VALUES ($1, $2, $3, $4)',
+      [keyHash('write:' + address), windowStart, 60, new Date(windowStart.getTime() + windowMs)],
+    );
+
+    const limited = await request(app)
+      .post('/api/records')
+      .set('Origin', origin)
+      .set('Cookie', session.cookie)
+      .send({ csrfToken: session.csrfToken });
+    expect(limited.status).toBe(429);
+    expect(limited.body).toEqual({
+      error: 'Write rate limit reached. Retry in a minute.',
+    });
+
+    // The upsert's WHERE clause prevented incrementing past the limit.
+    const row = await pool.query<{ request_count: string }>(
+      'SELECT request_count FROM rate_limits WHERE key_hash = $1 AND window_start = $2',
+      [keyHash('write:' + address), windowStart],
+    );
+    expect(Number(row.rows[0]?.request_count)).toBe(60);
+  });
+});
+
 integration('Database-backed wallet, records, and authorization flows', () => {
   const wallets = new Set<string>();
   const recordIds = new Set<string>();
