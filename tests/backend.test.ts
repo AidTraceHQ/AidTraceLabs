@@ -1290,6 +1290,163 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     ).toBeNull();
   }, 120_000);
 
+  it('enforces the authorization matrix for every protected route', async () => {
+    const adminSession = await login(admin);
+    const donorWallet = Keypair.random();
+    const beneficiaryWallet = Keypair.random();
+    const organizationWallet = Keypair.random();
+    await assignRole(adminSession, beneficiaryWallet, 'beneficiary');
+    await assignRole(adminSession, organizationWallet, 'organization');
+    const donorSession = await login(donorWallet);
+    const beneficiarySession = await login(beneficiaryWallet);
+    const organizationSession = await login(organizationWallet);
+
+    type Session = Awaited<ReturnType<typeof login>>;
+    type MatrixRecord = {
+      id: string;
+      recipient: string;
+      recipientAddress: string;
+      purpose: string;
+      amount: string;
+      asset: string;
+      assetIssuer?: string;
+      network: 'testnet' | 'mainnet';
+      txHash: string;
+      date: string;
+      note: string;
+      recipientConsent?: boolean;
+    };
+    type Route = {
+      name: string;
+      method: 'get' | 'post' | 'put';
+      path: string | ((recordId: string) => string);
+      allowed: string[];
+      write?: boolean;
+      record?: boolean;
+      body?: (session: Session, record: MatrixRecord | null) => Record<string, unknown>;
+    };
+
+    const principals: { name: string; session: Session | null; role: string | null }[] = [
+      { name: 'anonymous', session: null, role: null },
+      { name: 'donor', session: donorSession, role: 'donor' },
+      { name: 'beneficiary', session: beneficiarySession, role: 'beneficiary' },
+      { name: 'organization', session: organizationSession, role: 'organization' },
+      { name: 'admin', session: adminSession, role: 'admin' },
+    ];
+
+    const routes: Route[] = [
+      {
+        name: 'GET /api/beneficiary',
+        method: 'get',
+        path: '/api/beneficiary',
+        allowed: ['beneficiary', 'admin'],
+      },
+      { name: 'GET /api/admin/roles', method: 'get', path: '/api/admin/roles', allowed: ['admin'] },
+      { name: 'GET /api/audit', method: 'get', path: '/api/audit', allowed: ['admin'] },
+      {
+        name: 'POST /api/records',
+        method: 'post',
+        path: '/api/records',
+        allowed: ['organization', 'admin'],
+        write: true,
+        body: (session) => ({
+          csrfToken: session.csrfToken,
+          recipient: 'Matrix recipient',
+          recipientAddress: Keypair.random().publicKey(),
+          purpose: 'Authorization matrix create ' + Keypair.random().publicKey().slice(-8),
+          amount: '1.25',
+          asset: 'XLM',
+          assetIssuer: '',
+          network: 'testnet',
+          txHash: '',
+          date: '2026-01-15',
+          note: '',
+          recipientConsent: false,
+        }),
+      },
+      {
+        name: 'PUT /api/records/:id',
+        method: 'put',
+        path: (recordId) => '/api/records/' + recordId,
+        allowed: ['organization', 'admin'],
+        write: true,
+        record: true,
+        body: (session, record) => ({
+          csrfToken: session.csrfToken,
+          recipient: record!.recipient,
+          recipientAddress: record!.recipientAddress,
+          purpose: record!.purpose,
+          amount: record!.amount,
+          asset: record!.asset,
+          assetIssuer: record!.assetIssuer || '',
+          network: record!.network,
+          txHash: record!.txHash,
+          date: record!.date,
+          note: record!.note,
+          recipientConsent: record!.recipientConsent || false,
+        }),
+      },
+      {
+        // Verification accepts any authenticated session, so this route has no wrong-role 403.
+        name: 'POST /api/records/:id/verify',
+        method: 'post',
+        path: (recordId) => '/api/records/' + recordId + '/verify',
+        allowed: ['donor', 'beneficiary', 'organization', 'admin'],
+        write: true,
+        record: true,
+        body: (session) => ({ csrfToken: session.csrfToken }),
+      },
+      {
+        name: 'POST /api/records/:id/void',
+        method: 'post',
+        path: (recordId) => '/api/records/' + recordId + '/void',
+        allowed: ['organization', 'admin'],
+        write: true,
+        record: true,
+        body: (session) => ({ csrfToken: session.csrfToken, reason: 'Authorization matrix void' }),
+      },
+    ];
+
+    const send = (method: Route['method'], path: string) =>
+      method === 'get'
+        ? request(app).get(path)
+        : method === 'post'
+          ? request(app).post(path)
+          : request(app).put(path);
+
+    for (const route of routes) {
+      for (const principal of principals) {
+        const label = route.name + ' as ' + principal.name;
+        let record: MatrixRecord | null = null;
+        if (route.record) {
+          const created = await createRecord(
+            organizationSession,
+            Keypair.random(),
+            'Matrix ' + route.name + ' ' + principal.name + ' ' + Keypair.random().publicKey(),
+          );
+          expect(created.status, label).toBe(201);
+          record = created.body.record as MatrixRecord;
+        }
+        const path = typeof route.path === 'function' ? route.path(record!.id) : route.path;
+        const http = send(route.method, path);
+        if (principal.session) http.set('Cookie', principal.session.cookie);
+        if (route.write) {
+          http.set('Origin', origin);
+          http.send(principal.session ? route.body!(principal.session, record) : {});
+        }
+        const response = await http;
+        if (!principal.session) {
+          expect(response.status, label).toBe(401);
+        } else if (!route.allowed.includes(principal.role!)) {
+          expect(response.status, label).toBe(403);
+        } else {
+          expect([200, 201], label).toContain(response.status);
+          if (route.name === 'POST /api/records') recordIds.add(response.body.record.id);
+        }
+      }
+    }
+  }, 120_000);
+
   describe('last active admin protection', () => {
     type AdminSession = Awaited<ReturnType<typeof login>>;
 
