@@ -93,6 +93,17 @@ describe('Freighter signed challenge creates a secure session', () => {
     expect(preflight.headers['access-control-allow-origin']).toBe(origin);
     expect(preflight.headers['access-control-allow-credentials']).toBe('true');
   });
+
+  it('returns 413 with a stable error body when a JSON body exceeds the 32 KB limit', async () => {
+    const oversized = JSON.stringify({ purpose: 'x'.repeat(32 * 1024 + 1) });
+    const response = await request(app)
+      .post('/api/records')
+      .set('Origin', origin)
+      .set('Content-Type', 'application/json')
+      .send(oversized);
+    expect(response.status).toBe(413);
+    expect(response.body).toEqual({ error: 'Request body is too large.' });
+  });
 });
 
 describe('On-chain verification distinguishes matching and mismatching payments', () => {
