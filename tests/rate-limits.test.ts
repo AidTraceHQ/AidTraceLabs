@@ -24,10 +24,18 @@ describe('per-IP API rate limiter', () => {
 
     expect(allowed.status).toBe(200);
     expect(limited.status).toBe(429);
-    expect(limited.body).toEqual({ error: 'rate_limit_exceeded' });
+    expect(limited.body).toEqual({
+      error: 'Too many requests. Wait a few minutes and try again.',
+      code: 'rate_limit_exceeded',
+    });
     expect(Number(limited.headers['retry-after'])).toBeGreaterThan(0);
     expect(publicFirst.status).toBe(200);
     expect(publicSecond.status).toBe(200);
     expect(publicThird.status).toBe(429);
+    expect(publicThird.body).toEqual({
+      error: 'Too many requests. Wait a few minutes and try again.',
+      code: 'rate_limit_exceeded',
+    });
+    expect(Number(publicThird.headers['retry-after'])).toBeGreaterThan(0);
   });
 });
