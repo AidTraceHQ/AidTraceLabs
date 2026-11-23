@@ -644,6 +644,39 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     ).toBe(true);
   });
 
+  it('has an index that serves filtered record pages without an in-memory sort', async () => {
+    const indexes = await pool.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes WHERE tablename = 'aid_records'`,
+    );
+    expect(
+      indexes.rows.some(({ indexdef }) =>
+        indexdef.includes('btree (network, status, created_at DESC, id DESC)'),
+      ),
+    ).toBe(true);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      // Keep the planner on an index path so the plan shape is observable on a small table.
+      await client.query('SET LOCAL enable_seqscan = off');
+      const plan = await client.query<{ 'QUERY PLAN': string }>(
+        `EXPLAIN (COSTS OFF)
+         SELECT r.id, r.created_at
+         FROM aid_records r
+         JOIN organizations o ON o.wallet_address = r.organization_wallet
+         WHERE r.network = 'testnet' AND r.status = 'verified'
+         ORDER BY r.created_at DESC, r.id DESC
+         LIMIT 21`,
+      );
+      const text = plan.rows.map((row) => row['QUERY PLAN']).join('\n');
+      expect(text).toContain('aid_records_network_status_created_idx');
+      expect(text).not.toMatch(/\bSort\b/);
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
+  });
+
   it('creates a single-use wallet session, enforces CSRF, expires challenges, and logs out', async () => {
     const wallet = Keypair.random();
     const session = await login(wallet);

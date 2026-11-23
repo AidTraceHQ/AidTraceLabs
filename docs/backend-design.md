@@ -19,7 +19,7 @@ The Vite development server listens on port 5173 and proxies `/api` to port 3001
 
 ## Data Model
 
-All application tables use PostgreSQL. Migration `001_initial_schema.sql` creates the tables and indexes below. The migration runner separately creates `schema_migrations` to track applied files. Migration `002_unique_network_tx_hash.sql` normalizes transaction hashes and adds the unique network/hash constraint. Migration `003_wallet_roles_updated_index.sql` adds an index for the admin role-list ordering. No foreign key declares `ON DELETE CASCADE`; PostgreSQL's default referential behavior applies.
+All application tables use PostgreSQL. Migration `001_initial_schema.sql` creates the tables and indexes below. The migration runner separately creates `schema_migrations` to track applied files. Migration `002_unique_network_tx_hash.sql` normalizes transaction hashes and adds the unique network/hash constraint. Migration `003_wallet_roles_updated_index.sql` adds an index for the admin role-list ordering. Migration `005_record_pagination_indexes.sql` adds the ordering index used by filtered record pages. No foreign key declares `ON DELETE CASCADE`; PostgreSQL's default referential behavior applies.
 
 ### `schema_migrations`
 
@@ -122,7 +122,7 @@ Indexes: `challenges_wallet_expiry_idx(wallet_address, expires_at, used_at)`, th
 
 The void-field check requires `void_reason`, `voided_by`, and `voided_at` to be either all NULL or all populated. Migration 002 converts blank hashes to NULL, lowercases nonblank hashes, and adds `UNIQUE (network, tx_hash)`; PostgreSQL permits multiple NULLs under this unique constraint. Its preflight groups case-insensitively by network/hash and aborts with the duplicate rows if conflicts exist.
 
-Indexes: `aid_records_created_idx(created_at DESC, id DESC)`, `aid_records_organization_created_idx(organization_wallet, created_at DESC, id DESC)`, `aid_records_recipient_created_idx(recipient_wallet, created_at DESC, id DESC)`, `aid_records_network_status_date_idx(network, status, disbursement_date, id)`, the primary key, and the migration-002 unique index on `(network, tx_hash)`.
+Indexes: `aid_records_created_idx(created_at DESC, id DESC)`, `aid_records_organization_created_idx(organization_wallet, created_at DESC, id DESC)`, `aid_records_recipient_created_idx(recipient_wallet, created_at DESC, id DESC)`, `aid_records_network_status_date_idx(network, status, disbursement_date, id)`, `aid_records_network_status_created_idx(network, status, created_at DESC, id DESC)` (migration 005), the primary key, and the migration-002 unique index on `(network, tx_hash)`.
 
 ### `verification_results`
 
@@ -174,6 +174,37 @@ Index: `rate_limits_expiry_idx(expires_at)`. The application stores digests of r
 | `created_at`     | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()`                        |
 
 Indexes: `audit_events_created_idx(created_at DESC, id DESC)`, `audit_events_actor_created_idx(actor_wallet, created_at DESC, id DESC)`, `audit_events_record_created_idx(record_id, created_at DESC, id DESC)`, `audit_events_action_created_idx(action, created_at DESC, id DESC)`, and the primary key. The migrations do not enforce database-level append-only permissions.
+
+## Filtered Record Pagination
+
+Record lists always order by `created_at DESC, id DESC`. `GET /api/transparency?network=testnet&status=verified` filters on `(network, status)`, so migration 005 adds `aid_records_network_status_created_idx(network, status, created_at DESC, id DESC)`. The index supplies both the filter and the page order, so the plan needs no `Sort` node above the index scan.
+
+Capture below: PostgreSQL 16, 20,000 synthetic `aid_records` rows with 400 `verified` rows, `ANALYZE` run before each plan, and `EXPLAIN (ANALYZE, BUFFERS, COSTS OFF)` on the `listRows` query shape.
+
+Before migration 005 (existing indexes only):
+
+```text
+ Limit (actual time=0.051..0.684 rows=21 loops=1)
+   Buffers: shared hit=2140
+   ->  Nested Loop (actual time=0.050..0.681 rows=21 loops=1)
+         ->  Index Scan using aid_records_created_idx on aid_records r (actual time=0.040..0.665 rows=21 loops=1)
+               Filter: ((network = 'testnet'::text) AND (status = 'verified'::text))
+               Rows Removed by Filter: 1029
+               Buffers: shared hit=2139
+```
+
+After migration 005:
+
+```text
+ Limit (actual time=0.036..0.055 rows=21 loops=1)
+   Buffers: shared hit=2 read=3
+   ->  Nested Loop (actual time=0.035..0.053 rows=21 loops=1)
+         ->  Index Scan using aid_records_network_status_created_idx on aid_records r (actual time=0.026..0.039 rows=21 loops=1)
+               Index Cond: ((network = 'testnet'::text) AND (status = 'verified'::text))
+               Buffers: shared hit=1 read=3
+```
+
+Both plans return the same rows in the same order. The new index turns the filter into an `Index Cond` and reduces the buffer count from 2,140 to 5. Page contents, `hasMore`, and signed cursors are unchanged because the query and cursor comparison are untouched.
 
 ## API Routes
 
@@ -249,7 +280,7 @@ Verified and mismatch results may be cached for one hour. Pending and other stat
 - Set `DATABASE_URL` for the runtime pool. The migration command uses `DATABASE_URL_UNPOOLED` when supplied, otherwise `DATABASE_URL`; use a direct (non-pooled) endpoint for migration where available. Remote connection examples should use `sslmode=verify-full`.
 - Configure distinct 32-byte-minimum `SESSION_SECRET` and `PSEUDONYM_SECRET`; exact `PUBLIC_APP_ORIGIN` and `CORS_ALLOWED_ORIGINS`; `PORT`; network-specific Horizon URLs; and optionally `DEFAULT_STELLAR_NETWORK`. Bootstrap the first admin by setting a public Stellar `ADMIN_WALLET` and running `npm run db:seed-admin`; there is no public bootstrap route.
 - Integration tests use `TEST_DATABASE_URL` and require `TEST_DATABASE_BRANCH=test`, `TEST_DATABASE_URL_UNPOOLED`, and `PRODUCTION_DATABASE_HOST`. The test setup rejects a test endpoint that matches the production hostname or runtime endpoint. Use Neon dev for local runtime and a separate Neon test branch for integration tests; never target production.
-- `npm run db:migrate` applies ordered `NNN_name.sql` migrations and records versions in `schema_migrations`. Migration 002 checks for case-insensitive duplicate hashes before creating the unique index and aborts without applying that migration if duplicates exist. Migration 003 adds the `wallet_roles` ordering index used by admin role listings.
+- `npm run db:migrate` applies ordered `NNN_name.sql` migrations and records versions in `schema_migrations`. Migration 002 checks for case-insensitive duplicate hashes before creating the unique index and aborts without applying that migration if duplicates exist. Migration 003 adds the `wallet_roles` ordering index used by admin role listings. Migration 005 adds the ordering index used by filtered record pages.
 - For production, serve the built Vite assets behind HTTPS with Express behind the same-origin `/api` proxy where possible. The cookie is Secure and SameSite=Lax. A cross-site deployment requires a separate cookie/CORS review.
 - Configure PostgreSQL access restrictions, least-privilege app/migration identities, backup retention, and tested restore procedures before production operation. No production deployment, backup/restore exercise, or browser-level Freighter cookie verification is claimed by this design.
 
