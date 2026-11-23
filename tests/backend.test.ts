@@ -5,7 +5,7 @@ import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { applyUniqueNetworkTxHashMigration, migrate } from '../scripts/migrate.js';
 import { app } from '../server/app.js';
-import { verifySep53Signature } from '../server/auth.js';
+import { getSession, verifySep53Signature } from '../server/auth.js';
 import { IDLE_IN_TRANSACTION_TIMEOUT_MS, pool } from '../server/db.js';
 import { checkTransaction } from '../server/stellar-verification.js';
 
@@ -714,6 +714,62 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       (await request(app).get('/api/me').set('Cookie', session.cookie)).body.session,
     ).toBeNull();
   });
+
+  it('records throttled session activity and rejects expired or revoked sessions', async () => {
+    const wallet = Keypair.random();
+    const session = await login(wallet);
+    const token = decodeURIComponent(session.cookie.slice('aidtrace_session='.length));
+    const sessionHash = createHash('sha256').update(token).digest('hex');
+    const lastSeen = async () =>
+      (
+        await pool.query<{ last_seen_at: Date | null }>(
+          'SELECT last_seen_at FROM sessions WHERE session_hash = $1',
+          [sessionHash],
+        )
+      ).rows[0]?.last_seen_at ?? null;
+    const cookieRequest = (cookie: string) =>
+      ({
+        get: (name: string) => (name.toLowerCase() === 'cookie' ? cookie : undefined),
+      }) as unknown as Parameters<typeof getSession>[0];
+
+    expect(await lastSeen()).toBeNull();
+    const first = await request(app).get('/api/me').set('Cookie', session.cookie);
+    expect(first.body.session.address).toBe(wallet.publicKey());
+    const firstSeen = await lastSeen();
+    expect(firstSeen).not.toBeNull();
+
+    const second = await request(app).get('/api/me').set('Cookie', session.cookie);
+    expect(second.status).toBe(200);
+    expect((await lastSeen())?.getTime()).toBe(firstSeen?.getTime());
+
+    await pool.query(
+      "UPDATE sessions SET expires_at = NOW() - INTERVAL '1 second' WHERE session_hash = $1",
+      [sessionHash],
+    );
+    expect(await getSession(cookieRequest(session.cookie))).toBeNull();
+    expect(
+      (await request(app).get('/api/me').set('Cookie', session.cookie)).body.session,
+    ).toBeNull();
+
+    const revokedSession = await login(Keypair.random());
+    const revokedToken = decodeURIComponent(
+      revokedSession.cookie.slice('aidtrace_session='.length),
+    );
+    await pool.query('UPDATE sessions SET revoked_at = NOW() WHERE session_hash = $1', [
+      createHash('sha256').update(revokedToken).digest('hex'),
+    ]);
+    expect(await getSession(cookieRequest(revokedSession.cookie))).toBeNull();
+
+    const logout = await request(app)
+      .post('/api/auth/logout')
+      .set('Origin', origin)
+      .set('Cookie', revokedSession.cookie)
+      .send({ csrfToken: revokedSession.csrfToken });
+    expect(logout.status).toBe(200);
+    const clearedCookie = String(logout.headers['set-cookie']);
+    expect(clearedCookie).toContain('aidtrace_session=;');
+    expect(clearedCookie).toContain('Max-Age=0');
+  }, 60_000);
 
   it('verifies the matching source, stores evidence, and rejects duplicate network hashes', async () => {
     const adminSession = await login(admin);

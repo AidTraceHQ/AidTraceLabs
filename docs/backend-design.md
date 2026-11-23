@@ -67,16 +67,16 @@ The wallet address is the organization's account used by payment-source verifica
 
 ### `sessions`
 
-| Column            | Type          | Constraint/default                                         |
-| ----------------- | ------------- | ---------------------------------------------------------- |
-| `session_hash`    | `TEXT`        | Primary key; stores the token digest, not the cookie token |
-| `wallet_address`  | `TEXT`        | `NOT NULL`; foreign key to `users.wallet_address`          |
-| `network`         | `TEXT`        | `NOT NULL`; check in `testnet`, `mainnet`                  |
-| `csrf_token_hash` | `TEXT`        | `NOT NULL`                                                 |
-| `created_at`      | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()`                                   |
-| `expires_at`      | `TIMESTAMPTZ` | `NOT NULL`                                                 |
-| `revoked_at`      | `TIMESTAMPTZ` | Nullable                                                   |
-| `last_seen_at`    | `TIMESTAMPTZ` | Nullable; not currently updated by request handling        |
+| Column            | Type          | Constraint/default                                                                |
+| ----------------- | ------------- | --------------------------------------------------------------------------------- |
+| `session_hash`    | `TEXT`        | Primary key; stores the token digest, not the cookie token                        |
+| `wallet_address`  | `TEXT`        | `NOT NULL`; foreign key to `users.wallet_address`                                 |
+| `network`         | `TEXT`        | `NOT NULL`; check in `testnet`, `mainnet`                                         |
+| `csrf_token_hash` | `TEXT`        | `NOT NULL`                                                                        |
+| `created_at`      | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()`                                                          |
+| `expires_at`      | `TIMESTAMPTZ` | `NOT NULL`                                                                        |
+| `revoked_at`      | `TIMESTAMPTZ` | Nullable                                                                          |
+| `last_seen_at`    | `TIMESTAMPTZ` | Nullable; advanced on authenticated requests, at most once per minute per session |
 
 Indexes: `sessions_wallet_expiry_idx(wallet_address, revoked_at, expires_at)` and partial `sessions_expiry_idx(expires_at) WHERE revoked_at IS NULL`, plus the primary key.
 
@@ -208,7 +208,7 @@ List limit defaults to 20 and must be an integer from 1 to 100. Cursors are sign
 2. `POST /api/auth/challenge` checks the allowed Origin and validates the address/network. It creates a 24-byte random challenge ID and 32-byte random nonce, stores the exact message and expiry, and returns expiry as milliseconds. The signed message includes the configured origin, address, network, nonce, issuance time, five-minute expiry, and the purpose statement.
 3. Freighter signs the exact UTF-8 message. The server verifies `SHA-256(UTF-8("Stellar Signed Message:\\n" + message))` with Ed25519 verification from `@stellar/stellar-sdk` and the public key. Signatures may be valid 64-byte hex or canonical base64.
 4. The server conditionally consumes the challenge in a PostgreSQL transaction, resolves the current wallet role, stores a SHA-256 digest of a random 32-byte session token, stores a digest of a session-derived CSRF token, and writes a wallet-authenticated audit event. Replay returns 409; missing, expired, mismatched, or invalid challenges/signatures return 401.
-5. The cookie is `aidtrace_session`, HttpOnly, Secure, SameSite=Lax, path `/`, seven-day max age. Every authenticated request reloads active, unexpired session and current role from PostgreSQL. `GET /api/me` also returns the CSRF token to the authenticated client.
+5. The cookie is `aidtrace_session`, HttpOnly, Secure, SameSite=Lax, path `/`, seven-day max age. Every authenticated request reloads active, unexpired session and current role from PostgreSQL. It also advances `sessions.last_seen_at`, but only when the stored value is at least one minute old, so recency tracking does not add one `UPDATE` per request. `GET /api/me` also returns the CSRF token to the authenticated client.
 6. State-changing routes check Origin and constant-time comparison of the supplied CSRF token's digest. Logout revokes one session; logout-everywhere revokes every active session for the wallet. Both clear the cookie and audit revocation.
 
 `SESSION_SECRET` must be at least 32 bytes. It keys the CSRF derivation and cursor signatures. `PSEUDONYM_SECRET` is a separate HMAC key for consent-off beneficiary labels; it must be at least 32 bytes, and production does not accept a missing key or the example placeholder. Only `NODE_ENV=development` with no configured key uses the explicitly named development fallback.
