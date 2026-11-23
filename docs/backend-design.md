@@ -19,7 +19,7 @@ The Vite development server listens on port 5173 and proxies `/api` to port 3001
 
 ## Data Model
 
-All application tables use PostgreSQL. Migration `001_initial_schema.sql` creates the tables and indexes below. The migration runner separately creates `schema_migrations` to track applied files. Migration `002_unique_network_tx_hash.sql` normalizes transaction hashes and adds the unique network/hash constraint. Migration `003_wallet_roles_updated_index.sql` adds an index for the admin role-list ordering. No foreign key declares `ON DELETE CASCADE`; PostgreSQL's default referential behavior applies.
+All application tables use PostgreSQL. Migration `001_initial_schema.sql` creates the tables and indexes below. The migration runner separately creates `schema_migrations` to track applied files. Migration `002_unique_network_tx_hash.sql` normalizes transaction hashes and adds the unique network/hash constraint. Migration `006_wallet_roles_updated_index.sql` adds an index for the admin role-list ordering. No foreign key declares `ON DELETE CASCADE`; PostgreSQL's default referential behavior applies.
 
 ### `schema_migrations`
 

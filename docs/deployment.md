@@ -49,6 +49,10 @@ The API limits use express-rate-limit's default in-memory store, which is per pr
 
 Run `npm run db:migrate` as a deployment step before starting the API. Migrations should be run by an appropriately restricted deployment identity. Set `ADMIN_WALLET` to a public G-address and run `npm run db:seed-admin` for first-time bootstrap; do not expose this command as a public route.
 
+Migration files must be named `NNN_lower_snake_case.sql` — exactly three digits, an underscore, and a lowercase snake_case name — and numbered sequentially from `001` with no gaps and no repeated number. The runner validates the whole directory before it touches the database. An unrecognized name such as `003-add-index.sql`, `003_Add_Index.sql`, or `0003_add_index.sql`, two files sharing a number, or a skipped number makes `npm run db:migrate` exit non-zero, report the offending file(s), and apply and record nothing. Renumber a new migration instead of reusing a number that may already be applied. The migration numbered `002` always receives the duplicate network/transaction-hash preflight, regardless of its file name.
+
+`003_verification_memo.sql` and `003_wallet_roles_updated_index.sql` were renumbered to `005_verification_memo.sql` and `006_wallet_roles_updated_index.sql` so the sequence is unique. The runner still recognizes the old version names in `schema_migrations`, so a database migrated before the renumbering does not re-run those migrations.
+
 ## Scheduled verification refresh
 
 There is no hosted scheduler configured. An operator may run `npm run records:reverify` as a standalone Node.js job after applying database migrations. Schedule it externally only where the operator controls the environment and can monitor its exit status and JSON summary.
