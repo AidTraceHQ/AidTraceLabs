@@ -24,4 +24,6 @@ Set distinct random values of at least 32 bytes for `SESSION_SECRET` and `PSEUDO
 
 General per-IP/read rate limiting, last-admin protection, complete failure/rejection audit coverage, and explicit evidence of beneficiary consent are not implemented. Public records can still reveal amounts, dates, purposes, organization, and creator. A `verified` status does not establish identity, consent, purpose, or impact.
 
+PostgreSQL network restrictions are also unverified: the repository does not establish the deployed Vercel/Neon plans or that egress allowlisting is configured and tested. Vercel egress must not be assumed to have a fixed IP, and Neon IP Allow requires a supported plan. Operators must verify the account features and complete the isolated-branch allow/deny procedure in [deployment](deployment.md#postgresql-network-restrictions) before representing database network restrictions as active. That check uses only `SELECT 1` and a disposable branch; it must not read or modify production data. Neon IP Allow restricts PostgreSQL connections only and must not be described as protecting other Neon services.
+
 Report vulnerabilities privately using [SECURITY.md](../SECURITY.md). Use a dedicated test database and Stellar testnet for authorized checks; do not test against a live deployment without permission.

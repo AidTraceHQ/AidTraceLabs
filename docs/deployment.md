@@ -64,6 +64,38 @@ The job refreshes records when explicitly invoked; this repository does not asse
 
 The UI/API support testnet and mainnet selection. Use testnet for development and tests. Mainnet verification reads public Horizon data, but the application does not send payments. Never describe a matching transaction as proof of identity, consent, intended use, or impact.
 
+## PostgreSQL network restrictions
+
+Network restrictions are **not verified or evidenced for the deployed demo**. The repository documents a Vercel Function connected to a Neon branch, but does not record the Vercel or Neon account plans, Vercel egress configuration, Neon IP Allow settings, or a successful allow/deny test. Check the actual account settings before claiming that database network restrictions are enabled.
+
+The relevant plan requirements are different on each provider:
+
+- Vercel Functions do not have a stable egress IP by default. Vercel Static IPs are available on Pro and Enterprise, require separate project configuration, and route function egress through configured addresses. Secure Compute provides dedicated egress on Enterprise. Do not allowlist an IP observed from an unconfigured function or a developer workstation. See [Vercel Static IPs](https://vercel.com/docs/networking/static-ips) and [Secure Compute](https://vercel.com/docs/networking/secure-compute).
+- Neon IP Allow is available on the Scale plan. It restricts PostgreSQL connections only; it is not a network restriction for other Neon services. See [Neon IP Allow](https://neon.com/docs/introduction/ip-allow) and [Neon plans](https://neon.com/docs/introduction/plans).
+
+If either account lacks the required feature, stop: do not claim or try to simulate a network deny check. Upgrade/configure supported plans or host the application where its database egress can be controlled. Vercel Static IPs are an optional configured feature, not an assumed property of every Vercel plan. If using Static IPs, account for the configured function region and whether build traffic is also routed through them. Keep database credentials and TLS verification enabled regardless of network rules.
+
+### Operator allow/deny check
+
+Run this before claiming the restriction is verified, and repeat after changing plans, regions, or networking configuration. The check exercises only a dedicated Neon test project/branch with synthetic or empty data. **Never point either check at production or a branch copied from production.** It does not read or change production data.
+
+1. In Vercel and Neon, record the active plans and verify that the Vercel project has Static IPs or Secure Compute enabled for the function environment being tested, and Neon Scale has IP Allow enabled with the intended branch scope. Confirm that the Vercel egress addresses shown by that project's networking settings—not an IP guessed from a request—are on the Neon allowlist. If the deployment uses another host, verify its documented static egress instead.
+2. Create or select a dedicated Neon test project on Scale, with an isolated branch containing no production data. Configure its IP Allow rules to match the intended policy. Configure a Vercel Preview deployment to use that branch's pooled connection string as `DATABASE_URL`; do not change the Production environment variable or the production project's Neon settings. Ensure the test source used for the negative check is not on the allowlist.
+3. In the Preview deployment only, use a temporary, operator-only diagnostic that runs exactly `SELECT 1` through the application's configured PostgreSQL pool and returns only the scalar result. Do not accept SQL input, return connection details, or log the connection string or raw connection errors. Invoke it from the Preview deployment so the permitted check uses the application's Vercel egress. Expected result: `1`. Remove the diagnostic and its temporary access control after the check.
+4. From a separate authorized test machine or runner whose public egress is not allowlisted, use the same test branch credentials to attempt a PostgreSQL connection and `SELECT 1`. Keep the connection string in a protected local service/secret configuration, not in command history or output. A nonzero client exit alone is insufficient: verify that the rejection is specifically due to the Neon IP Allow rule, not bad credentials, DNS, TLS, or a timeout. Do not retry with production credentials or alter the allowlist to admit this test source.
+5. Capture only redacted evidence in the deployment record. Do not include URLs, connection strings, hostnames, usernames, IP addresses, tokens, or raw client output. Example format (replace the status with the actual observed result; this is a template, not evidence):
+
+   ```text
+   Check: PostgreSQL network allow/deny
+   Environment: isolated test branch; synthetic/empty data
+   Allowed source: Vercel Preview Function; SELECT 1 -> 1
+   Disallowed source: separate unlisted test runner; rejected by Neon IP Allow
+   Output: connection details redacted; no URLs or credentials recorded
+   Result: PASS only when both outcomes above were observed
+   ```
+
+6. Remove any temporary diagnostic and credentials; confirm the Production `DATABASE_URL` and production project's Neon settings were not changed during the test. Record the date, plan/features, branch scope, and operator alongside the redacted outcomes. If the application cannot execute the permitted check through its actual hosting egress, the check is incomplete.
+
 ## Operations still required
 
-Configure PostgreSQL network restrictions, encrypted backups and tested restore procedures, monitoring, rate limits for public reads, and database readiness checks. `/api/_healthcheck` reports process liveness only. Production hosting, backups, restore, and browser cookie behavior have not been exercised as part of this repository work.
+Complete and evidence PostgreSQL network restrictions using the procedure above, plus encrypted backups and tested restore procedures, monitoring, rate limits for public reads, and database readiness checks. `/api/_healthcheck` reports process liveness only. The network check above has not been run as part of this repository work; production hosting, backups, restore, and browser cookie behavior have not been exercised as part of this repository work.
