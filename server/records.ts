@@ -303,6 +303,8 @@ function publicRecord(record: AidRecord, consent: boolean): AidRecord {
   };
 }
 
+type AuditMetadata = Record<string, unknown>;
+
 async function writeAudit(
   client: PoolClient,
   action: string,
@@ -310,10 +312,11 @@ async function writeAudit(
   actor: string,
   recordId?: string,
   subject?: string,
+  metadata: AuditMetadata = {},
 ) {
   await client.query(
-    `INSERT INTO audit_events (id, action, actor_wallet, subject_wallet, record_id, summary)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
+    `INSERT INTO audit_events (id, action, actor_wallet, subject_wallet, record_id, summary, metadata_json)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
     [
       randomBytes(16).toString('hex'),
       action,
@@ -321,6 +324,7 @@ async function writeAudit(
       subject || null,
       recordId || null,
       summary.slice(0, 1000),
+      JSON.stringify(metadata),
     ],
   );
 }
@@ -932,6 +936,8 @@ router.post('/api/records', noStore, async (request, response) => {
         'Created aid record ' + id + '.',
         current.session.address,
         id,
+        undefined,
+        { network: recordInput.network, status: initialStatus },
       );
     });
   } catch (writeError) {
@@ -1005,6 +1011,8 @@ router.post('/api/records/:id/verify', noStore, async (request, response) => {
       'Verification status ' + result.status + ' for aid record ' + existing.record.id + '.',
       current.session.address,
       existing.record.id,
+      undefined,
+      { status: result.status, ledger: result.ledger ?? null },
     );
   });
   const updated = await getRecord(existing.record.id);
@@ -1092,6 +1100,8 @@ router.put('/api/records/:id', noStore, async (request, response) => {
           'Updated aid record ' + existing.record.id + '.',
           current.session.address,
           existing.record.id,
+          undefined,
+          { network: recordInput.network, status: initialStatus, version: expectedVersion + 1 },
         );
       }
       return update;
@@ -1173,6 +1183,8 @@ router.post('/api/records/:id/void', noStore, async (request, response) => {
         'Voided aid record ' + existing.record.id + '.',
         current.session.address,
         existing.record.id,
+        undefined,
+        { voidReason: reason },
       );
     }
     return update;
@@ -1272,6 +1284,7 @@ router.post('/api/admin/roles', noStore, async (request, response) => {
       current.session.address,
       undefined,
       address,
+      { previousRole: old.rows[0]?.role || 'donor', newRole: role },
     );
   });
   response.json({ ok: true });
@@ -1308,6 +1321,7 @@ router.delete('/api/admin/roles/:address', noStore, async (request, response) =>
       current.session.address,
       undefined,
       address,
+      { previousRole: oldRole, newRole: 'donor' },
     );
     return oldRole;
   });

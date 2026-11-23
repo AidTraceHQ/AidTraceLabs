@@ -26,7 +26,23 @@ app.use((_request, response) => {
 });
 
 const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'type' in error &&
+    (error.type === 'charset.unsupported' || error.type === 'encoding.unsupported')
+  ) {
+    response.status(415).json({ error: 'Unsupported request encoding.' });
+    return;
+  }
   if (error instanceof SyntaxError && 'body' in error) {
+    const charset = (_request.get('content-type') ?? '')
+      .match(/;\s*charset\s*=\s*("?)([^";\s]+)\1/i)?.[2]
+      ?.toLowerCase();
+    if (charset && charset !== 'utf-8') {
+      response.status(415).json({ error: 'Unsupported request encoding.' });
+      return;
+    }
     response.status(400).json({ error: 'Malformed JSON request body.' });
     return;
   }

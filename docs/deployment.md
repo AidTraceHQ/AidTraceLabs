@@ -10,31 +10,32 @@ Run the Express API on a Node.js 20+ host/container/VM connected to PostgreSQL, 
 
 ## Environment variables
 
-| Variable                           | Purpose                                                                                            |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `NODE_ENV`                         | Runtime environment. Production requires explicit secrets.                                         |
-| `PORT`                             | Express listen port; defaults to `3001`.                                                           |
-| `DATABASE_URL`                     | PostgreSQL runtime connection. For remote PostgreSQL, include `sslmode=verify-full`.               |
-| `TEST_DATABASE_URL`                | Dedicated disposable/test database used by integration tests. Never use production.                |
-| `TEST_DATABASE_URL_UNPOOLED`       | Direct test endpoint used by the test safety check.                                                |
-| `TEST_DATABASE_BRANCH`             | Must be `test` when a test database URL is configured.                                             |
-| `PRODUCTION_DATABASE_HOST`         | Production hostname used to reject accidental production test targets.                             |
-| `SESSION_SECRET`                   | At least 32 random bytes; session/CSRF-related signing key.                                        |
-| `PSEUDONYM_SECRET`                 | Different key of at least 32 random bytes for beneficiary HMAC pseudonyms. Required in production. |
-| `PUBLIC_APP_ORIGIN`                | Exact public frontend origin bound into the wallet challenge.                                      |
-| `CORS_ALLOWED_ORIGINS`             | Comma-separated exact allowed origins.                                                             |
-| `ADMIN_WALLET`                     | Public Stellar address for the one-time admin seed command.                                        |
-| `DEFAULT_STELLAR_NETWORK`          | Default network; configured testnet is the development default.                                    |
-| `HORIZON_TESTNET_URL`              | Read-only testnet Horizon endpoint.                                                                |
-| `HORIZON_MAINNET_URL`              | Read-only mainnet Horizon endpoint.                                                                |
-| `VITE_API_BASE_URL`                | Optional frontend API base; leave empty for same-origin `/api`.                                    |
-| `PUBLIC_READ_RATE_LIMIT_WINDOW_MS` | Public transparency and health-check per-IP window; defaults to `900000` (15 minutes).             |
-| `PUBLIC_READ_RATE_LIMIT_MAX`       | Public transparency and health-check requests per IP per window; defaults to `600`.                |
-| `API_RATE_LIMIT_WINDOW_MS`         | API-wide per-IP rate-limit window; defaults to `900000` (15 minutes).                              |
-| `API_RATE_LIMIT_MAX`               | API-wide requests per IP per window; defaults to `120`.                                            |
-| `AUTH_RATE_LIMIT_WINDOW_MS`        | `/api/auth/*` per-IP rate-limit window; defaults to `900000` (15 minutes).                         |
-| `AUTH_RATE_LIMIT_MAX`              | `/api/auth/*` requests per IP per window; defaults to `20`.                                        |
-| `TRUST_PROXY_HOPS`                 | Number of trusted reverse-proxy hops; defaults to `0` (trust no forwarded client IP).              |
+| Variable                           | Purpose                                                                                                   |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                         | Runtime environment. Production requires explicit secrets.                                                |
+| `PORT`                             | Express listen port; defaults to `3001`.                                                                  |
+| `DATABASE_URL`                     | PostgreSQL runtime connection. For remote PostgreSQL, include `sslmode=verify-full`.                      |
+| `DATABASE_URL_UNPOOLED`            | Direct connection used for migrations; authenticate as the separate `aidtrace_migration` owner role.      |
+| `TEST_DATABASE_URL`                | Dedicated disposable/test database used by integration tests. Never use production.                       |
+| `TEST_DATABASE_URL_UNPOOLED`       | Direct test connection used for migrations and maintenance cleanup; use the test branch's migration role. |
+| `TEST_DATABASE_BRANCH`             | Must be `test` when a test database URL is configured.                                                    |
+| `PRODUCTION_DATABASE_HOST`         | Production hostname used to reject accidental production test targets.                                    |
+| `SESSION_SECRET`                   | At least 32 random bytes; session/CSRF-related signing key.                                               |
+| `PSEUDONYM_SECRET`                 | Different key of at least 32 random bytes for beneficiary HMAC pseudonyms. Required in production.        |
+| `PUBLIC_APP_ORIGIN`                | Exact public frontend origin bound into the wallet challenge.                                             |
+| `CORS_ALLOWED_ORIGINS`             | Comma-separated exact allowed origins.                                                                    |
+| `ADMIN_WALLET`                     | Public Stellar address for the one-time admin seed command.                                               |
+| `DEFAULT_STELLAR_NETWORK`          | Default network; configured testnet is the development default.                                           |
+| `HORIZON_TESTNET_URL`              | Read-only testnet Horizon endpoint.                                                                       |
+| `HORIZON_MAINNET_URL`              | Read-only mainnet Horizon endpoint.                                                                       |
+| `VITE_API_BASE_URL`                | Optional frontend API base; leave empty for same-origin `/api`.                                           |
+| `PUBLIC_READ_RATE_LIMIT_WINDOW_MS` | Public transparency and health-check per-IP window; defaults to `900000` (15 minutes).                    |
+| `PUBLIC_READ_RATE_LIMIT_MAX`       | Public transparency and health-check requests per IP per window; defaults to `600`.                       |
+| `API_RATE_LIMIT_WINDOW_MS`         | API-wide per-IP rate-limit window; defaults to `900000` (15 minutes).                                     |
+| `API_RATE_LIMIT_MAX`               | API-wide requests per IP per window; defaults to `120`.                                                   |
+| `AUTH_RATE_LIMIT_WINDOW_MS`        | `/api/auth/*` per-IP rate-limit window; defaults to `900000` (15 minutes).                                |
+| `AUTH_RATE_LIMIT_MAX`              | `/api/auth/*` requests per IP per window; defaults to `20`.                                               |
+| `TRUST_PROXY_HOPS`                 | Number of trusted reverse-proxy hops; defaults to `0` (trust no forwarded client IP).                     |
 
 Do not commit `.env` or paste connection strings into logs/issues. `.env.example` contains local placeholders. On Neon, point development to a dev branch and tests to a separate test branch; configure the production-host guard with the production hostname without exposing connection strings.
 
