@@ -339,6 +339,8 @@ function publicRecord(record: AidRecord, consent: boolean): AidRecord {
               createdAt: record.verification.createdAt,
               destination: record.verification.destination,
               link: record.verification.link,
+              memo: record.verification.memo,
+              memoType: record.verification.memoType,
             }
           : {}),
       }
