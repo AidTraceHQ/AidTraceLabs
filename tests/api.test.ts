@@ -50,6 +50,42 @@ describe('API URL configuration', () => {
   });
 });
 
+describe('api.getPublicRecord', () => {
+  it('fetches one public record by an encoded identifier', async () => {
+    vi.stubGlobal('window', { location: { origin: 'http://localhost:5173' } });
+    const record = { id: 'record-123', network: 'testnet', status: 'verified' };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ record }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await api.getPublicRecord<typeof record>('record/123');
+    expect(response.data.record).toEqual(record);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe('/api/records/record%2F123/public');
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      credentials: 'include',
+      cache: 'no-store',
+    });
+  });
+
+  it('surfaces the public record not-found state', async () => {
+    vi.stubGlobal('window', { location: { origin: 'http://localhost:5173' } });
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ error: 'Record not found.' }), { status: 404 }),
+        ),
+    );
+
+    await expect(api.getPublicRecord('missing-record')).rejects.toMatchObject({
+      status: 404,
+      message: 'GET /api/records/missing-record/public failed (404): Record not found.',
+    });
+  });
+});
+
 describe('api.getPage cursor pagination', () => {
   it('requests the next page with the opaque cursor unchanged', async () => {
     vi.stubGlobal('window', { location: { origin: 'http://localhost:5173' } });

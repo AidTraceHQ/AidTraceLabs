@@ -86,6 +86,26 @@ type AidRecord = {
   voidedAt?: string;
   version: number;
 };
+type PublicVerificationRecord = {
+  id: string;
+  network: Network;
+  asset: string;
+  assetIssuer?: string;
+  amount: string;
+  status: Verification;
+  date: string;
+  organizationName?: string;
+  verification?: {
+    status: Verification;
+    checkedAt: string;
+    differences: string[];
+    createdAt?: string;
+    sourceAccount?: string;
+    amount?: string;
+    asset?: string;
+    assetIssuer?: string;
+  };
+};
 type ActivityItem = {
   id: string;
   hash: string;
@@ -241,12 +261,45 @@ function useDialogFocus(
   }, [open, dialogRef, onClose, returnTo]);
 }
 
+
+function parseRecordIdFromUrl(): string | null {
+  if (typeof window === 'undefined') return null;
+
+  // Handle server-side rendering and test environments
+  // where window.location may be unavailable.
+  const location = window.location;
+  if (!location) return null;
+
+  const path = location.pathname ?? '';
+  const match = path.match(/^\/records\/([^/?#]+)/);
+
+  if (match) {
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  }
+
+  const params = new URLSearchParams(location.search ?? '');
+  const qRecord = params.get('record');
+
+  if (qRecord) return qRecord;
+
+  return null;
+}
+
+
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [network, setNetwork] = useState<Network>(readNetworkPreference);
-  const [page, setPage] = useState<'transparency' | 'activity' | 'beneficiary' | 'admin'>(
-    'transparency',
-  );
+  const [page, setPage] = useState<
+    'transparency' | 'activity' | 'beneficiary' | 'admin' | 'record'
+  >(() => (parseRecordIdFromUrl() ? 'record' : 'transparency'));
+  const [publicRecordId, setPublicRecordId] = useState<string | null>(parseRecordIdFromUrl);
+  const [publicRecord, setPublicRecord] = useState<PublicVerificationRecord | null>(null);
+  const [publicRecordLoading, setPublicRecordLoading] = useState(false);
+  const [publicRecordError, setPublicRecordError] = useState('');
   const [records, setRecords] = useState<AidRecord[]>([]);
   const [organizationOptions, setOrganizationOptions] = useState<string[]>([]);
   const [assetOptions, setAssetOptions] = useState<string[]>([]);
@@ -429,6 +482,57 @@ export default function App() {
     }
   }, []);
 
+  const navigateToPublicRecord = useCallback((id: string) => {
+    setPublicRecordId(id);
+    setPage('record');
+    window.history.pushState(null, '', '/records/' + encodeURIComponent(id));
+  }, []);
+
+  const navigateToHome = useCallback(() => {
+    setPublicRecordId(null);
+    setPublicRecord(null);
+    setPublicRecordError('');
+    setPage('transparency');
+    window.history.pushState(null, '', '/');
+  }, []);
+
+  const loadPublicRecord = useCallback(async (id: string) => {
+    setPublicRecordLoading(true);
+    setPublicRecordError('');
+    try {
+      const response = await api.getPublicRecord<PublicVerificationRecord>(id);
+      setPublicRecord(response.data.record);
+    } catch (e) {
+      setPublicRecord(null);
+      setPublicRecordError(messageOf(e));
+    } finally {
+      setPublicRecordLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (page === 'record' && publicRecordId) {
+      void loadPublicRecord(publicRecordId);
+    }
+  }, [page, publicRecordId, loadPublicRecord]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const id = parseRecordIdFromUrl();
+      if (id) {
+        setPublicRecordId(id);
+        setPage('record');
+      } else {
+        setPublicRecordId(null);
+        setPublicRecord(null);
+        setPublicRecordError('');
+        setPage('transparency');
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
   function chooseNetwork(value: string) {
     if (value !== 'testnet' && value !== 'mainnet') return;
     setNetwork(value);
@@ -559,17 +663,17 @@ export default function App() {
           ),
           fetch(
             base +
-              '/accounts/' +
-              encodeURIComponent(address) +
-              '/transactions?order=desc&limit=50&include_failed=true',
+            '/accounts/' +
+            encodeURIComponent(address) +
+            '/transactions?order=desc&limit=50&include_failed=true',
             { headers: { Accept: 'application/json' } },
           ),
         ]);
         if (accountRes.status === 404)
           throw new Error(
             'Wallet account not found on ' +
-              selectedNetwork +
-              '. Switch network or fund the Testnet account.',
+            selectedNetwork +
+            '. Switch network or fund the Testnet account.',
           );
         if (!accountRes.ok || !paymentsRes.ok || !txRes.ok)
           throw new Error('Horizon is unavailable. Your records are safe; activity will retry.');
@@ -651,9 +755,9 @@ export default function App() {
     try {
       source = new EventSource(
         horizon[network] +
-          '/accounts/' +
-          encodeURIComponent(session.address) +
-          '/payments?cursor=now',
+        '/accounts/' +
+        encodeURIComponent(session.address) +
+        '/payments?cursor=now',
       );
       source.onopen = () => {
         setActivityStream('live');
@@ -710,10 +814,10 @@ export default function App() {
       if (walletNet !== network)
         throw new Error(
           'Wrong network: AidTrace is on ' +
-            network +
-            ' but Freighter is on ' +
-            walletNet +
-            '. Switch one network and reconnect.',
+          network +
+          ' but Freighter is on ' +
+          walletNet +
+          '. Switch one network and reconnect.',
         );
       const challenge = await api.post<{ message: string; challengeId: string }>(
         '/api/auth/challenge',
@@ -1095,7 +1199,7 @@ export default function App() {
           href="#"
           onClick={(event) => {
             event.preventDefault();
-            setPage('transparency');
+            navigateToHome();
           }}
         >
           <span className="mark">
@@ -1229,14 +1333,22 @@ export default function App() {
         <nav className="tabs" aria-label="AidTrace sections">
           <button
             className={`tab${page === 'transparency' ? ' active' : ''}`}
-            onClick={() => setPage('transparency')}
+            onClick={navigateToHome}
           >
             Public Transparency
           </button>
+          {page === 'record' && (
+            <button className="tab active" aria-current="page">
+              Record Verification
+            </button>
+          )}
           {session && (
             <button
               className={`tab${page === 'activity' ? ' active' : ''}`}
-              onClick={() => setPage('activity')}
+              onClick={() => {
+                setPublicRecordId(null);
+                setPage('activity');
+              }}
             >
               My Activity
             </button>
@@ -1244,7 +1356,10 @@ export default function App() {
           {session && (session.role === 'beneficiary' || session.role === 'admin') && (
             <button
               className={`tab${page === 'beneficiary' ? ' active' : ''}`}
-              onClick={() => setPage('beneficiary')}
+              onClick={() => {
+                setPublicRecordId(null);
+                setPage('beneficiary');
+              }}
             >
               Beneficiary Records
             </button>
@@ -1252,7 +1367,10 @@ export default function App() {
           {session?.role === 'admin' && (
             <button
               className={`tab${page === 'admin' ? ' active' : ''}`}
-              onClick={() => setPage('admin')}
+              onClick={() => {
+                setPublicRecordId(null);
+                setPage('admin');
+              }}
             >
               Administration
             </button>
@@ -1521,6 +1639,178 @@ export default function App() {
               A transaction hash alone does not establish impact. Review the on-chain evidence and
               publish identifying information only with appropriate consent.
             </p>
+          </section>
+        )}
+
+        {page === 'record' && (
+          <section className="panel public-record-page" id="public-record-view">
+            {publicRecordLoading ? (
+              <div className="empty-state">
+                <RefreshCw size={24} />
+                <b>Loading record verification details…</b>
+              </div>
+            ) : publicRecordError || !publicRecord ? (
+              <div className="empty-state record-not-found" role="alert">
+                <CircleAlert size={28} />
+                <b>Record not found</b>
+                <p>The requested public record could not be found or its identifier is invalid.</p>
+                <button className="button primary compact" type="button" onClick={navigateToHome}>
+                  Return to public ledger
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="section-head">
+                  <div>
+                    <p className="eyebrow">PUBLIC VERIFICATION RECORD</p>
+                    <h2>Record verification</h2>
+                    <p>Shareable, read-only transaction verification. No sign-in required.</p>
+                  </div>
+                  <div className="section-actions">
+                    <button
+                      className="button secondary compact"
+                      type="button"
+                      onClick={() => {
+                        const url =
+                          window.location.origin +
+                          '/records/' +
+                          encodeURIComponent(publicRecord.id);
+                        navigator.clipboard.writeText(url).then(
+                          () => notify('Shareable record URL copied to clipboard.'),
+                          () => setError('Could not copy URL to clipboard.'),
+                        );
+                      }}
+                    >
+                      <Copy size={14} /> Copy link
+                    </button>
+                    <button
+                      className="button secondary compact"
+                      type="button"
+                      onClick={navigateToHome}
+                    >
+                      Explore all records
+                    </button>
+                  </div>
+                </div>
+
+                <dl className="detail-list public-record-details">
+                  <div>
+                    <dt>Record ID</dt>
+                    <dd>
+                      <code>{publicRecord.id}</code>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Network</dt>
+                    <dd className="network-badge">{publicRecord.network}</dd>
+                  </div>
+                  <div>
+                    <dt>Verification outcome</dt>
+                    <dd className={`status ${publicRecord.status}`}>
+                      <i />
+                      {labelStatus(publicRecord.status)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Amount</dt>
+                    <dd>
+                      <strong>
+                        {publicRecord.amount} {publicRecord.asset}
+                      </strong>
+                      {publicRecord.assetIssuer
+                        ? ` · issuer ${short(publicRecord.assetIssuer)}`
+                        : ''}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Organization</dt>
+                    <dd>{publicRecord.organizationName || 'Organization'}</dd>
+                  </div>
+                  <div>
+                    <dt>Disbursement date</dt>
+                    <dd>{publicRecord.date}</dd>
+                  </div>
+                </dl>
+
+                <div className="checked-fields-section">
+                  <h3>Checked transaction fields</h3>
+                  <p className="muted">
+                    The verifier compares the recorded payment details with the transaction data
+                    returned by the selected Stellar network.
+                  </p>
+                  <div className="checked-fields-grid">
+                    <div className="checked-field-item">
+                      <span className="field-label">Network</span>
+                      <span className="field-value">Stellar {publicRecord.network}</span>
+                    </div>
+                    <div className="checked-field-item">
+                      <span className="field-label">Organization source account</span>
+                      <span className="field-value">
+                        {publicRecord.verification?.sourceAccount || 'Not available'}
+                      </span>
+                    </div>
+                    <div className="checked-field-item">
+                      <span className="field-label">Checked amount</span>
+                      <span className="field-value">
+                        {publicRecord.verification?.amount || publicRecord.amount}{' '}
+                        {publicRecord.verification?.asset || publicRecord.asset}
+                      </span>
+                    </div>
+                    <div className="checked-field-item">
+                      <span className="field-label">Checked asset issuer</span>
+                      <span className="field-value">
+                        {publicRecord.verification?.assetIssuer ||
+                          publicRecord.assetIssuer ||
+                          'Native XLM / not applicable'}
+                      </span>
+                    </div>
+                    <div className="checked-field-item">
+                      <span className="field-label">Verification checked</span>
+                      <span className="field-value">
+                        {publicRecord.verification?.checkedAt
+                          ? new Date(publicRecord.verification.checkedAt).toLocaleString()
+                          : 'No verification check available'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {publicRecord.verification?.differences &&
+                  publicRecord.verification.differences.length > 0 && (
+                    <div className="diff-box">
+                      <b>Reported differences</b>
+                      <ul>
+                        {publicRecord.verification.differences.map((difference, index) => (
+                          <li key={index}>{difference}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                <div className="verification-limits-card">
+                  <div className="limits-header">
+                    <ShieldCheck size={18} />
+                    <h3>What verification does not prove</h3>
+                  </div>
+                  <p>
+                    A verified outcome means the checked transaction fields matched the recorded
+                    payment details in a successful transaction reported by the selected Stellar
+                    network.
+                  </p>
+                  <p>
+                    <strong>Verification does not independently prove:</strong>
+                  </p>
+                  <ul>
+                    <li>The real-world identity of any recipient</li>
+                    <li>That a particular person controls a wallet</li>
+                    <li>
+                      How funds were spent or whether aid achieved its intended real-world result
+                    </li>
+                    <li>Program impact or effectiveness</li>
+                  </ul>
+                </div>
+              </>
+            )}
           </section>
         )}
 
@@ -2305,6 +2595,17 @@ export default function App() {
               </div>
             )}
             <div className="detail-actions">
+              <button
+                className="button secondary compact"
+                type="button"
+                onClick={() => {
+                  const id = selected.id;
+                  closeDetail();
+                  navigateToPublicRecord(id);
+                }}
+              >
+                Public page <ArrowUpRight size={13} />
+              </button>
               {selected.txHash && (
                 <a
                   className="explorer-link"
