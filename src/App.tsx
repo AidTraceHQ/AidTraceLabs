@@ -14,6 +14,7 @@ import {
 } from './network-preference';
 import { readThemePreference, writeThemePreference, type Theme } from './theme-preference';
 import { localDateString } from './date';
+import { shouldRestartFromFirstPage } from './pagination';
 import {
   Activity,
   ArrowDownToLine,
@@ -337,7 +338,7 @@ export default function App() {
     window.setTimeout(() => setToast(''), 3600);
   }, []);
   const fetchLedgerPage = useCallback(
-    async (index: number, cursors: Array<string | null>) => {
+    async (index: number, cursors: Array<string | null>): Promise<void> => {
       const requestId = ++transparencyRequestId.current;
       const params = new URLSearchParams();
       if (search.trim()) params.set('q', search.trim());
@@ -358,6 +359,12 @@ export default function App() {
           { limit: pageSize, cursor, seenCursors: ledgerSeenCursors.current },
         );
         if (requestId !== transparencyRequestId.current) return;
+        if (shouldRestartFromFirstPage(index, result.data.records?.length ?? 0)) {
+          // The requested page no longer exists (records were removed), so start over.
+          ledgerSeenCursors.current.clear();
+          await fetchLedgerPage(0, resetCursorStack());
+          return;
+        }
         const next = typeof result.data.nextCursor === 'string' ? result.data.nextCursor : null;
         setRecords(result.data.records || []);
         setLedgerTotal(typeof result.data.total === 'number' ? result.data.total : 0);
