@@ -93,6 +93,26 @@ describe('Freighter signed challenge creates a secure session', () => {
     expect(preflight.headers['access-control-allow-origin']).toBe(origin);
     expect(preflight.headers['access-control-allow-credentials']).toBe('true');
   });
+
+  it('keeps beneficiary publication acknowledgments disabled unless explicitly enabled', async () => {
+    const previousFlag = process.env.CONSENT_ACKNOWLEDGMENTS_ENABLED;
+    process.env.CONSENT_ACKNOWLEDGMENTS_ENABLED = 'false';
+    try {
+      const config = await request(app).get('/api/consent/config');
+      expect(config.status).toBe(200);
+      expect(config.body.enabled).toBe(false);
+      expect(config.body.statementVersion).toBe('v1');
+      expect(config.body.statement).toContain('does not establish my legal identity');
+      const disabledChallenge = await request(app)
+        .post('/api/records/unknown/consent/challenge')
+        .set('Origin', origin)
+        .send({ action: 'acknowledge' });
+      expect(disabledChallenge.status).toBe(404);
+    } finally {
+      if (previousFlag === undefined) delete process.env.CONSENT_ACKNOWLEDGMENTS_ENABLED;
+      else process.env.CONSENT_ACKNOWLEDGMENTS_ENABLED = previousFlag;
+    }
+  });
 });
 
 describe('On-chain verification distinguishes matching and mismatching payments', () => {
@@ -567,7 +587,10 @@ integration('Database-backed wallet, records, and authorization flows', () => {
   const recordIds = new Set<string>();
   let admin: Keypair;
 
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
 
   async function expectAuditEvent(
     action: string,
@@ -725,6 +748,14 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         );
         if (ids.length) {
           await maintenancePool.query(
+            'DELETE FROM beneficiary_consent_challenges WHERE record_id = ANY($1::text[])',
+            [ids],
+          );
+          await maintenancePool.query(
+            'DELETE FROM beneficiary_consent_acknowledgments WHERE record_id = ANY($1::text[])',
+            [ids],
+          );
+          await maintenancePool.query(
             'DELETE FROM verification_results WHERE aid_record_id = ANY($1::text[])',
             [ids],
           );
@@ -788,6 +819,305 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       client.release();
     }
   });
+
+  it('requires a beneficiary signature for versioned publication acknowledgment and enforces expiry, replay, and revocation', async () => {
+    const previousFlag = process.env.CONSENT_ACKNOWLEDGMENTS_ENABLED;
+    process.env.CONSENT_ACKNOWLEDGMENTS_ENABLED = 'true';
+    try {
+      const adminSession = await login(admin);
+      const organization = Keypair.random();
+      const beneficiary = Keypair.random();
+      const otherBeneficiary = Keypair.random();
+      await assignRole(adminSession, organization, 'organization');
+      await assignRole(adminSession, beneficiary, 'beneficiary');
+      await assignRole(adminSession, otherBeneficiary, 'beneficiary');
+      const ownerSession = await login(organization);
+      const beneficiarySession = await login(beneficiary);
+      const otherSession = await login(otherBeneficiary);
+      const consentConfig = await request(app).get('/api/consent/config');
+      expect(consentConfig.body).toMatchObject({
+        enabled: true,
+        statementVersion: 'v1',
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('{}', { status: 404 })),
+      );
+      const purpose = 'signed-consent-' + Keypair.random().publicKey().slice(-8);
+      const txHash = '5'.padStart(64, '0');
+      const created = await createRecord(ownerSession, beneficiary, purpose, {
+        consent: true,
+        txHash,
+      });
+      expect(created.status).toBe(201);
+      const recordId = created.body.record.id as string;
+      const query = () => request(app).get('/api/transparency').query({ q: purpose });
+
+      const legacyProjection = await query();
+      expect(legacyProjection.body.records[0]).toMatchObject({
+        id: recordId,
+        purpose: '',
+        organization: '',
+        createdBy: '',
+        createdAt: '',
+        recipientAddress: '',
+        txHash: '',
+        note: '',
+      });
+      expect(legacyProjection.body.records[0]).not.toHaveProperty('recipientConsent');
+      expect(legacyProjection.body.records[0].recipient).not.toBe('Confidential beneficiary');
+
+      const unauthorized = await request(app)
+        .post('/api/records/' + recordId + '/consent/challenge')
+        .set('Origin', origin)
+        .set('Cookie', ownerSession.cookie)
+        .send({ csrfToken: ownerSession.csrfToken, action: 'acknowledge' });
+      expect(unauthorized.status).toBe(403);
+
+      const wrongBeneficiary = await request(app)
+        .post('/api/records/' + recordId + '/consent/challenge')
+        .set('Origin', origin)
+        .set('Cookie', otherSession.cookie)
+        .send({ csrfToken: otherSession.csrfToken, action: 'acknowledge' });
+      expect(wrongBeneficiary.status).toBe(403);
+
+      const challengePath = '/api/records/' + recordId + '/consent/challenge';
+      const verifyPath = '/api/records/' + recordId + '/consent/verify';
+      const challenge = await request(app)
+        .post(challengePath)
+        .set('Origin', origin)
+        .set('Cookie', beneficiarySession.cookie)
+        .send({ csrfToken: beneficiarySession.csrfToken, action: 'acknowledge' });
+      expect(challenge.status).toBe(200);
+      expect(challenge.body.statementVersion).toBe('v1');
+      expect(challenge.body.message).toContain('Domain: http://localhost:5173');
+      expect(challenge.body.message).toContain('Action: acknowledge');
+      expect(challenge.body.message).toContain('Statement: ' + consentConfig.body.statement);
+      expect(challenge.body.expiresAt).toBeGreaterThan(Date.now());
+
+      const signMessage = (wallet: Keypair, message: string) => {
+        const digest = createHash('sha256')
+          .update('Stellar Signed Message:\n')
+          .update(message)
+          .digest();
+        return Buffer.from(wallet.sign(digest)).toString('base64');
+      };
+      const verifyPayload = (signature: string) => ({
+        csrfToken: beneficiarySession.csrfToken,
+        challengeId: challenge.body.challengeId as string,
+        signature,
+      });
+      const invalid = await request(app)
+        .post(verifyPath)
+        .set('Origin', origin)
+        .set('Cookie', beneficiarySession.cookie)
+        .send(verifyPayload(signMessage(otherBeneficiary, challenge.body.message)));
+      expect(invalid.status).toBe(400);
+
+      const validSignature = signMessage(beneficiary, challenge.body.message);
+      const acknowledged = await request(app)
+        .post(verifyPath)
+        .set('Origin', origin)
+        .set('Cookie', beneficiarySession.cookie)
+        .send(verifyPayload(validSignature));
+      expect(acknowledged.status).toBe(200);
+      expect(acknowledged.body).toEqual({
+        ok: true,
+        action: 'acknowledge',
+        statementVersion: 'v1',
+      });
+      const replay = await request(app)
+        .post(verifyPath)
+        .set('Origin', origin)
+        .set('Cookie', beneficiarySession.cookie)
+        .send(verifyPayload(validSignature));
+      expect(replay.status).toBe(409);
+
+      const evidence = await pool.query<{
+        wallet_address: string;
+        statement_version: string;
+        message_hash: string;
+        signature_hash: string;
+        expires_at: Date;
+      }>(
+        `SELECT wallet_address, statement_version, message_hash, signature_hash, expires_at
+         FROM beneficiary_consent_acknowledgments WHERE record_id = $1`,
+        [recordId],
+      );
+      expect(evidence.rows).toHaveLength(1);
+      expect(evidence.rows[0]).toMatchObject({
+        wallet_address: beneficiary.publicKey(),
+        statement_version: 'v1',
+        message_hash: createHash('sha256').update(challenge.body.message).digest('hex'),
+        signature_hash: createHash('sha256').update(validSignature).digest('hex'),
+      });
+      expect(evidence.rows[0]!.signature_hash).not.toBe(validSignature);
+      expect(evidence.rows[0]!.expires_at.getTime()).toBeGreaterThan(Date.now());
+
+      const status = await request(app)
+        .get('/api/records/' + recordId + '/consent')
+        .set('Cookie', beneficiarySession.cookie);
+      expect(status.body.acknowledgment).toMatchObject({
+        active: true,
+        statementVersion: 'v1',
+      });
+      expect(JSON.stringify(status.body)).not.toContain(beneficiary.publicKey());
+      const unauthorizedStatus = await request(app)
+        .get('/api/records/' + recordId + '/consent')
+        .set('Cookie', otherSession.cookie);
+      expect(unauthorizedStatus.status).toBe(403);
+      const publicAfterAck = await query();
+      expect(publicAfterAck.body.records[0].recipient).toBe('Confidential beneficiary');
+      expect(publicAfterAck.body.records[0].recipientAddress).toBe(beneficiary.publicKey());
+      expect(publicAfterAck.body.records[0].txHash).toBe(txHash);
+      expect(publicAfterAck.body.records[0]).not.toHaveProperty('recipientConsent');
+
+      const expiredChallenge = await request(app)
+        .post(challengePath)
+        .set('Origin', origin)
+        .set('Cookie', beneficiarySession.cookie)
+        .send({ csrfToken: beneficiarySession.csrfToken, action: 'acknowledge' });
+      await pool.query(
+        "UPDATE beneficiary_consent_challenges SET expires_at = NOW() - INTERVAL '1 second' WHERE challenge_id = $1",
+        [expiredChallenge.body.challengeId],
+      );
+      const expiredVerification = await request(app)
+        .post(verifyPath)
+        .set('Origin', origin)
+        .set('Cookie', beneficiarySession.cookie)
+        .send({
+          csrfToken: beneficiarySession.csrfToken,
+          challengeId: expiredChallenge.body.challengeId,
+          signature: signMessage(beneficiary, expiredChallenge.body.message),
+        });
+      expect(expiredVerification.status).toBe(401);
+
+      await pool.query(
+        "UPDATE beneficiary_consent_acknowledgments SET expires_at = NOW() - INTERVAL '1 second' WHERE record_id = $1 AND revoked_at IS NULL",
+        [recordId],
+      );
+      const expiredAcknowledgmentStatus = await request(app)
+        .get('/api/records/' + recordId + '/consent')
+        .set('Cookie', beneficiarySession.cookie);
+      expect(expiredAcknowledgmentStatus.body.acknowledgment).toEqual({ active: false });
+      expect((await query()).body.records[0].recipientAddress).toBe('');
+
+      const requestPublication = async (recipientConsent: boolean) => {
+        const record = created.body.record;
+        return request(app)
+          .put('/api/records/' + recordId)
+          .set('Origin', origin)
+          .set('Cookie', ownerSession.cookie)
+          .send({
+            csrfToken: ownerSession.csrfToken,
+            recipient: record.recipient,
+            recipientAddress: record.recipientAddress,
+            purpose: record.purpose,
+            amount: record.amount,
+            asset: record.asset,
+            assetIssuer: record.assetIssuer,
+            network: record.network,
+            txHash: record.txHash,
+            date: record.date,
+            note: record.note,
+            recipientConsent,
+          });
+      };
+      const renewedChallenge = await request(app)
+        .post(challengePath)
+        .set('Origin', origin)
+        .set('Cookie', beneficiarySession.cookie)
+        .send({ csrfToken: beneficiarySession.csrfToken, action: 'acknowledge' });
+      const renewed = await request(app)
+        .post(verifyPath)
+        .set('Origin', origin)
+        .set('Cookie', beneficiarySession.cookie)
+        .send({
+          csrfToken: beneficiarySession.csrfToken,
+          challengeId: renewedChallenge.body.challengeId,
+          signature: signMessage(beneficiary, renewedChallenge.body.message),
+        });
+      expect(renewed.status).toBe(200);
+      expect((await query()).body.records[0].recipientAddress).toBe(beneficiary.publicKey());
+
+      process.env.CONSENT_ACKNOWLEDGMENTS_ENABLED = 'false';
+      expect((await query()).body.records[0].recipientAddress).toBe('');
+      process.env.CONSENT_ACKNOWLEDGMENTS_ENABLED = 'true';
+      expect((await requestPublication(false)).status).toBe(200);
+      expect((await query()).body.records[0].recipientAddress).toBe('');
+      expect((await requestPublication(true)).status).toBe(200);
+      const withdrawnAndReopened = await query();
+      expect(withdrawnAndReopened.body.records[0]).toMatchObject({
+        recipientAddress: '',
+        txHash: '',
+        note: '',
+      });
+
+      const finalAcknowledgmentChallenge = await request(app)
+        .post(challengePath)
+        .set('Origin', origin)
+        .set('Cookie', beneficiarySession.cookie)
+        .send({ csrfToken: beneficiarySession.csrfToken, action: 'acknowledge' });
+      const finalAcknowledgment = await request(app)
+        .post(verifyPath)
+        .set('Origin', origin)
+        .set('Cookie', beneficiarySession.cookie)
+        .send({
+          csrfToken: beneficiarySession.csrfToken,
+          challengeId: finalAcknowledgmentChallenge.body.challengeId,
+          signature: signMessage(beneficiary, finalAcknowledgmentChallenge.body.message),
+        });
+      expect(finalAcknowledgment.status).toBe(200);
+
+      const revokeChallenge = await request(app)
+        .post(challengePath)
+        .set('Origin', origin)
+        .set('Cookie', beneficiarySession.cookie)
+        .send({ csrfToken: beneficiarySession.csrfToken, action: 'revoke' });
+      expect(revokeChallenge.status).toBe(200);
+      const revokeSignature = signMessage(beneficiary, revokeChallenge.body.message);
+      const revoked = await request(app)
+        .post(verifyPath)
+        .set('Origin', origin)
+        .set('Cookie', beneficiarySession.cookie)
+        .send({
+          csrfToken: beneficiarySession.csrfToken,
+          challengeId: revokeChallenge.body.challengeId,
+          signature: revokeSignature,
+        });
+      expect(revoked.status).toBe(200);
+      const revokedStatus = await request(app)
+        .get('/api/records/' + recordId + '/consent')
+        .set('Cookie', beneficiarySession.cookie);
+      expect(revokedStatus.body.acknowledgment).toEqual({ active: false });
+      const revocationEvidence = await pool.query<{
+        revoked_at: Date | null;
+        revocation_message_hash: string | null;
+        revocation_signature_hash: string | null;
+      }>(
+        `SELECT revoked_at, revocation_message_hash, revocation_signature_hash
+         FROM beneficiary_consent_acknowledgments
+         WHERE record_id = $1 AND revocation_signature_hash IS NOT NULL`,
+        [recordId],
+      );
+      expect(revocationEvidence.rows).toHaveLength(1);
+      expect(revocationEvidence.rows[0]).toMatchObject({
+        revocation_message_hash: createHash('sha256')
+          .update(revokeChallenge.body.message)
+          .digest('hex'),
+        revocation_signature_hash: createHash('sha256').update(revokeSignature).digest('hex'),
+      });
+      const publicAfterRevoke = await query();
+      expect(publicAfterRevoke.body.records[0]).toMatchObject({
+        recipientAddress: '',
+        txHash: '',
+        note: '',
+      });
+    } finally {
+      if (previousFlag === undefined) delete process.env.CONSENT_ACKNOWLEDGMENTS_ENABLED;
+      else process.env.CONSENT_ACKNOWLEDGMENTS_ENABLED = previousFlag;
+    }
+  }, 120_000);
 
   it('should have an index for wallet_roles sorting by updated_at DESC and wallet_address DESC', async () => {
     const result = await pool.query<{ indexdef: string }>(
@@ -1243,6 +1573,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
 
     // With consent the public projection includes the full record, memo included; a uint64 id
     // memo above 2^53 round-trips through the TEXT column unchanged.
+    vi.stubEnv('CONSENT_ACKNOWLEDGMENTS_ENABLED', 'true');
     transactions.set(consentHash, {
       successful: true,
       source_account: organization.publicKey(),
@@ -1255,6 +1586,29 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     });
     expect(consented.status).toBe(201);
     expect(consented.body.record.verification).toMatchObject({ memo: largeId, memoType: 'id' });
+    await assignRole(adminSession, recipient, 'beneficiary');
+    const consentedBeneficiarySession = await login(recipient);
+    const consentChallenge = await request(app)
+      .post('/api/records/' + consented.body.record.id + '/consent/challenge')
+      .set('Origin', origin)
+      .set('Cookie', consentedBeneficiarySession.cookie)
+      .send({ csrfToken: consentedBeneficiarySession.csrfToken, action: 'acknowledge' });
+    expect(consentChallenge.status).toBe(200);
+    const consentDigest = createHash('sha256')
+      .update('Stellar Signed Message:\n')
+      .update(consentChallenge.body.message)
+      .digest();
+    const consentSignature = Buffer.from(recipient.sign(consentDigest)).toString('base64');
+    const acknowledgment = await request(app)
+      .post('/api/records/' + consented.body.record.id + '/consent/verify')
+      .set('Origin', origin)
+      .set('Cookie', consentedBeneficiarySession.cookie)
+      .send({
+        csrfToken: consentedBeneficiarySession.csrfToken,
+        challengeId: consentChallenge.body.challengeId,
+        signature: consentSignature,
+      });
+    expect(acknowledgment.status).toBe(200);
     const consentedPublic = await request(app)
       .get('/api/transparency')
       .query({ q: term + ' consented' });
@@ -1408,6 +1762,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
 
     const pageOne = await request(app).get('/api/transparency').query({ limit: '1' });
     expect(pageOne.body.hasMore).toBe(true);
+    expect(pageOne.body.records[0].createdAt).toBe('');
     const pageTwo = await request(app)
       .get('/api/transparency')
       .query({ limit: '1', cursor: pageOne.body.nextCursor });
