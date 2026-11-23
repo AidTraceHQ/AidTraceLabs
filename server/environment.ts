@@ -38,8 +38,13 @@ export function validateEnvironment(environment: NodeJS.ProcessEnv = process.env
   }
 
   const sessionSecret = environment.SESSION_SECRET;
-  if (sessionSecret && Buffer.byteLength(sessionSecret) < 32) {
-    throw new Error('SESSION_SECRET must contain at least 32 bytes.');
+  if (
+    sessionSecret &&
+    (Buffer.byteLength(sessionSecret) < 32 || sessionSecret.startsWith('replace-with-'))
+  ) {
+    throw new Error(
+      'SESSION_SECRET must contain at least 32 bytes and must not use a placeholder value.',
+    );
   }
 
   const pseudonymSecret = environment.PSEUDONYM_SECRET;
@@ -49,6 +54,9 @@ export function validateEnvironment(environment: NodeJS.ProcessEnv = process.env
     }
   } else if (environment.NODE_ENV !== 'development') {
     missing.push('PSEUDONYM_SECRET');
+  }
+  if (sessionSecret && pseudonymSecret && sessionSecret === pseudonymSecret) {
+    throw new Error('SESSION_SECRET and PSEUDONYM_SECRET must be different values.');
   }
 
   const port = integerEnvironmentVariable('PORT', 3001, 1, environment);
