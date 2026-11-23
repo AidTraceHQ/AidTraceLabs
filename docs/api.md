@@ -22,6 +22,22 @@ All API responses are configured with `Cache-Control: no-store`. Error responses
 | `DELETE /api/admin/roles/:address` | Admin, CSRF                                   | Remove a role assignment.                                       |
 | `GET /api/audit`                   | Admin                                         | Filter and page audit events.                                   |
 
+### Webhook notifications
+
+These routes exist only when `NOTIFICATIONS_ENABLED=true`; otherwise they return the standard `404 { "error": "Route not found." }`. See [security.md](security.md#outbound-notifications) for the delivery model, signature format and SSRF rules.
+
+| Route                                                 | Access                        | Purpose                                                                 |
+| ----------------------------------------------------- | ----------------------------- | ----------------------------------------------------------------------- |
+| `GET /api/notifications/endpoints`                    | Organization or admin         | List the caller's endpoints (host only, never the URL or secret).       |
+| `POST /api/notifications/endpoints`                   | Organization or admin, CSRF   | Register `{ url, events?, scope? }`; returns `signingSecret` once.      |
+| `POST /api/notifications/endpoints/:id/verify`        | Endpoint owner, CSRF          | Send the signed challenge; activates the endpoint if it is echoed back. |
+| `POST /api/notifications/endpoints/:id/rotate-secret` | Endpoint owner, CSRF          | Replace the signing secret; returns the new one once.                   |
+| `DELETE /api/notifications/endpoints/:id`             | Endpoint owner or admin, CSRF | Revoke the endpoint and cancel its pending deliveries.                  |
+| `GET /api/notifications/deliveries?endpointId=`       | Endpoint owner                | Last 50 deliveries with status, attempts and error code (no payload).   |
+| `POST /api/notifications/deliveries/:id/cancel`       | Endpoint owner or admin, CSRF | Cancel a `pending` delivery; `409` once it is in flight or finished.    |
+
+`scope` is `organization` (default) or, for admins only, `all`. `events` defaults to every type: `record.created`, `record.updated`, `record.voided`, `record.verification_changed`. Event bodies are `{ id, type, createdAt, data: { recordId, network, status, previousStatus?, version } }`.
+
 The transparency query accepts `q`, `organization`, `asset`, `network`, `status`, `from`, `to`, `limit`, and `cursor`. Admin roles accept `role`, `q`, `limit`, and `cursor`; audit accepts `action`, `address`, `recordId`, `q`, `limit`, and `cursor`. The API validates filters and binds signed cursors to their query filters.
 
 List responses include `nextCursor` and `hasMore`. `GET /api/transparency` also includes `total`, the number of records matching the bound filters, independent of `limit` and `cursor`.

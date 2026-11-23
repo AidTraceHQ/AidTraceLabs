@@ -110,6 +110,10 @@ type AuditItem = {
   action: string;
   summary: string;
   address: string;
+  subjectAddress?: string;
+  oldRole?: string;
+  newRole?: string;
+  reason?: string;
   recordId?: string;
   createdAt: string;
 };
@@ -346,6 +350,7 @@ export default function App() {
   );
   const [roleAddress, setRoleAddress] = useState('');
   const [roleValue, setRoleValue] = useState<Role>('organization');
+  const [roleReason, setRoleReason] = useState('');
   const [auditAction, setAuditAction] = useState('all');
   const [auditSearch, setAuditSearch] = useState('');
   const [voidReason, setVoidReason] = useState('');
@@ -1066,8 +1071,10 @@ export default function App() {
         csrfToken: session.csrfToken,
         address: roleAddress.trim(),
         role: roleValue,
+        reason: roleReason.trim(),
       });
       setRoleAddress('');
+      setRoleReason('');
       await loadRoles();
       await loadAudit();
       notify('Wallet role updated and audit-logged.');
@@ -1076,16 +1083,16 @@ export default function App() {
     }
   }
   async function removeRole(address: string) {
-    if (
-      !session ||
-      !window.confirm(
-        'Remove the explicit role for ' + short(address) + '? It will fall back to Donor.',
-      )
-    )
-      return;
+    if (!session) return;
+    const reason = window.prompt(
+      'Optional reason for removing the role (up to 500 characters):',
+      '',
+    );
+    if (reason === null) return;
     try {
       await api.delete('/api/admin/roles/' + encodeURIComponent(address), {
         csrfToken: session.csrfToken,
+        reason: reason.trim(),
       });
       await loadRoles();
       await loadAudit();
@@ -1965,6 +1972,15 @@ export default function App() {
                   <option value="admin">Admin</option>
                 </select>
               </label>
+              <label>
+                Reason (optional)
+                <input
+                  value={roleReason}
+                  onChange={(event) => setRoleReason(event.target.value)}
+                  maxLength={500}
+                  placeholder="Leave blank if no reason applies"
+                />
+              </label>
               <button className="button primary" type="submit">
                 <Plus size={14} />
                 Assign role
@@ -2050,7 +2066,10 @@ export default function App() {
                   <tr>
                     <th>ACTION</th>
                     <th>SUMMARY</th>
-                    <th>WALLET</th>
+                    <th>ACTOR</th>
+                    <th>SUBJECT</th>
+                    <th>ROLE CHANGE</th>
+                    <th>REASON</th>
                     <th>RECORD</th>
                     <th>TIME</th>
                   </tr>
@@ -2061,6 +2080,11 @@ export default function App() {
                       <td>{item.action}</td>
                       <td>{item.summary}</td>
                       <td>{short(item.address)}</td>
+                      <td>{short(item.subjectAddress || '')}</td>
+                      <td>
+                        {item.oldRole && item.newRole ? item.oldRole + ' → ' + item.newRole : '—'}
+                      </td>
+                      <td>{item.reason || '—'}</td>
                       <td>{item.recordId || '—'}</td>
                       <td>{new Date(item.createdAt).toLocaleString()}</td>
                     </tr>
