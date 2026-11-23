@@ -28,6 +28,10 @@ export const pool = new Pool({
   idle_in_transaction_session_timeout: IDLE_IN_TRANSACTION_TIMEOUT_MS,
 });
 
+pool.on('error', (err) => {
+  console.error(`Idle pool client error: ${err.message}`);
+});
+
 export function query<Row extends QueryResultRow = QueryResultRow>(
   text: string,
   values?: unknown[],
