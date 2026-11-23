@@ -962,6 +962,36 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(clearedCookie).toContain('Max-Age=0');
   }, 60_000);
 
+  it('rejects an expired session, clears the cookie, and blocks protected writes', async () => {
+    const wallet = Keypair.random();
+    const session = await login(wallet);
+    const token = decodeURIComponent(session.cookie.slice('aidtrace_session='.length));
+    const sessionHash = createHash('sha256').update(token).digest('hex');
+
+    const active = await request(app).get('/api/me').set('Cookie', session.cookie);
+    expect(active.status).toBe(200);
+    expect(active.body.session).toMatchObject({ address: wallet.publicKey(), role: 'donor' });
+
+    await pool.query(
+      "UPDATE sessions SET expires_at = NOW() - INTERVAL '1 second' WHERE session_hash = $1",
+      [sessionHash],
+    );
+
+    const expired = await request(app).get('/api/me').set('Cookie', session.cookie);
+    expect(expired.status).toBe(200);
+    expect(expired.body.session).toBeNull();
+    const clearedCookie = String(expired.headers['set-cookie']);
+    expect(clearedCookie).toContain('aidtrace_session=;');
+    expect(clearedCookie).toContain('Max-Age=0');
+
+    const rejected = await request(app)
+      .post('/api/records')
+      .set('Origin', origin)
+      .set('Cookie', session.cookie)
+      .send({ csrfToken: session.csrfToken });
+    expect(rejected.status).toBe(401);
+  }, 60_000);
+
   it('verifies the matching source, stores evidence, and rejects duplicate network hashes', async () => {
     const adminSession = await login(admin);
     const organization = Keypair.random();
