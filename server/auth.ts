@@ -23,8 +23,14 @@ const sessionTtlMs = 7 * 24 * 60 * 60 * 1000;
 const sessionSecret = process.env.SESSION_SECRET;
 const publicAppOrigin = new URL(process.env.PUBLIC_APP_ORIGIN || 'http://localhost:5173').origin;
 
-if (!sessionSecret || Buffer.byteLength(sessionSecret) < 32) {
-  throw new Error('SESSION_SECRET must contain at least 32 bytes.');
+if (
+  !sessionSecret ||
+  Buffer.byteLength(sessionSecret) < 32 ||
+  sessionSecret.startsWith('replace-with-')
+) {
+  throw new Error(
+    'SESSION_SECRET must contain at least 32 bytes and must not use a placeholder value.',
+  );
 }
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
