@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../server/app.js', () => ({
+  app: () => {},
+}));
+
 afterEach(() => {
   delete process.env.VERCEL;
   vi.resetModules();
