@@ -53,8 +53,18 @@ export async function withTransaction<T>(work: (client: PoolClient) => Promise<T
     } catch (rollbackError) {
       // The server may already have ended the session (for example after
       // idle_in_transaction_session_timeout). Keep the original error and discard the client
-      // instead of returning a dead connection to the pool.
+      // instead of returning a dead connection to the pool. The rollback failure is attached as
+      // a non-secret cause on the original error only when the original error has no cause yet,
+      // so the primary rejection stays the caller's own error object.
       broken = rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError));
+      if (error instanceof Error && error.cause === undefined) {
+        Object.defineProperty(error, 'rollbackFailure', {
+          value: { name: broken.name, code: (broken as { code?: unknown }).code },
+          enumerable: false,
+          configurable: true,
+          writable: true,
+        });
+      }
     }
     throw error;
   } finally {
