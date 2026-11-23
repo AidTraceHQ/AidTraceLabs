@@ -1,4 +1,4 @@
-import { createHash, createHmac } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { Keypair } from '@stellar/stellar-sdk';
 import { Pool } from 'pg';
 import request from 'supertest';
@@ -553,34 +553,48 @@ integration('Database-backed wallet, records, and authorization flows', () => {
   afterAll(async () => {
     const addresses = [...wallets];
     const ids = [...recordIds];
-    if (addresses.length) {
-      await pool.query(
-        `DELETE FROM audit_events
-         WHERE actor_wallet = ANY($1::text[]) OR subject_wallet = ANY($1::text[])
-            OR record_id = ANY($2::text[])`,
-        [addresses, ids],
-      );
-      if (ids.length) {
-        await pool.query('DELETE FROM verification_results WHERE aid_record_id = ANY($1::text[])', [
-          ids,
+    const maintenancePool = new Pool({
+      connectionString: process.env.DATABASE_URL_UNPOOLED,
+    });
+    try {
+      if (addresses.length) {
+        await maintenancePool.query(
+          `DELETE FROM audit_events
+           WHERE actor_wallet = ANY($1::text[]) OR subject_wallet = ANY($1::text[])
+              OR record_id = ANY($2::text[])`,
+          [addresses, ids],
+        );
+        if (ids.length) {
+          await maintenancePool.query(
+            'DELETE FROM verification_results WHERE aid_record_id = ANY($1::text[])',
+            [ids],
+          );
+          await maintenancePool.query('DELETE FROM aid_records WHERE id = ANY($1::text[])', [ids]);
+        }
+        await maintenancePool.query(
+          'DELETE FROM organizations WHERE wallet_address = ANY($1::text[])',
+          [addresses],
+        );
+        await maintenancePool.query(
+          `DELETE FROM wallet_roles
+           WHERE wallet_address = ANY($1::text[]) OR updated_by = ANY($1::text[])`,
+          [addresses],
+        );
+        await maintenancePool.query('DELETE FROM sessions WHERE wallet_address = ANY($1::text[])', [
+          addresses,
         ]);
-        await pool.query('DELETE FROM aid_records WHERE id = ANY($1::text[])', [ids]);
+        await maintenancePool.query(
+          'DELETE FROM challenges WHERE wallet_address = ANY($1::text[])',
+          [addresses],
+        );
+        await maintenancePool.query('DELETE FROM users WHERE wallet_address = ANY($1::text[])', [
+          addresses,
+        ]);
       }
-      await pool.query('DELETE FROM organizations WHERE wallet_address = ANY($1::text[])', [
-        addresses,
-      ]);
-      await pool.query(
-        `DELETE FROM wallet_roles
-         WHERE wallet_address = ANY($1::text[]) OR updated_by = ANY($1::text[])`,
-        [addresses],
-      );
-      await pool.query('DELETE FROM sessions WHERE wallet_address = ANY($1::text[])', [addresses]);
-      await pool.query('DELETE FROM challenges WHERE wallet_address = ANY($1::text[])', [
-        addresses,
-      ]);
-      await pool.query('DELETE FROM users WHERE wallet_address = ANY($1::text[])', [addresses]);
+    } finally {
+      await maintenancePool.end();
+      await pool.end();
     }
-    await pool.end();
   });
 
   it('reports duplicate hashes and aborts migration 002 before creating the unique constraint', async () => {
@@ -625,6 +639,41 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         indexdef.includes('btree (updated_at DESC, wallet_address DESC)'),
       ),
     ).toBe(true);
+  });
+
+  it('allows the runtime role to append and read audit events but not update or delete them', async () => {
+    const identity = await pool.query<{ current_user: string; session_user: string }>(
+      'SELECT current_user, session_user',
+    );
+    expect(identity.rows[0]).toEqual({
+      current_user: 'aidtrace_runtime',
+      session_user: 'aidtrace_runtime',
+    });
+
+    const id = `audit-append-only-${randomUUID()}`;
+    await pool.query(
+      `INSERT INTO audit_events (id, action, actor_wallet, summary)
+       VALUES ($1, 'append_only_access_test', $2, 'runtime insert/read privilege check')`,
+      [id, admin.publicKey()],
+    );
+
+    const inserted = await pool.query<{ action: string; summary: string }>(
+      'SELECT action, summary FROM audit_events WHERE id = $1',
+      [id],
+    );
+    expect(inserted.rows).toEqual([
+      {
+        action: 'append_only_access_test',
+        summary: 'runtime insert/read privilege check',
+      },
+    ]);
+
+    await expect(
+      pool.query('UPDATE audit_events SET summary = $2 WHERE id = $1', [id, 'modified']),
+    ).rejects.toMatchObject({ code: '42501' });
+    await expect(pool.query('DELETE FROM audit_events WHERE id = $1', [id])).rejects.toMatchObject({
+      code: '42501',
+    });
   });
 
   it('creates a single-use wallet session, enforces CSRF, expires challenges, and logs out', async () => {
