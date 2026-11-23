@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, api, resetCursorStack } from './api';
 import { getNetwork, isConnected, requestAccess, signMessage } from '@stellar/freighter-api';
 import {
@@ -189,6 +189,50 @@ const SkeletonRows = ({ columns = 6 }: { columns?: number }) => (
   </>
 );
 
+const focusable = 'a[href], button:enabled, input:enabled, select:enabled, textarea:enabled';
+
+// While a dialog is open, focus stays inside it, Escape closes it, and the page behind it is
+// inert. On close, focus moves to the returnTo element, or else to the active section tab.
+function useDialogFocus(
+  open: boolean,
+  dialogRef: React.RefObject<HTMLElement | null>,
+  onClose: () => void,
+  returnTo: string,
+) {
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current;
+    if (!open || !dialog) return;
+    const background = document.querySelectorAll('.app > :not(.backdrop)');
+    for (const el of background) el.setAttribute('inert', '');
+    (dialog.querySelector<HTMLElement>(focusable) ?? dialog).focus();
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !event.isComposing) onClose();
+      const current = document.activeElement;
+      // Date inputs use Tab to move between their month, day, and year parts.
+      const isDate = current instanceof HTMLInputElement && current.type === 'date';
+      if (event.key !== 'Tab' || isDate) return;
+      // Step through the dialog's own controls, because Safari skips links on Tab by default.
+      event.preventDefault();
+      const items = Array.from(dialog.querySelectorAll<HTMLElement>(focusable));
+      const index = items.indexOf(current as HTMLElement);
+      const last = items.length - 1;
+      const next = event.shiftKey ? (index > 0 ? index - 1 : last) : index < last ? index + 1 : 0;
+      (items[next] ?? dialog).focus();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      // Remove inert first, because inert elements cannot take focus.
+      for (const el of background) el.removeAttribute('inert');
+      const target =
+        document.querySelector<HTMLElement>(returnTo) ??
+        document.querySelector<HTMLElement>('.tab.active');
+      target?.focus();
+    };
+  }, [open, dialogRef, onClose, returnTo]);
+}
+
 export default function App() {
   const locale = navigator.language || 'en-US';
   const [session, setSession] = useState<Session | null>(null);
@@ -207,6 +251,8 @@ export default function App() {
   const [ledgerPageLoading, setLedgerPageLoading] = useState(false);
   const [beneficiaryRecords, setBeneficiaryRecords] = useState<AidRecord[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [activityHasMore, setActivityHasMore] = useState(false);
+  const [activityPageLoading, setActivityPageLoading] = useState(false);
   const [audit, setAudit] = useState<AuditItem[]>([]);
   const [auditActionOptions, setAuditActionOptions] = useState<string[]>([]);
   const [auditCursor, setAuditCursor] = useState<string | null>(null);
@@ -224,7 +270,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
-  const [dark, setDark] = useState(false);
+  const [theme, setTheme] = useState<Theme>(readThemePreference);
+  const dark = theme === 'dark';
   const [search, setSearch] = useState('');
   const [orgFilter, setOrgFilter] = useState('all');
   const [assetFilter, setAssetFilter] = useState('all');
@@ -240,6 +287,17 @@ export default function App() {
   const [activityStream, setActivityStream] = useState<
     'connecting' | 'live' | 'polling' | 'offline'
   >('offline');
+  const activitySelectionRef = useRef('');
+  const activityRequestRef = useRef(0);
+  const activityPageRequestRef = useRef(false);
+  const activityCursorsRef = useRef<{
+    selection: string;
+    payments: string | null;
+    transactions: string | null;
+  }>({ selection: '', payments: null, transactions: null });
+  const recordsRef = useRef(records);
+  recordsRef.current = records;
+  activitySelectionRef.current = `${session?.address ?? ''}:${network}`;
   const [selected, setSelected] = useState<AidRecord | null>(null);
   const [recordConflictId, setRecordConflictId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -252,10 +310,26 @@ export default function App() {
     assetIssuer: '',
     network,
     txHash: '',
-    date: new Date().toISOString().slice(0, 10),
+    date: localDateString(),
     note: '',
     recipientConsent: false,
   });
+  const [formPristine, setFormPristine] = useState(form);
+  const formIsDirty = useMemo(
+    () =>
+      form.recipient !== formPristine.recipient ||
+      form.recipientAddress !== formPristine.recipientAddress ||
+      form.purpose !== formPristine.purpose ||
+      form.amount !== formPristine.amount ||
+      form.asset !== formPristine.asset ||
+      form.assetIssuer !== formPristine.assetIssuer ||
+      form.network !== formPristine.network ||
+      form.txHash !== formPristine.txHash ||
+      form.date !== formPristine.date ||
+      form.note !== formPristine.note ||
+      form.recipientConsent !== formPristine.recipientConsent,
+    [form, formPristine],
+  );
   const [roleAddress, setRoleAddress] = useState('');
   const [roleValue, setRoleValue] = useState<Role>('organization');
   const [auditAction, setAuditAction] = useState('all');
@@ -271,6 +345,12 @@ export default function App() {
     setToast(text);
     window.setTimeout(() => setToast(''), 3600);
   }, []);
+  useDialogFocus(showForm, formDialogRef, closeForm, '#add-record');
+  useDialogFocus(!!selected, detailDialogRef, closeDetail, `[data-record-id="${selected?.id}"]`);
+
+  const toastScheduler = useMemo(() => createToastScheduler(setToast), []);
+  const notify = useCallback((text: string) => toastScheduler.show(text), [toastScheduler]);
+  useEffect(() => () => toastScheduler.cancel(), [toastScheduler]);
   const fetchLedgerPage = useCallback(
     async (index: number, cursors: Array<string | null>) => {
       const requestId = ++transparencyRequestId.current;
@@ -348,6 +428,8 @@ export default function App() {
     try {
       setSelected(await getLatestRecord(recordId));
       setRecordConflictId(null);
+      // The Reload latest button removes itself, so keep focus in the dialog.
+      detailDialogRef.current?.focus();
       setError('');
     } catch (e) {
       setError(messageOf(e));
@@ -364,8 +446,24 @@ export default function App() {
 
   function chooseNetwork(value: string) {
     if (value !== 'testnet' && value !== 'mainnet') return;
+    if (session && value !== session.network) {
+      notify(
+        'Network change blocked. This session is connected to ' +
+          session.network +
+          '. Sign out before switching to ' +
+          value +
+          '.',
+      );
+      return;
+    }
     setNetwork(value);
     writeNetworkPreference(value);
+    if (!session) void loadTransparency();
+  }
+  function toggleTheme() {
+    const nextTheme: Theme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(nextTheme);
+    writeThemePreference(nextTheme);
   }
   const loadAudit = useCallback(async () => {
     if (!session || session.role !== 'admin') return;
@@ -394,6 +492,7 @@ export default function App() {
       const r = await api.get<{ session: Session | null }>('/api/me');
       const restored = r.data.session;
       setSession(restored);
+      if (restored) setNetwork(restored.network);
     } catch (e) {
       setSession(null);
       setError(messageOf(e));
@@ -452,44 +551,93 @@ export default function App() {
   }, [page, session, loadBeneficiaryRecords]);
 
   const loadActivity = useCallback(
-    async (address: string, selectedNetwork: Network) => {
-      setActivityLoading(true);
+    async (
+      address: string,
+      selectedNetwork: Network,
+      mode: 'reset' | 'refresh' | 'older' = 'reset',
+    ) => {
+      const selection = `${address}:${selectedNetwork}`;
+      if (activitySelectionRef.current !== selection) return;
+      if (mode === 'older' && activityPageRequestRef.current) return;
+      const requestId = ++activityRequestRef.current;
+      if (mode === 'older') {
+        activityPageRequestRef.current = true;
+        setActivityPageLoading(true);
+      } else if (mode === 'reset') {
+        activityCursorsRef.current = { selection, payments: null, transactions: null };
+        setActivityHasMore(false);
+        setActivityLoading(true);
+      }
+
       try {
         const base = horizon[selectedNetwork];
+        const accountUrl = base + '/accounts/' + encodeURIComponent(address);
+        const cursors =
+          activityCursorsRef.current.selection === selection
+            ? activityCursorsRef.current
+            : { selection, payments: null, transactions: null };
+        const paramsFor = (cursor: string | null, includeFailed = false) => {
+          const params = new URLSearchParams({
+            order: 'desc',
+            limit: String(HORIZON_ACTIVITY_PAGE_SIZE + 1),
+          });
+          if (cursor) params.set('cursor', cursor);
+          if (includeFailed) params.set('include_failed', 'true');
+          return params.toString();
+        };
+        const pageUrl = (resource: 'payments' | 'transactions', cursor: string | null) =>
+          `${accountUrl}/${resource}?${paramsFor(cursor, resource === 'transactions')}`;
         const [accountRes, paymentsRes, txRes] = await Promise.all([
-          fetch(base + '/accounts/' + encodeURIComponent(address), {
-            headers: { Accept: 'application/json' },
-          }),
-          fetch(
-            base + '/accounts/' + encodeURIComponent(address) + '/payments?order=desc&limit=50',
-            { headers: { Accept: 'application/json' } },
-          ),
-          fetch(
-            base +
-              '/accounts/' +
-              encodeURIComponent(address) +
-              '/transactions?order=desc&limit=50&include_failed=true',
-            { headers: { Accept: 'application/json' } },
-          ),
+          mode === 'older'
+            ? Promise.resolve(null)
+            : fetch(accountUrl, { headers: { Accept: 'application/json' } }),
+          cursors.payments || mode !== 'older'
+            ? fetch(pageUrl('payments', mode === 'older' ? cursors.payments : null), {
+                headers: { Accept: 'application/json' },
+              })
+            : Promise.resolve(null),
+          cursors.transactions || mode !== 'older'
+            ? fetch(pageUrl('transactions', mode === 'older' ? cursors.transactions : null), {
+                headers: { Accept: 'application/json' },
+              })
+            : Promise.resolve(null),
         ]);
-        if (accountRes.status === 404)
+        if (accountRes?.status === 404)
           throw new Error(
             'Wallet account not found on ' +
               selectedNetwork +
               '. Switch network or fund the Testnet account.',
           );
-        if (!accountRes.ok || !paymentsRes.ok || !txRes.ok)
+        if (
+          (accountRes && !accountRes.ok) ||
+          (paymentsRes && !paymentsRes.ok) ||
+          (txRes && !txRes.ok)
+        )
           throw new Error('Horizon is unavailable. Your records are safe; activity will retry.');
-        const account = (await accountRes.json()) as {
-          balances?: { asset_type: string; balance: string }[];
-        };
-        const payments = (await paymentsRes.json()) as {
-          _embedded?: { records?: Record<string, unknown>[] };
-        };
-        const txs = (await txRes.json()) as { _embedded?: { records?: Record<string, unknown>[] } };
-        setBalance(account.balances?.find((b) => b.asset_type === 'native')?.balance || '0');
-        const published = records.filter((r) => r.network === selectedNetwork && r.txHash);
-        const payItems: ActivityItem[] = (payments._embedded?.records || []).map((p, i) => {
+        const account = accountRes
+          ? ((await accountRes.json()) as {
+              balances?: { asset_type: string; balance: string }[];
+            })
+          : null;
+        const paymentsPage = paymentsRes
+          ? parseHorizonActivityPage(
+              (await paymentsRes.json()) as { _embedded?: { records?: HorizonActivityRecord[] } },
+            )
+          : { records: [], nextCursor: null };
+        const txPage = txRes
+          ? parseHorizonActivityPage(
+              (await txRes.json()) as { _embedded?: { records?: HorizonActivityRecord[] } },
+            )
+          : { records: [], nextCursor: null };
+        if (activitySelectionRef.current !== selection || requestId !== activityRequestRef.current)
+          return;
+        if (account) {
+          setBalance(account.balances?.find((b) => b.asset_type === 'native')?.balance || '0');
+        }
+        const published = recordsRef.current.filter(
+          (r) => r.network === selectedNetwork && r.txHash,
+        );
+        const payItems: ActivityItem[] = paymentsPage.records.map((p, i) => {
           const hash = String(p.transaction_hash || '');
           const source = String(p.from || p.source_account || '');
           const dest = String(p.to || '');
@@ -509,8 +657,8 @@ export default function App() {
           };
         });
         const hashes = new Set(payItems.map((p) => p.hash));
-        const txItems: ActivityItem[] = (txs._embedded?.records || [])
-          .filter((t) => !hashes.has(String(t.hash || '')))
+        const txItems: ActivityItem[] = txPage.records
+          .filter((t) => !t.hash || !hashes.has(String(t.hash)))
           .map((t, i) => ({
             id: String(t.id || t.hash || i),
             hash: String(t.hash || ''),
@@ -522,24 +670,64 @@ export default function App() {
             status: t.successful ? 'Successful' : 'Failed',
             network: selectedNetwork,
           }));
-        setActivity(
-          [...payItems, ...txItems]
-            .sort((a, b) => Date.parse(b.date) - Date.parse(a.date))
-            .slice(0, 100),
+        const incoming = [...payItems, ...txItems];
+        setActivity((previous) =>
+          mode === 'older' || mode === 'refresh'
+            ? mergeActivityItems(previous, incoming)
+            : mergeActivityItems([], incoming),
+        );
+        if (mode !== 'refresh') {
+          activityCursorsRef.current = {
+            selection,
+            payments: mode === 'older' && !paymentsRes ? cursors.payments : paymentsPage.nextCursor,
+            transactions: mode === 'older' && !txRes ? cursors.transactions : txPage.nextCursor,
+          };
+        } else if (activityCursorsRef.current.selection !== selection) {
+          activityCursorsRef.current = {
+            selection,
+            payments: paymentsPage.nextCursor,
+            transactions: txPage.nextCursor,
+          };
+        } else {
+          activityCursorsRef.current = {
+            ...activityCursorsRef.current,
+            payments: activityCursorsRef.current.payments ?? paymentsPage.nextCursor,
+            transactions: activityCursorsRef.current.transactions ?? txPage.nextCursor,
+          };
+        }
+        setActivityHasMore(
+          Boolean(activityCursorsRef.current.payments || activityCursorsRef.current.transactions),
         );
         setError('');
       } catch (e) {
-        setError(messageOf(e));
+        if (activitySelectionRef.current === selection && requestId === activityRequestRef.current)
+          setError(messageOf(e));
       } finally {
-        setActivityLoading(false);
+        if (mode === 'older' && activitySelectionRef.current === selection) {
+          activityPageRequestRef.current = false;
+          setActivityPageLoading(false);
+        } else if (requestId === activityRequestRef.current) {
+          if (mode === 'reset') {
+            setActivityLoading(false);
+          }
+        }
       }
     },
-    [records],
+    [],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!session) {
+      activityRequestRef.current += 1;
+      activityCursorsRef.current = {
+        selection: `:${network}`,
+        payments: null,
+        transactions: null,
+      };
       setActivity([]);
+      setActivityHasMore(false);
+      setActivityLoading(false);
+      setActivityPageLoading(false);
       setBalance('0');
       setActivityStream('offline');
       return;
@@ -547,14 +735,27 @@ export default function App() {
     let source: EventSource | null = null;
     let pollTimer: number | undefined;
     let closed = false;
+    activityRequestRef.current += 1;
+    activityCursorsRef.current = {
+      selection: `${session.address}:${network}`,
+      payments: null,
+      transactions: null,
+    };
+    activityPageRequestRef.current = false;
+    setActivity([]);
+    setActivityHasMore(false);
+    setActivityPageLoading(false);
     setActivityStream('connecting');
     const startPolling = () => {
       if (closed) return;
       setActivityStream('polling');
       if (pollTimer) window.clearInterval(pollTimer);
-      pollTimer = window.setInterval(() => void loadActivity(session.address, network), 30000);
+      pollTimer = window.setInterval(
+        () => void loadActivity(session.address, network, 'refresh'),
+        30000,
+      );
     };
-    void loadActivity(session.address, network);
+    void loadActivity(session.address, network, 'reset');
     try {
       source = new EventSource(
         horizon[network] +
@@ -572,7 +773,7 @@ export default function App() {
       source.onmessage = (event) => {
         try {
           const payment = JSON.parse(event.data) as { transaction_hash?: string };
-          if (payment.transaction_hash) void loadActivity(session.address, network);
+          if (payment.transaction_hash) void loadActivity(session.address, network, 'refresh');
         } catch {
           /* Ignore malformed stream frames and keep listening. */
         }
@@ -941,6 +1142,7 @@ export default function App() {
       (session.role === 'organization' && selected.organization === session.address));
   const selectedDifferences = selected?.verification?.differences || [];
   const selectedMismatchDetails = selected ? mismatchDetails(selected) : [];
+  const environment = describeNetworkEnvironment(network);
 
   function sortRecords(field: string) {
     if (sortBy === field) setSortDir((current) => (current === 'asc' ? 'desc' : 'asc'));
@@ -1039,7 +1241,7 @@ export default function App() {
           <button
             className="icon-button"
             aria-label={dark ? 'Use light theme' : 'Use dark theme'}
-            onClick={() => setDark((value) => !value)}
+            onClick={toggleTheme}
           >
             {dark ? <Sun size={16} /> : <Moon size={16} />}
           </button>
@@ -1074,6 +1276,17 @@ export default function App() {
           )}
         </div>
       </header>
+
+      <div className={`network-banner ${network}`} role="status" aria-live="polite">
+        {environment.isTestnet ? (
+          <CircleAlert size={16} aria-hidden="true" />
+        ) : (
+          <ShieldCheck size={16} aria-hidden="true" />
+        )}
+        <span>
+          <strong>{environment.label} environment.</strong> {environment.message}
+        </span>
+      </div>
 
       <main>
         <section className="hero">
@@ -1194,7 +1407,14 @@ export default function App() {
                   Export CSV
                 </button>
                 {canManageRecords && (
-                  <button className="button primary compact" onClick={() => setShowForm(true)}>
+                  <button
+                    className="button primary compact"
+                    id="add-record"
+                    onClick={() => {
+                      setFormPristine(form);
+                      setShowForm(true);
+                    }}
+                  >
                     <Plus size={14} />
                     Add record
                   </button>
@@ -1363,7 +1583,11 @@ export default function App() {
                           </span>
                         </td>
                         <td>
-                          <button className="text-button" onClick={() => setSelected(record)}>
+                          <button
+                            className="text-button"
+                            data-record-id={record.id}
+                            onClick={() => setSelected(record)}
+                          >
                             View <ArrowUpRight size={13} />
                           </button>
                         </td>
@@ -1558,6 +1782,17 @@ export default function App() {
                 </tbody>
               </table>
             </div>
+            {activityHasMore && (
+              <div className="activity-pagination">
+                <button
+                  className="button secondary"
+                  disabled={activityPageLoading || activityLoading}
+                  onClick={() => void loadActivity(session.address, network, 'older')}
+                >
+                  {activityPageLoading ? 'Loading older activity…' : 'Load older activity'}
+                </button>
+              </div>
+            )}
             {!activityLoading && !filteredActivity.length && (
               <div className="empty-state">
                 <Activity size={22} />
@@ -1614,7 +1849,11 @@ export default function App() {
                           </span>
                         </td>
                         <td>
-                          <button className="text-button" onClick={() => setSelected(record)}>
+                          <button
+                            className="text-button"
+                            data-record-id={record.id}
+                            onClick={() => setSelected(record)}
+                          >
                             View <ArrowUpRight size={13} />
                           </button>
                         </td>
@@ -1922,16 +2161,23 @@ export default function App() {
       {showForm && (
         <div
           className="backdrop"
-          role="presentation"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="record-form-heading"
+          ref={formDialogRef}
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setShowForm(false);
+            if (event.target === event.currentTarget) {
+              // Stop the mousedown default action from moving the restored focus to <body>.
+              event.preventDefault();
+              closeForm();
+            }
           }}
         >
           <form className="form modal-large" onSubmit={saveRecord}>
             <div className="modal-head">
               <div>
                 <p className="eyebrow">PUBLISH AID RECORD</p>
-                <h2>New disbursement</h2>
+                <h2 id="record-form-heading">New disbursement</h2>
                 <p className="muted">
                   Beneficiary details, notes and transaction links are pseudonymous on the public
                   ledger by default.
@@ -1941,7 +2187,7 @@ export default function App() {
                 className="icon-button"
                 type="button"
                 aria-label="Close form"
-                onClick={() => setShowForm(false)}
+                onClick={closeForm}
               >
                 <X size={17} />
               </button>
@@ -2079,7 +2325,7 @@ export default function App() {
               asset can be verified on-chain.
             </p>
             <div className="form-actions">
-              <button className="button secondary" type="button" onClick={() => setShowForm(false)}>
+              <button className="button secondary" type="button" onClick={closeForm}>
                 Cancel
               </button>
               <button className="button primary" disabled={busy} type="submit">
@@ -2097,8 +2343,8 @@ export default function App() {
           role="presentation"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) {
-              setSelected(null);
-              setRecordConflictId(null);
+              event.preventDefault();
+              closeDetail();
             }
           }}
         >
@@ -2107,6 +2353,8 @@ export default function App() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="record-heading"
+            ref={detailDialogRef}
+            tabIndex={-1}
           >
             <div className="modal-head">
               <div>
@@ -2116,14 +2364,7 @@ export default function App() {
                   {getMessage('purpose', locale)}: {selected.purpose}
                 </p>
               </div>
-              <button
-                className="icon-button"
-                aria-label="Close details"
-                onClick={() => {
-                  setSelected(null);
-                  setRecordConflictId(null);
-                }}
-              >
+              <button className="icon-button" aria-label="Close details" onClick={closeDetail}>
                 <X size={17} />
               </button>
             </div>
