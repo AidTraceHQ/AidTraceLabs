@@ -173,7 +173,7 @@ Index: `rate_limits_expiry_idx(expires_at)`. The application stores digests of r
 | `metadata_json`  | `JSONB`       | `NOT NULL DEFAULT '{}'::jsonb`                  |
 | `created_at`     | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()`                        |
 
-Indexes: `audit_events_created_idx(created_at DESC, id DESC)`, `audit_events_actor_created_idx(actor_wallet, created_at DESC, id DESC)`, `audit_events_record_created_idx(record_id, created_at DESC, id DESC)`, `audit_events_action_created_idx(action, created_at DESC, id DESC)`, and the primary key. The migrations do not enforce database-level append-only permissions.
+Indexes: `audit_events_created_idx(created_at DESC, id DESC)`, `audit_events_actor_created_idx(actor_wallet, created_at DESC, id DESC)`, `audit_events_record_created_idx(record_id, created_at DESC, id DESC)`, `audit_events_action_created_idx(action, created_at DESC, id DESC)`, and the primary key. Migration 005 gives `aidtrace_runtime` `SELECT` and `INSERT` only; `aidtrace_migration` owns the table and retains maintenance access.
 
 ## API Routes
 
@@ -246,7 +246,7 @@ Verified and mismatch results may be cached for one hour. Pending and other stat
 
 - Use Node.js 20 or newer and PostgreSQL. The local example uses PostgreSQL on port 5432; CI uses PostgreSQL 16. The project also has Docker API and Compose configuration, but Compose execution is not verified on every machine.
 - The runtime pool sets `idle_in_transaction_session_timeout` (30 s, `IDLE_IN_TRANSACTION_TIMEOUT_MS` in `server/db.ts`) so a client that opens a transaction and stalls is ended by PostgreSQL and releases its row locks; `statement_timeout` (15 s) and `query_timeout` (20 s) still bound individual statements.
-- Set `DATABASE_URL` for the runtime pool. The migration command uses `DATABASE_URL_UNPOOLED` when supplied, otherwise `DATABASE_URL`; use a direct (non-pooled) endpoint for migration where available. Remote connection examples should use `sslmode=verify-full`.
+- Set `DATABASE_URL` for the `aidtrace_runtime` pool and `DATABASE_URL_UNPOOLED` for the `aidtrace_migration` identity. The runtime role must not own or inherit write access to `audit_events`. Use a direct (non-pooled) endpoint for migration where available. Remote connection examples should use `sslmode=verify-full`.
 - Configure distinct 32-byte-minimum `SESSION_SECRET` and `PSEUDONYM_SECRET`; exact `PUBLIC_APP_ORIGIN` and `CORS_ALLOWED_ORIGINS`; `PORT`; network-specific Horizon URLs; and optionally `DEFAULT_STELLAR_NETWORK`. Bootstrap the first admin by setting a public Stellar `ADMIN_WALLET` and running `npm run db:seed-admin`; there is no public bootstrap route.
 - Integration tests use `TEST_DATABASE_URL` and require `TEST_DATABASE_BRANCH=test`, `TEST_DATABASE_URL_UNPOOLED`, and `PRODUCTION_DATABASE_HOST`. The test setup rejects a test endpoint that matches the production hostname or runtime endpoint. Use Neon dev for local runtime and a separate Neon test branch for integration tests; never target production.
 - `npm run db:migrate` applies ordered `NNN_name.sql` migrations and records versions in `schema_migrations`. Migration 002 checks for case-insensitive duplicate hashes before creating the unique index and aborts without applying that migration if duplicates exist. Migration 003 adds the `wallet_roles` ordering index used by admin role listings.
