@@ -468,6 +468,58 @@ describe('On-chain verification distinguishes matching and mismatching payments'
   });
 });
 
+describe('Per-IP rate-limit error contract', () => {
+  function expectRateLimitContract(response: request.Response) {
+    expect(response.status).toBe(429);
+    expect(response.body).toEqual({
+      error: expect.any(String),
+      code: 'rate_limit_exceeded',
+    });
+    expect(response.body.error.trim().length).toBeGreaterThan(0);
+    expect(response.body.error).not.toBe('rate_limit_exceeded');
+    expect(Number(response.headers['retry-after'])).toBeGreaterThan(0);
+  }
+
+  it('returns the documented 429 error contract across public read, auth, and API limiters', async () => {
+    vi.resetModules();
+    vi.stubEnv('PUBLIC_READ_RATE_LIMIT_MAX', '1');
+    vi.stubEnv('AUTH_RATE_LIMIT_MAX', '1');
+    vi.stubEnv('API_RATE_LIMIT_MAX', '3');
+
+    const [{ app: rateLimitedApp }, { pool: rateLimitedPool }] = await Promise.all([
+      import('../server/app.js'),
+      import('../server/db.js'),
+    ]);
+
+    try {
+      await request(rateLimitedApp).get('/api/transparency');
+      const transparencyLimited = await request(rateLimitedApp).get('/api/transparency');
+      expectRateLimitContract(transparencyLimited);
+
+      const challengePayload = { address: 'invalid', network: 'testnet' };
+      const authFirst = await request(rateLimitedApp)
+        .post('/api/auth/challenge')
+        .set('Origin', origin)
+        .send(challengePayload);
+      expect(authFirst.status).toBe(400);
+      const authLimited = await request(rateLimitedApp)
+        .post('/api/auth/challenge')
+        .set('Origin', origin)
+        .send(challengePayload);
+      expectRateLimitContract(authLimited);
+
+      const apiAllowed = await request(rateLimitedApp).get('/api/nonexistent-rate-limit-check');
+      expect(apiAllowed.status).toBe(404);
+      const apiLimited = await request(rateLimitedApp).get('/api/nonexistent-rate-limit-check');
+      expectRateLimitContract(apiLimited);
+    } finally {
+      await rateLimitedPool.end();
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+});
+
 const integration = describe.skipIf(!process.env.TEST_DATABASE_URL);
 
 integration('Idle-in-transaction bound on the database', () => {
@@ -520,7 +572,11 @@ integration('Database-backed wallet, records, and authorization flows', () => {
   async function expectAuditEvent(
     action: string,
     actorWallet: string,
-    expected: { subjectWallet?: string; recordId?: string } = {},
+    expected: {
+      subjectWallet?: string;
+      recordId?: string;
+      metadata?: Record<string, unknown>;
+    } = {},
   ) {
     const subjectWallet = expected.subjectWallet ?? null;
     const recordId = expected.recordId ?? null;
@@ -529,8 +585,9 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       actor_wallet: string;
       subject_wallet: string | null;
       record_id: string | null;
+      metadata_json: Record<string, unknown>;
     }>(
-      `SELECT action, actor_wallet, subject_wallet, record_id
+      `SELECT action, actor_wallet, subject_wallet, record_id, metadata_json
        FROM audit_events
        WHERE action = $1 AND actor_wallet = $2
          AND subject_wallet IS NOT DISTINCT FROM $3
@@ -539,11 +596,12 @@ integration('Database-backed wallet, records, and authorization flows', () => {
        LIMIT 1`,
       [action, actorWallet, subjectWallet, recordId],
     );
-    expect(result.rows[0], `Missing ${action} audit event for ${actorWallet}`).toEqual({
+    expect(result.rows[0], `Missing ${action} audit event for ${actorWallet}`).toMatchObject({
       action,
       actor_wallet: actorWallet,
       subject_wallet: subjectWallet,
       record_id: recordId,
+      ...(expected.metadata ? { metadata_json: expected.metadata } : {}),
     });
   }
 
@@ -1134,6 +1192,10 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       [recordId],
     );
     expect(stored.rows[0]).toEqual({ memo, memo_type: 'text' });
+    await expectAuditEvent('record_verification_checked', session.address, {
+      recordId,
+      metadata: { status: 'verified', ledger: 11 },
+    });
 
     const findRecord = (body: { records: { id: string }[] }) =>
       body.records.find((record) => record.id === recordId) as
@@ -1451,6 +1513,19 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         (event: { recordId?: string }) => event.recordId === owned.body.record.id,
       ),
     ).toBe(true);
+    await expectAuditEvent('record_voided', ownerSession.address, {
+      recordId: owned.body.record.id,
+      metadata: { voidReason: 'Duplicate entry' },
+    });
+    const sessionToken = ownerSession.cookie.slice(ownerSession.cookie.indexOf('=') + 1);
+    const leakedSecrets = await pool.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM audit_events
+       WHERE actor_wallet = $1
+         AND (strpos(summary, $2) > 0 OR strpos(metadata_json::text, $2) > 0
+              OR strpos(summary, $3) > 0 OR strpos(metadata_json::text, $3) > 0)`,
+      [ownerSession.address, sessionToken, ownerSession.csrfToken],
+    );
+    expect(Number(leakedSecrets.rows[0].count)).toBe(0);
 
     const removable = Keypair.random();
     await assignRole(adminSession, removable, 'donor');
@@ -1827,6 +1902,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         expect(await roleOf(adminB.address)).toBeUndefined();
         await expectAuditEvent('wallet_role_removed', callerA.address, {
           subjectWallet: adminB.address,
+          metadata: { previousRole: 'admin', newRole: 'donor' },
         });
 
         const demoted = await setRole(callerA, adminC.address, 'organization');
@@ -1834,6 +1910,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         expect(await roleOf(adminC.address)).toBe('organization');
         await expectAuditEvent('wallet_role_changed', callerA.address, {
           subjectWallet: adminC.address,
+          metadata: { previousRole: 'admin', newRole: 'organization' },
         });
 
         expect(await adminCount([callerA.address, adminB.address, adminC.address])).toBe(1);

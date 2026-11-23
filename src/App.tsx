@@ -328,6 +328,22 @@ export default function App() {
     note: '',
     recipientConsent: false,
   });
+  const [formPristine, setFormPristine] = useState(form);
+  const formIsDirty = useMemo(
+    () =>
+      form.recipient !== formPristine.recipient ||
+      form.recipientAddress !== formPristine.recipientAddress ||
+      form.purpose !== formPristine.purpose ||
+      form.amount !== formPristine.amount ||
+      form.asset !== formPristine.asset ||
+      form.assetIssuer !== formPristine.assetIssuer ||
+      form.network !== formPristine.network ||
+      form.txHash !== formPristine.txHash ||
+      form.date !== formPristine.date ||
+      form.note !== formPristine.note ||
+      form.recipientConsent !== formPristine.recipientConsent,
+    [form, formPristine],
+  );
   const [roleAddress, setRoleAddress] = useState('');
   const [roleValue, setRoleValue] = useState<Role>('organization');
   const [auditAction, setAuditAction] = useState('all');
@@ -344,7 +360,10 @@ export default function App() {
   const rolesRequestInFlight = useRef(false);
   const formDialogRef = useRef<HTMLDivElement>(null);
   const detailDialogRef = useRef<HTMLElement>(null);
-  const closeForm = useCallback(() => setShowForm(false), []);
+  const closeForm = useCallback(() => {
+    if (formIsDirty && !window.confirm('You have unsaved changes. Discard them?')) return;
+    setShowForm(false);
+  }, [formIsDirty]);
   const closeDetail = useCallback(() => {
     setSelected(null);
     setRecordConflictId(null);
@@ -450,8 +469,19 @@ export default function App() {
 
   function chooseNetwork(value: string) {
     if (value !== 'testnet' && value !== 'mainnet') return;
+    if (session && value !== session.network) {
+      notify(
+        'Network change blocked. This session is connected to ' +
+          session.network +
+          '. Sign out before switching to ' +
+          value +
+          '.',
+      );
+      return;
+    }
     setNetwork(value);
     writeNetworkPreference(value);
+    if (!session) void loadTransparency();
   }
   function toggleTheme() {
     const nextTheme: Theme = theme === 'dark' ? 'light' : 'dark';
@@ -506,6 +536,7 @@ export default function App() {
       const r = await api.get<{ session: Session | null }>('/api/me');
       const restored = r.data.session;
       setSession(restored);
+      if (restored) setNetwork(restored.network);
     } catch (e) {
       setSession(null);
       setError(messageOf(e));
@@ -1411,7 +1442,10 @@ export default function App() {
                   <button
                     className="button primary compact"
                     id="add-record"
-                    onClick={() => setShowForm(true)}
+                    onClick={() => {
+                      setFormPristine(form);
+                      setShowForm(true);
+                    }}
                   >
                     <Plus size={14} />
                     Add record
