@@ -13,6 +13,7 @@ import {
   writeNetworkPreference,
 } from './network-preference';
 import { readThemePreference, writeThemePreference, type Theme } from './theme-preference';
+import { localDateString } from './date';
 import {
   Activity,
   ArrowDownToLine,
@@ -303,7 +304,7 @@ export default function App() {
     assetIssuer: '',
     network,
     txHash: '',
-    date: new Date().toISOString().slice(0, 10),
+    date: localDateString(),
     note: '',
     recipientConsent: false,
   });
