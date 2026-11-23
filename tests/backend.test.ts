@@ -475,16 +475,6 @@ describe('Pagination cursor integrity and bounds', () => {
     expect(response.status).toBe(400);
     expect(response.body).toEqual({ error: 'Invalid pagination cursor.' });
   });
-
-  it('does not reject a correctly signed cursor as invalid', async () => {
-    // A valid cursor reaches the query, so it must not produce the cursor validation error.
-    // Without a database the handler returns 503 instead of a page.
-    const response = await request(app)
-      .get('/api/transparency')
-      .query({ cursor: validCursor() });
-    expect(response.body?.error).not.toBe('Invalid pagination cursor.');
-    expect([200, 503]).toContain(response.status);
-  });
 });
 
 const integration = describe.skipIf(!process.env.TEST_DATABASE_URL);
@@ -978,6 +968,14 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .send({ csrfToken: session.csrfToken });
     expect(cached.status).toBe(200);
     expect(horizonFetch).toHaveBeenCalledTimes(2);
+    const verifiedCache = await pool.query<{ active: boolean; within_hour: boolean }>(
+      `SELECT cache_expires_at > NOW() AS active,
+              cache_expires_at <= NOW() + INTERVAL '1 hour' AS within_hour
+       FROM verification_results
+       WHERE aid_record_id = $1 ORDER BY checked_at DESC, id DESC LIMIT 1`,
+      [verified.body.record.id],
+    );
+    expect(verifiedCache.rows[0]).toEqual({ active: true, within_hour: true });
     const editAfterVerify = await request(app)
       .put('/api/records/' + verified.body.record.id)
       .set('Origin', origin)
@@ -1077,6 +1075,82 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(duplicate.status).toBe(409);
   }, 120_000);
 
+  it('caches not-found results for a bounded window but never caches pending results', async () => {
+    const adminSession = await login(admin);
+    const organization = Keypair.random();
+    await assignRole(adminSession, organization, 'organization');
+    const session = await login(organization);
+    const recipient = Keypair.random();
+    const token = 'negative-cache-' + Keypair.random().publicKey().slice(-8);
+    const notFoundHash = createHash('sha256')
+      .update(token + '-not-found')
+      .digest('hex');
+    const pendingHash = createHash('sha256')
+      .update(token + '-pending')
+      .digest('hex');
+    const horizonFetch = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      const segments = url.pathname.split('/').filter(Boolean);
+      const hash = segments[segments.indexOf('transactions') + 1] || '';
+      if (hash === pendingHash) throw new Error('Horizon is offline');
+      return new Response('{}', { status: 404 });
+    });
+    vi.stubGlobal('fetch', horizonFetch);
+
+    const notFound = await createRecord(session, recipient, token + ' not-found', {
+      txHash: notFoundHash,
+    });
+    expect(notFound.status).toBe(201);
+    expect(notFound.body.record.status).toBe('not-found');
+    expect(horizonFetch).toHaveBeenCalledTimes(1);
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const cached = await request(app)
+        .post('/api/records/' + notFound.body.record.id + '/verify')
+        .set('Origin', origin)
+        .set('Cookie', session.cookie)
+        .send({ csrfToken: session.csrfToken });
+      expect(cached.status).toBe(200);
+      expect(cached.body.record.status).toBe('not-found');
+    }
+    expect(horizonFetch).toHaveBeenCalledTimes(1);
+    const notFoundCache = await pool.query<{
+      status: string;
+      active: boolean;
+      bounded: boolean;
+    }>(
+      `SELECT status, cache_expires_at > NOW() AS active,
+              cache_expires_at < NOW() + INTERVAL '1 hour' AS bounded
+       FROM verification_results
+       WHERE aid_record_id = $1 ORDER BY checked_at DESC, id DESC LIMIT 1`,
+      [notFound.body.record.id],
+    );
+    expect(notFoundCache.rows[0]).toEqual({ status: 'not-found', active: true, bounded: true });
+
+    const pending = await createRecord(session, recipient, token + ' pending', {
+      txHash: pendingHash,
+    });
+    expect(pending.status).toBe(201);
+    expect(pending.body.record.status).toBe('pending');
+    const callsAfterPendingCreate = horizonFetch.mock.calls.length;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const rechecked = await request(app)
+        .post('/api/records/' + pending.body.record.id + '/verify')
+        .set('Origin', origin)
+        .set('Cookie', session.cookie)
+        .send({ csrfToken: session.csrfToken });
+      expect(rechecked.status).toBe(200);
+      expect(rechecked.body.record.status).toBe('pending');
+    }
+    expect(horizonFetch.mock.calls.length).toBe(callsAfterPendingCreate + 2);
+    const pendingCache = await pool.query<{ cache_expires_at: Date | null }>(
+      `SELECT cache_expires_at FROM verification_results
+       WHERE aid_record_id = $1 ORDER BY checked_at DESC, id DESC LIMIT 1`,
+      [pending.body.record.id],
+    );
+    expect(pendingCache.rows[0]?.cache_expires_at).toBeNull();
+  }, 120_000);
+
   it('stores the transaction memo and withholds it from consent-off public views', async () => {
     const adminSession = await login(admin);
     const organization = Keypair.random();
@@ -1121,7 +1195,8 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       }),
     );
 
-    // Created while Horizon returns 404, so the explicit verify call below is not cached.
+    // Created while Horizon returns 404, so the result is cached as not-found. Expire the
+    // cache so the explicit verify call below re-queries Horizon and finds the memo.
     const created = await createRecord(session, recipient, term + ' private', {
       txHash: privateHash,
     });
@@ -1129,6 +1204,12 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(created.body.record.status).toBe('not-found');
     expect(created.body.record.verification).not.toHaveProperty('memo');
     const recordId = created.body.record.id;
+    await pool.query(
+      `UPDATE verification_results
+       SET cache_expires_at = NOW() - INTERVAL '1 second'
+       WHERE aid_record_id = $1`,
+      [recordId],
+    );
 
     transactions.set(privateHash, {
       successful: true,

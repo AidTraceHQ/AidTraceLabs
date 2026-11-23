@@ -716,7 +716,10 @@ async function storeVerification(
         transaction_created_at, source_account, destination, amount_stroops,
         asset_code, asset_issuer, memo, memo_type, checked_at, cache_expires_at)
      VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(),
-             CASE WHEN $3 IN ('verified', 'mismatch') THEN NOW() + INTERVAL '1 hour' END)`,
+             CASE
+               WHEN $3 IN ('verified', 'mismatch') THEN NOW() + INTERVAL '1 hour'
+               WHEN $3 = 'not-found' THEN NOW() + INTERVAL '15 minutes'
+             END)`,
     [
       randomBytes(16).toString('hex'),
       recordId,
@@ -750,7 +753,7 @@ async function cachedVerification(id: string): Promise<boolean> {
        SELECT id FROM verification_results
        WHERE aid_record_id = $1
        ORDER BY checked_at DESC, id DESC LIMIT 1
-     ) AND status IN ('verified', 'mismatch') AND cache_expires_at > NOW()`,
+     ) AND status IN ('verified', 'mismatch', 'not-found') AND cache_expires_at > NOW()`,
     [id],
   );
   return result.rowCount === 1;
