@@ -181,11 +181,16 @@ async function rateLimit(key: string, max: number, windowMs: number): Promise<bo
   return result.rowCount === 1;
 }
 
-async function audit(action: string, actor: string, summary: string) {
+async function audit(
+  action: string,
+  actor: string,
+  summary: string,
+  metadata: Record<string, unknown> = {},
+) {
   await pool.query(
-    `INSERT INTO audit_events (id, action, actor_wallet, summary)
-     VALUES ($1, $2, $3, $4)`,
-    [randomBytes(16).toString('hex'), action, actor, summary],
+    `INSERT INTO audit_events (id, action, actor_wallet, summary, metadata_json)
+     VALUES ($1, $2, $3, $4, $5::jsonb)`,
+    [randomBytes(16).toString('hex'), action, actor, summary, JSON.stringify(metadata)],
   );
 }
 
@@ -323,9 +328,14 @@ router.post('/api/auth/verify', noStore, async (request, response) => {
       [tokenHash, address, network, csrfTokenHash, expiresAt],
     );
     await client.query(
-      `INSERT INTO audit_events (id, action, actor_wallet, summary)
-       VALUES ($1, 'wallet_authenticated', $2, $3)`,
-      [randomBytes(16).toString('hex'), address, 'Wallet ownership verified on ' + network],
+      `INSERT INTO audit_events (id, action, actor_wallet, summary, metadata_json)
+       VALUES ($1, 'wallet_authenticated', $2, $3, $4::jsonb)`,
+      [
+        randomBytes(16).toString('hex'),
+        address,
+        'Wallet ownership verified on ' + network,
+        JSON.stringify({ network, role }),
+      ],
     );
     return 'consumed' as const;
   });
@@ -385,9 +395,13 @@ router.post('/api/auth/logout', noStore, async (request, response) => {
         [current.session.sessionHash],
       );
       await client.query(
-        `INSERT INTO audit_events (id, action, actor_wallet, summary)
-         VALUES ($1, 'wallet_logged_out', $2, 'Wallet session revoked.')`,
-        [randomBytes(16).toString('hex'), current.session.address],
+        `INSERT INTO audit_events (id, action, actor_wallet, summary, metadata_json)
+         VALUES ($1, 'wallet_logged_out', $2, 'Wallet session revoked.', $3::jsonb)`,
+        [
+          randomBytes(16).toString('hex'),
+          current.session.address,
+          JSON.stringify({ network: current.session.network }),
+        ],
       );
     });
   }
@@ -413,9 +427,13 @@ router.post('/api/auth/logout-everywhere', noStore, async (request, response) =>
       [current.session.address],
     );
     await client.query(
-      `INSERT INTO audit_events (id, action, actor_wallet, summary)
-       VALUES ($1, 'wallet_logout_everywhere', $2, 'Revoked all active sessions for this wallet.')`,
-      [randomBytes(16).toString('hex'), current.session.address],
+      `INSERT INTO audit_events (id, action, actor_wallet, summary, metadata_json)
+       VALUES ($1, 'wallet_logout_everywhere', $2, 'Revoked all active sessions for this wallet.', $3::jsonb)`,
+      [
+        randomBytes(16).toString('hex'),
+        current.session.address,
+        JSON.stringify({ network: current.session.network, scope: 'all-sessions' }),
+      ],
     );
   });
   clearSessionCookie(response);
