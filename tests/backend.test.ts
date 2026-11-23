@@ -468,6 +468,58 @@ describe('On-chain verification distinguishes matching and mismatching payments'
   });
 });
 
+describe('Per-IP rate-limit error contract', () => {
+  function expectRateLimitContract(response: request.Response) {
+    expect(response.status).toBe(429);
+    expect(response.body).toEqual({
+      error: expect.any(String),
+      code: 'rate_limit_exceeded',
+    });
+    expect(response.body.error.trim().length).toBeGreaterThan(0);
+    expect(response.body.error).not.toBe('rate_limit_exceeded');
+    expect(Number(response.headers['retry-after'])).toBeGreaterThan(0);
+  }
+
+  it('returns the documented 429 error contract across public read, auth, and API limiters', async () => {
+    vi.resetModules();
+    vi.stubEnv('PUBLIC_READ_RATE_LIMIT_MAX', '1');
+    vi.stubEnv('AUTH_RATE_LIMIT_MAX', '1');
+    vi.stubEnv('API_RATE_LIMIT_MAX', '3');
+
+    const [{ app: rateLimitedApp }, { pool: rateLimitedPool }] = await Promise.all([
+      import('../server/app.js'),
+      import('../server/db.js'),
+    ]);
+
+    try {
+      await request(rateLimitedApp).get('/api/transparency');
+      const transparencyLimited = await request(rateLimitedApp).get('/api/transparency');
+      expectRateLimitContract(transparencyLimited);
+
+      const challengePayload = { address: 'invalid', network: 'testnet' };
+      const authFirst = await request(rateLimitedApp)
+        .post('/api/auth/challenge')
+        .set('Origin', origin)
+        .send(challengePayload);
+      expect(authFirst.status).toBe(400);
+      const authLimited = await request(rateLimitedApp)
+        .post('/api/auth/challenge')
+        .set('Origin', origin)
+        .send(challengePayload);
+      expectRateLimitContract(authLimited);
+
+      const apiAllowed = await request(rateLimitedApp).get('/api/nonexistent-rate-limit-check');
+      expect(apiAllowed.status).toBe(404);
+      const apiLimited = await request(rateLimitedApp).get('/api/nonexistent-rate-limit-check');
+      expectRateLimitContract(apiLimited);
+    } finally {
+      await rateLimitedPool.end();
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+});
+
 const integration = describe.skipIf(!process.env.TEST_DATABASE_URL);
 
 integration('Idle-in-transaction bound on the database', () => {
