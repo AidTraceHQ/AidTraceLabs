@@ -11,6 +11,7 @@ All notable changes to AidTrace are documented here. This changelog follows [Kee
 - Public transparency and beneficiary record views with consent-aware data projection.
 - Automated API, verification, utility, and frontend tests.
 - Repository contribution, security, and community guidance.
+- Opt-in signed webhook alerts for record and verification-status changes, with recipient verification, SSRF protection, bounded retries and cancellation.
 
 ### Known limitations
 
