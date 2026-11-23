@@ -1,11 +1,11 @@
-export type StellarNetwork = 'testnet' | 'mainnet';
+import {
+  DEFAULT_HORIZON_ENDPOINTS,
+  activityRequestUrls,
+  type HorizonEndpoints,
+  type StellarNetwork,
+} from './horizon.js';
 
-export type HorizonEndpoints = Record<StellarNetwork, string>;
-
-export const DEFAULT_HORIZON_ENDPOINTS: HorizonEndpoints = {
-  testnet: 'https://horizon-testnet.stellar.org',
-  mainnet: 'https://horizon.stellar.org',
-};
+export { DEFAULT_HORIZON_ENDPOINTS, type HorizonEndpoints, type StellarNetwork };
 
 export const ACTIVITY_REQUEST_TIMEOUT_MS = 15_000;
 export const MAX_CONCURRENT_ACTIVITY_REQUESTS = 1;
@@ -78,24 +78,15 @@ export async function fetchActivity<TPublishedRecord extends ActivityPublishedRe
   endpoints = DEFAULT_HORIZON_ENDPOINTS,
   fetchImpl = fetch,
 }: ActivityLoadOptions<TPublishedRecord>): Promise<ActivitySnapshot<TPublishedRecord>> {
-  const base = endpoints[network];
+  const urls = activityRequestUrls(endpoints[network], address);
   const requestOptions: RequestInit = {
     headers: { Accept: 'application/json' },
     signal,
   };
   const [accountRes, paymentsRes, txRes] = await Promise.all([
-    fetchImpl(base + '/accounts/' + encodeURIComponent(address), requestOptions),
-    fetchImpl(
-      base + '/accounts/' + encodeURIComponent(address) + '/payments?order=desc&limit=50',
-      requestOptions,
-    ),
-    fetchImpl(
-      base +
-        '/accounts/' +
-        encodeURIComponent(address) +
-        '/transactions?order=desc&limit=50&include_failed=true',
-      requestOptions,
-    ),
+    fetchImpl(urls.account, requestOptions),
+    fetchImpl(urls.payments, requestOptions),
+    fetchImpl(urls.transactions, requestOptions),
   ]);
   if (accountRes.status === 404) {
     throw new Error(

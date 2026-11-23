@@ -28,6 +28,8 @@ Run the Express API on a Node.js 20+ host/container/VM connected to PostgreSQL, 
 | `HORIZON_TESTNET_URL`              | Read-only testnet Horizon endpoint.                                                                |
 | `HORIZON_MAINNET_URL`              | Read-only mainnet Horizon endpoint.                                                                |
 | `VITE_API_BASE_URL`                | Optional frontend API base; leave empty for same-origin `/api`.                                    |
+| `VITE_HORIZON_TESTNET_URL`         | Optional browser-side testnet Horizon base URL; must be HTTPS. Defaults to public testnet.         |
+| `VITE_HORIZON_MAINNET_URL`         | Optional browser-side mainnet Horizon base URL; must be HTTPS. Defaults to public mainnet.         |
 | `PUBLIC_READ_RATE_LIMIT_WINDOW_MS` | Public transparency and health-check per-IP window; defaults to `900000` (15 minutes).             |
 | `PUBLIC_READ_RATE_LIMIT_MAX`       | Public transparency and health-check requests per IP per window; defaults to `600`.                |
 | `API_RATE_LIMIT_WINDOW_MS`         | API-wide per-IP rate-limit window; defaults to `900000` (15 minutes).                              |
@@ -35,6 +37,8 @@ Run the Express API on a Node.js 20+ host/container/VM connected to PostgreSQL, 
 | `AUTH_RATE_LIMIT_WINDOW_MS`        | `/api/auth/*` per-IP rate-limit window; defaults to `900000` (15 minutes).                         |
 | `AUTH_RATE_LIMIT_MAX`              | `/api/auth/*` requests per IP per window; defaults to `20`.                                        |
 | `TRUST_PROXY_HOPS`                 | Number of trusted reverse-proxy hops; defaults to `0` (trust no forwarded client IP).              |
+
+Browser activity reads `VITE_HORIZON_TESTNET_URL` and `VITE_HORIZON_MAINNET_URL` at build time. Both must be absolute HTTPS base URLs without credentials, a query, or a fragment; an invalid value stops the browser bundle at startup instead of silently falling back to a public host. Leave them empty to use the public Stellar testnet/mainnet hosts. These values are public: Vite inlines every `VITE_*` variable into the client bundle, so never place `SESSION_SECRET`, `PSEUDONYM_SECRET`, database URLs, tokens, or other server-only secrets in one.
 
 Do not commit `.env` or paste connection strings into logs/issues. `.env.example` contains local placeholders. On Neon, point development to a dev branch and tests to a separate test branch; configure the production-host guard with the production hostname without exposing connection strings.
 

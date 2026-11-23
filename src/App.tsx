@@ -16,7 +16,6 @@ import { readThemePreference, writeThemePreference, type Theme } from './theme-p
 import { localDateString } from './date';
 import { VerificationDetail } from './verification-detail';
 import {
-  DEFAULT_HORIZON_ENDPOINTS as horizon,
   createActivityCoordinator,
   fetchActivity,
   shortAddress,
@@ -24,6 +23,7 @@ import {
   type ActivityItem,
   type ActivitySnapshot,
 } from './activity';
+import { activityRequestUrls, resolveHorizonEndpoints } from './horizon';
 import {
   Activity,
   ArrowDownToLine,
@@ -104,6 +104,7 @@ type AuditItem = {
   recordId?: string;
   createdAt: string;
 };
+const horizon = resolveHorizonEndpoints();
 const explorer = (network: Network, hash: string) =>
   (network === 'mainnet'
     ? 'https://stellar.expert/explorer/public/tx/'
@@ -322,6 +323,7 @@ export default function App() {
           address,
           network: selectedNetwork,
           publishedRecords: publishedRecords.current,
+          endpoints: horizon,
           signal,
         }),
     });
@@ -589,12 +591,7 @@ export default function App() {
     };
     void loadActivity(session.address, network);
     try {
-      source = new EventSource(
-        horizon[network] +
-          '/accounts/' +
-          encodeURIComponent(session.address) +
-          '/payments?cursor=now',
-      );
+      source = new EventSource(activityRequestUrls(horizon[network], session.address).stream);
       source.onopen = () => {
         setActivityStream('live');
         if (pollTimer) {
