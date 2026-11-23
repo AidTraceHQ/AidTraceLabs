@@ -1947,3 +1947,35 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     );
   });
 });
+
+describe('transparency date range filter', () => {
+  it('returns 400 for a reversed range and runs no record list query', async () => {
+    const spy = vi.spyOn(pool, 'query');
+    try {
+      const res = await request(app)
+        .get('/api/transparency')
+        .query({ from: '2026-02-01', to: '2026-01-01' });
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(res.body)).toMatch(/from must be on or before to/i);
+      const listQueries = spy.mock.calls.filter(
+        ([sql]) => typeof sql === 'string' && /FROM\s+records/i.test(sql),
+      );
+      expect(listQueries).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it.each([
+    ['equal', '2026-01-01', '2026-01-01'],
+    ['ascending', '2026-01-01', '2026-02-01'],
+  ])('accepts %s ranges', async (_label, from, to) => {
+    const spy = vi.spyOn(pool, 'query').mockResolvedValue({ rows: [], rowCount: 0 } as never);
+    try {
+      const res = await request(app).get('/api/transparency').query({ from, to });
+      expect(res.status).toBe(200);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
