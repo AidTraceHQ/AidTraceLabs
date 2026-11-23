@@ -16,6 +16,15 @@ import { readThemePreference, writeThemePreference, type Theme } from './theme-p
 import { localDateString } from './date';
 import { VerificationDetail } from './verification-detail';
 import {
+  DEFAULT_HORIZON_ENDPOINTS as horizon,
+  createActivityCoordinator,
+  fetchActivity,
+  shortAddress,
+  type ActivityCoordinator,
+  type ActivityItem,
+  type ActivitySnapshot,
+} from './activity';
+import {
   Activity,
   ArrowDownToLine,
   ArrowUpRight,
@@ -87,18 +96,6 @@ type AidRecord = {
   voidedAt?: string;
   version: number;
 };
-type ActivityItem = {
-  id: string;
-  hash: string;
-  date: string;
-  type: string;
-  amount: string;
-  asset: string;
-  counterparty: string;
-  status: string;
-  network: Network;
-  publishedRecord?: AidRecord;
-};
 type AuditItem = {
   id: string;
   action: string;
@@ -107,18 +104,11 @@ type AuditItem = {
   recordId?: string;
   createdAt: string;
 };
-const horizon: Record<Network, string> = {
-  testnet: 'https://horizon-testnet.stellar.org',
-  mainnet: 'https://horizon.stellar.org',
-};
 const explorer = (network: Network, hash: string) =>
   (network === 'mainnet'
     ? 'https://stellar.expert/explorer/public/tx/'
     : 'https://stellar.expert/explorer/testnet/tx/') + encodeURIComponent(hash);
-const short = (value: string, left = 7, right = 5) =>
-  value && value.length > left + right + 1
-    ? value.slice(0, left) + '…' + value.slice(-right)
-    : value || '—';
+const short = shortAddress;
 const formatAmount = (value: string) => {
   const [whole, fraction = ''] = value.split('.');
   return BigInt(whole || '0').toLocaleString() + (fraction ? '.' + fraction : '');
@@ -258,7 +248,7 @@ export default function App() {
   const [ledgerHasMore, setLedgerHasMore] = useState(false);
   const [ledgerPageLoading, setLedgerPageLoading] = useState(false);
   const [beneficiaryRecords, setBeneficiaryRecords] = useState<AidRecord[]>([]);
-  const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [activity, setActivity] = useState<ActivityItem<AidRecord>[]>([]);
   const [audit, setAudit] = useState<AuditItem[]>([]);
   const [auditActionOptions, setAuditActionOptions] = useState<string[]>([]);
   const [auditCursor, setAuditCursor] = useState<string | null>(null);
@@ -323,6 +313,19 @@ export default function App() {
   const rolesCursorRef = useRef<string | null>(null);
   const auditRequestInFlight = useRef(false);
   const rolesRequestInFlight = useRef(false);
+  const publishedRecords = useRef<AidRecord[]>([]);
+  const activityCoordinator = useRef<ActivityCoordinator<ActivitySnapshot<AidRecord>> | null>(null);
+  if (!activityCoordinator.current) {
+    activityCoordinator.current = createActivityCoordinator<ActivitySnapshot<AidRecord>>({
+      load: ({ address, network: selectedNetwork }, signal) =>
+        fetchActivity({
+          address,
+          network: selectedNetwork,
+          publishedRecords: publishedRecords.current,
+          signal,
+        }),
+    });
+  }
   const formDialogRef = useRef<HTMLDivElement>(null);
   const detailDialogRef = useRef<HTMLElement>(null);
   const closeForm = useCallback(() => setShowForm(false), []);
@@ -545,97 +548,33 @@ export default function App() {
     if (page === 'beneficiary' && session) void loadBeneficiaryRecords();
   }, [page, session, loadBeneficiaryRecords]);
 
-  const loadActivity = useCallback(
-    async (address: string, selectedNetwork: Network) => {
-      setActivityLoading(true);
-      try {
-        const base = horizon[selectedNetwork];
-        const [accountRes, paymentsRes, txRes] = await Promise.all([
-          fetch(base + '/accounts/' + encodeURIComponent(address), {
-            headers: { Accept: 'application/json' },
-          }),
-          fetch(
-            base + '/accounts/' + encodeURIComponent(address) + '/payments?order=desc&limit=50',
-            { headers: { Accept: 'application/json' } },
-          ),
-          fetch(
-            base +
-              '/accounts/' +
-              encodeURIComponent(address) +
-              '/transactions?order=desc&limit=50&include_failed=true',
-            { headers: { Accept: 'application/json' } },
-          ),
-        ]);
-        if (accountRes.status === 404)
-          throw new Error(
-            'Wallet account not found on ' +
-              selectedNetwork +
-              '. Switch network or fund the Testnet account.',
-          );
-        if (!accountRes.ok || !paymentsRes.ok || !txRes.ok)
-          throw new Error('Horizon is unavailable. Your records are safe; activity will retry.');
-        const account = (await accountRes.json()) as {
-          balances?: { asset_type: string; balance: string }[];
-        };
-        const payments = (await paymentsRes.json()) as {
-          _embedded?: { records?: Record<string, unknown>[] };
-        };
-        const txs = (await txRes.json()) as { _embedded?: { records?: Record<string, unknown>[] } };
-        setBalance(account.balances?.find((b) => b.asset_type === 'native')?.balance || '0');
-        const published = records.filter((r) => r.network === selectedNetwork && r.txHash);
-        const payItems: ActivityItem[] = (payments._embedded?.records || []).map((p, i) => {
-          const hash = String(p.transaction_hash || '');
-          const source = String(p.from || p.source_account || '');
-          const dest = String(p.to || '');
-          const sent = source === address;
-          const code = p.asset_type === 'native' ? 'XLM' : String(p.asset_code || 'Unknown');
-          return {
-            id: String(p.id || hash + i),
-            hash,
-            date: String(p.created_at || ''),
-            type: sent ? 'sent' : 'received',
-            amount: String(p.amount || '—'),
-            asset: code,
-            counterparty: short(sent ? dest : source),
-            status: 'Successful',
-            network: selectedNetwork,
-            publishedRecord: published.find((r) => r.txHash === hash),
-          };
-        });
-        const hashes = new Set(payItems.map((p) => p.hash));
-        const txItems: ActivityItem[] = (txs._embedded?.records || [])
-          .filter((t) => !hashes.has(String(t.hash || '')))
-          .map((t, i) => ({
-            id: String(t.id || t.hash || i),
-            hash: String(t.hash || ''),
-            date: String(t.created_at || ''),
-            type: 'transaction',
-            amount: '—',
-            asset: '—',
-            counterparty: short(String(t.source_account || '')),
-            status: t.successful ? 'Successful' : 'Failed',
-            network: selectedNetwork,
-          }));
-        setActivity(
-          [...payItems, ...txItems]
-            .sort((a, b) => Date.parse(b.date) - Date.parse(a.date))
-            .slice(0, 100),
-        );
-        setError('');
-      } catch (e) {
-        setError(messageOf(e));
-      } finally {
-        setActivityLoading(false);
-      }
-    },
-    [records],
-  );
+  const loadActivity = useCallback((address: string, selectedNetwork: Network) => {
+    setActivityLoading(true);
+    activityCoordinator.current?.request(
+      { address, network: selectedNetwork },
+      {
+        onResult: (snapshot) => {
+          setBalance(snapshot.balance);
+          setActivity(snapshot.items);
+          setError('');
+        },
+        onError: (requestError) => setError(requestError.message),
+        onSettled: () => setActivityLoading(false),
+      },
+    );
+  }, []);
+
+  useEffect(() => {
+    publishedRecords.current = records;
+  }, [records]);
 
   useEffect(() => {
     if (!session) {
+      activityCoordinator.current?.invalidate();
       setActivity([]);
       setBalance('0');
       setActivityStream('offline');
+      setActivityLoading(false);
       return;
     }
     let source: EventSource | null = null;
@@ -683,8 +622,9 @@ export default function App() {
       closed = true;
       source?.close();
       if (pollTimer) window.clearInterval(pollTimer);
+      activityCoordinator.current?.invalidate();
     };
-  }, [session, network, loadActivity]);
+  }, [session, network, records, loadActivity]);
 
   async function connectWallet() {
     setBusy(true);
