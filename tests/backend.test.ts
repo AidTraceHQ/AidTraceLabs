@@ -3,7 +3,11 @@ import { Keypair } from '@stellar/stellar-sdk';
 import { Pool } from 'pg';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { applyUniqueNetworkTxHashMigration, migrate } from '../scripts/migrate.js';
+import {
+  applyUniqueNetworkTxHashMigration,
+  migrate,
+  MIGRATION_ADVISORY_LOCK_KEY,
+} from '../scripts/migrate.js';
 import { app } from '../server/app.js';
 import { getSession, verifySep53Signature } from '../server/auth.js';
 import { IDLE_IN_TRANSACTION_TIMEOUT_MS, pool } from '../server/db.js';
@@ -826,6 +830,14 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       await maintenancePool.end();
       await pool.end();
     }
+  });
+
+  it('leaves no migration advisory lock held after migrating', async () => {
+    const locks = await pool.query(
+      `SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND objid = $1::oid`,
+      [MIGRATION_ADVISORY_LOCK_KEY],
+    );
+    expect(locks.rowCount).toBe(0);
   });
 
   it('reports duplicate hashes and aborts migration 002 before creating the unique constraint', async () => {

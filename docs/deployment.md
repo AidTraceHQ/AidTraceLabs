@@ -10,6 +10,33 @@ Run the Express API on a Node.js 20+ host/container/VM connected to PostgreSQL, 
 
 ## Environment variables
 
+| Variable                           | Purpose                                                                                            |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                         | Runtime environment. Production requires explicit secrets.                                         |
+| `PORT`                             | Express listen port; defaults to `3001`.                                                           |
+| `DATABASE_URL`                     | PostgreSQL runtime connection. For remote PostgreSQL, include `sslmode=verify-full`.               |
+| `TEST_DATABASE_URL`                | Dedicated disposable/test database used by integration tests. Never use production.                |
+| `TEST_DATABASE_URL_UNPOOLED`       | Direct test endpoint used by the test safety check.                                                |
+| `TEST_DATABASE_BRANCH`             | Must be `test` when a test database URL is configured.                                             |
+| `PRODUCTION_DATABASE_HOST`         | Production hostname used to reject accidental production test targets.                             |
+| `SESSION_SECRET`                   | At least 32 random bytes; session/CSRF-related signing key.                                        |
+| `PSEUDONYM_SECRET`                 | Different key of at least 32 random bytes for beneficiary HMAC pseudonyms. Required in production. |
+| `PUBLIC_APP_ORIGIN`                | Exact public frontend origin bound into the wallet challenge.                                      |
+| `CORS_ALLOWED_ORIGINS`             | Comma-separated exact allowed origins.                                                             |
+| `ADMIN_WALLET`                     | Public Stellar address for the one-time admin seed command.                                        |
+| `DEFAULT_STELLAR_NETWORK`          | Default network; configured testnet is the development default.                                    |
+| `HORIZON_TESTNET_URL`              | Read-only testnet Horizon endpoint.                                                                |
+| `HORIZON_MAINNET_URL`              | Read-only mainnet Horizon endpoint.                                                                |
+| `VITE_API_BASE_URL`                | Optional frontend API base; leave empty for same-origin `/api`.                                    |
+| `VITE_HORIZON_TESTNET_URL`         | Optional browser-side testnet Horizon base URL; must be HTTPS. Defaults to public testnet.         |
+| `VITE_HORIZON_MAINNET_URL`         | Optional browser-side mainnet Horizon base URL; must be HTTPS. Defaults to public mainnet.         |
+| `PUBLIC_READ_RATE_LIMIT_WINDOW_MS` | Public transparency and health-check per-IP window; defaults to `900000` (15 minutes).             |
+| `PUBLIC_READ_RATE_LIMIT_MAX`       | Public transparency and health-check requests per IP per window; defaults to `600`.                |
+| `API_RATE_LIMIT_WINDOW_MS`         | API-wide per-IP rate-limit window; defaults to `900000` (15 minutes).                              |
+| `API_RATE_LIMIT_MAX`               | API-wide requests per IP per window; defaults to `120`.                                            |
+| `AUTH_RATE_LIMIT_WINDOW_MS`        | `/api/auth/*` per-IP rate-limit window; defaults to `900000` (15 minutes).                         |
+| `AUTH_RATE_LIMIT_MAX`              | `/api/auth/*` requests per IP per window; defaults to `20`.                                        |
+| `TRUST_PROXY_HOPS`                 | Number of trusted reverse-proxy hops; defaults to `0` (trust no forwarded client IP).              |
 | Variable                           | Purpose                                                                                                   |
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `NODE_ENV`                         | Runtime environment. Production requires explicit secrets.                                                |
@@ -37,6 +64,8 @@ Run the Express API on a Node.js 20+ host/container/VM connected to PostgreSQL, 
 | `AUTH_RATE_LIMIT_MAX`              | `/api/auth/*` requests per IP per window; defaults to `20`.                                               |
 | `TRUST_PROXY_HOPS`                 | Number of trusted reverse-proxy hops; defaults to `0` (trust no forwarded client IP).                     |
 
+Browser activity reads `VITE_HORIZON_TESTNET_URL` and `VITE_HORIZON_MAINNET_URL` at build time. Both must be absolute HTTPS base URLs without credentials, a query, or a fragment; an invalid value stops the browser bundle at startup instead of silently falling back to a public host. Leave them empty to use the public Stellar testnet/mainnet hosts. These values are public: Vite inlines every `VITE_*` variable into the client bundle, so never place `SESSION_SECRET`, `PSEUDONYM_SECRET`, database URLs, tokens, or other server-only secrets in one.
+
 Do not commit `.env` or paste connection strings into logs/issues. `.env.example` contains local placeholders. On Neon, point development to a dev branch and tests to a separate test branch; configure the production-host guard with the production hostname without exposing connection strings.
 
 The API limits use express-rate-limit's default in-memory store, which is per process/instance; multiple replicas do not share counters. Use a shared store if limits must apply across replicas. `TRUST_PROXY_HOPS` controls Express proxy trust and therefore which forwarded IP is used by the per-IP limits. Keep it at `0` when the API is directly exposed; behind a reverse proxy, set the exact trusted hop count for the deployment topology. Do not trust arbitrary forwarded headers or set broad proxy trust without a known trusted network path.
@@ -52,6 +81,7 @@ Provision distinct PostgreSQL login roles before the first migration: `aidtrace_
 
 Run `npm run db:migrate` as a deployment step before starting the API, using only the isolated development/test branch during development. Migration `005_audit_events_append_only` transfers `audit_events` ownership to the migration identity, removes public/runtime privileges, and grants the runtime role only `SELECT` and `INSERT`. For emergency audit maintenance, use the controlled `aidtrace_migration` owner credential through an approved operator session; never grant that credential to the application. This owner-level path can change or remove audit rows and does not protect against a database superuser. Set `ADMIN_WALLET` to a public G-address and run `npm run db:seed-admin` for first-time bootstrap; do not expose this command as a public route.
 
+Migration runs take a PostgreSQL session advisory lock before reading versions or applying DDL. A second runner that cannot take the lock exits without applying anything, so concurrent deployments cannot execute the same migration twice. The runner releases the lock in a `finally` block; if the explicit unlock fails, it destroys the database session so PostgreSQL releases the lock anyway. Applied versions are recorded in `schema_migrations`, and an already-recorded version is skipped on the next run.
 ### Migration file checksums
 
 Each applied migration is recorded in `schema_migrations` with a SHA-256 checksum of its SQL file. Every run recomputes the checksums and fails before applying anything if a released file changed. Do not edit an applied migration; add a new forward-only migration instead. The failure message names the affected version and checksums only; it never prints file contents or connection credentials.

@@ -14,6 +14,16 @@ import {
 } from './network-preference';
 import { readThemePreference, writeThemePreference, type Theme } from './theme-preference';
 import { localDateString } from './date';
+import { VerificationDetail } from './verification-detail';
+import {
+  createActivityCoordinator,
+  fetchActivity,
+  shortAddress,
+  type ActivityCoordinator,
+  type ActivityItem,
+  type ActivitySnapshot,
+} from './activity';
+import { activityRequestUrls, resolveHorizonEndpoints } from './horizon';
 import { createToastScheduler } from './toast';
 import {
   HORIZON_ACTIVITY_PAGE_SIZE,
@@ -93,18 +103,6 @@ type AidRecord = {
   voidedAt?: string;
   version: number;
 };
-type ActivityItem = {
-  id: string;
-  hash: string;
-  date: string;
-  type: string;
-  amount: string;
-  asset: string;
-  counterparty: string;
-  status: string;
-  network: Network;
-  publishedRecord?: AidRecord;
-};
 type AuditItem = {
   id: string;
   action: string;
@@ -113,18 +111,12 @@ type AuditItem = {
   recordId?: string;
   createdAt: string;
 };
-const horizon: Record<Network, string> = {
-  testnet: 'https://horizon-testnet.stellar.org',
-  mainnet: 'https://horizon.stellar.org',
-};
+const horizon = resolveHorizonEndpoints();
 const explorer = (network: Network, hash: string) =>
   (network === 'mainnet'
     ? 'https://stellar.expert/explorer/public/tx/'
     : 'https://stellar.expert/explorer/testnet/tx/') + encodeURIComponent(hash);
-const short = (value: string, left = 7, right = 5) =>
-  value && value.length > left + right + 1
-    ? value.slice(0, left) + '…' + value.slice(-right)
-    : value || '—';
+const short = shortAddress;
 const formatAmount = (value: string) => {
   const [whole, fraction = ''] = value.split('.');
   return BigInt(whole || '0').toLocaleString() + (fraction ? '.' + fraction : '');
@@ -264,6 +256,7 @@ export default function App() {
   const [ledgerHasMore, setLedgerHasMore] = useState(false);
   const [ledgerPageLoading, setLedgerPageLoading] = useState(false);
   const [beneficiaryRecords, setBeneficiaryRecords] = useState<AidRecord[]>([]);
+  const [activity, setActivity] = useState<ActivityItem<AidRecord>[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [activityHasMore, setActivityHasMore] = useState(false);
   const [activityPageLoading, setActivityPageLoading] = useState(false);
@@ -358,6 +351,20 @@ export default function App() {
   const rolesCursorRef = useRef<string | null>(null);
   const auditRequestInFlight = useRef(false);
   const rolesRequestInFlight = useRef(false);
+  const publishedRecords = useRef<AidRecord[]>([]);
+  const activityCoordinator = useRef<ActivityCoordinator<ActivitySnapshot<AidRecord>> | null>(null);
+  if (!activityCoordinator.current) {
+    activityCoordinator.current = createActivityCoordinator<ActivitySnapshot<AidRecord>>({
+      load: ({ address, network: selectedNetwork }, signal) =>
+        fetchActivity({
+          address,
+          network: selectedNetwork,
+          publishedRecords: publishedRecords.current,
+          endpoints: horizon,
+          signal,
+        }),
+    });
+  }
   const formDialogRef = useRef<HTMLDivElement>(null);
   const detailDialogRef = useRef<HTMLElement>(null);
   const closeForm = useCallback(() => {
@@ -594,6 +601,25 @@ export default function App() {
     if (page === 'beneficiary' && session) void loadBeneficiaryRecords();
   }, [page, session, loadBeneficiaryRecords]);
 
+  const loadActivity = useCallback((address: string, selectedNetwork: Network) => {
+    setActivityLoading(true);
+    activityCoordinator.current?.request(
+      { address, network: selectedNetwork },
+      {
+        onResult: (snapshot) => {
+          setBalance(snapshot.balance);
+          setActivity(snapshot.items);
+          setError('');
+        },
+        onError: (requestError) => setError(requestError.message),
+        onSettled: () => setActivityLoading(false),
+      },
+    );
+  }, []);
+
+  useEffect(() => {
+    publishedRecords.current = records;
+  }, [records]);
   const loadActivity = useCallback(
     async (
       address: string,
@@ -762,6 +788,7 @@ export default function App() {
 
   useLayoutEffect(() => {
     if (!session) {
+      activityCoordinator.current?.invalidate();
       activityRequestRef.current += 1;
       activityCursorsRef.current = {
         selection: `:${network}`,
@@ -774,6 +801,7 @@ export default function App() {
       setActivityPageLoading(false);
       setBalance('0');
       setActivityStream('offline');
+      setActivityLoading(false);
       return;
     }
     let source: EventSource | null = null;
@@ -801,12 +829,7 @@ export default function App() {
     };
     void loadActivity(session.address, network, 'reset');
     try {
-      source = new EventSource(
-        horizon[network] +
-          '/accounts/' +
-          encodeURIComponent(session.address) +
-          '/payments?cursor=now',
-      );
+      source = new EventSource(activityRequestUrls(horizon[network], session.address).stream);
       source.onopen = () => {
         setActivityStream('live');
         if (pollTimer) {
@@ -834,8 +857,9 @@ export default function App() {
       closed = true;
       source?.close();
       if (pollTimer) window.clearInterval(pollTimer);
+      activityCoordinator.current?.invalidate();
     };
-  }, [session, network, loadActivity]);
+  }, [session, network, records, loadActivity]);
 
   async function connectWallet() {
     setBusy(true);
@@ -2415,7 +2439,7 @@ export default function App() {
                 </dd>
               </div>
               <div>
-                <dt>Created</dt>
+                <dt>Record created</dt>
                 <dd>
                   {selected.createdAt ? new Date(selected.createdAt).toLocaleString() : '—'} by{' '}
                   {short(selected.createdBy)}
@@ -2428,20 +2452,7 @@ export default function App() {
                   {labelStatus(selected.status)}
                 </dd>
               </div>
-              {selected.verification?.reason && (
-                <div>
-                  <dt>Verification note</dt>
-                  <dd>{selected.verification.reason}</dd>
-                </div>
-              )}
-              {selected.verification?.memo && selected.verification.memoType && (
-                <div>
-                  <dt>Memo</dt>
-                  <dd>
-                    {selected.verification.memoType}: {selected.verification.memo}
-                  </dd>
-                </div>
-              )}
+              <VerificationDetail record={selected} />
               {selected.voidReason && (
                 <div>
                   <dt>Void reason</dt>

@@ -2,7 +2,9 @@
   "extends": "./tsconfig.server.json",
   "compilerOptions": {
     "noEmit": true,
-    "rootDir": "."
+    "rootDir": ".",
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
   "include": [
     "server/**/*.ts",
