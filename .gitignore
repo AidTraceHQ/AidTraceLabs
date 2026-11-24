@@ -1,6 +1,8 @@
 node_modules/
 dist/
 dist-server/
+.env
+.env.*
 !.env.example
 .neon
 .vercel
@@ -8,4 +10,3 @@ vercel-out.txt
 
 # Agent session files
 .agents/
-config.bat
