@@ -1,4 +1,5 @@
 import '../server/environment.js';
+import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -52,6 +53,7 @@ export class DuplicateTransactionHashesError extends Error {
     this.name = 'DuplicateTransactionHashesError';
   }
 }
+const resolvedMigrationUrl: string = migrationUrl;
 
 // Bounds a migration that would otherwise wait on a lock or a stalled connection forever.
 // Mirrors the runtime (server/db.ts) and seed (scripts/seed-admin.ts) pools.
@@ -71,7 +73,24 @@ export function createMigrationPool(
   });
 }
 
-const migrationPool = createMigrationPool(migrationUrl);
+export function migrationChecksum(sql: string): string {
+  return createHash('sha256').update(sql, 'utf8').digest('hex');
+}
+
+export class MigrationChecksumError extends Error {
+  constructor(
+    readonly version: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'MigrationChecksumError';
+  }
+}
+
+export type MigrationOptions = {
+  migrationDirectory?: string;
+  baselineChecksums?: boolean;
+};
 
 function databaseUrl(): string {
   const url = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
@@ -84,6 +103,9 @@ function databaseUrl(): string {
 async function withTransaction<T>(
   pool: MigrationPool,
   work: (client: MigrationClient) => Promise<T>,
+async function withTransaction<T>(
+  pool: Pool,
+  work: (client: PoolClient) => Promise<T>,
 ): Promise<T> {
   const client = await pool.connect();
   try {
@@ -154,11 +176,20 @@ async function applyMigrations(
   directory: string,
 ): Promise<string[]> {
   await client.query(`
+export async function runMigrations(pool: Pool, options: MigrationOptions = {}): Promise<string[]> {
+  const directory = options.migrationDirectory ?? migrationDirectory;
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version TEXT PRIMARY KEY,
-      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      checksum TEXT
     )
   `);
+  await pool.query('ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT');
+
+  const files = (await readdir(directory))
+    .filter((file) => /^\d{3}_[a-z0-9_]+\.sql$/.test(file))
+    .sort();
 
   const files = (await readdir(directory))
     .filter((file) => /^\d{3}_[a-z0-9_]+\.sql$/.test(file))
@@ -182,6 +213,67 @@ async function applyMigrations(
           await transaction.query(sql);
         }
         await transaction.query('INSERT INTO schema_migrations (version) VALUES ($1)', [version]);
+  const appliedRows = await pool.query<{ version: string; checksum: string | null }>(
+    'SELECT version, checksum FROM schema_migrations',
+  );
+  const applied = new Map(appliedRows.rows.map((row) => [row.version, row.checksum]));
+
+  const pending: { version: string; sql: string; checksum: string }[] = [];
+  const baselines: { version: string; checksum: string }[] = [];
+  for (const file of files) {
+    const version = file.slice(0, file.length - '.sql'.length);
+    const sql = await readFile(join(directory, file), 'utf8');
+    const checksum = migrationChecksum(sql);
+    if (!applied.has(version)) {
+      pending.push({ version, sql, checksum });
+      continue;
+    }
+
+    const stored = applied.get(version);
+    if (stored === null) {
+      if (!options.baselineChecksums) {
+        throw new MigrationChecksumError(
+          version,
+          `Migration ${version} has no recorded checksum. Review the file, then run ` +
+            '`npm run db:migrate -- --baseline-checksums` to record reviewed baselines.',
+        );
+      }
+      baselines.push({ version, checksum });
+      continue;
+    }
+    if (stored !== checksum) {
+      throw new MigrationChecksumError(
+        version,
+        `Migration ${version} changed after it was applied. ` +
+          `Expected checksum ${stored}, found ${checksum}. ` +
+          'Restore the file or add a new migration instead of editing it.',
+      );
+    }
+  }
+
+  // Verify every applied checksum before writing baselines or applying anything, so a
+  // mismatch fails closed without partially migrating the database.
+  for (const baseline of baselines) {
+    await pool.query('UPDATE schema_migrations SET checksum = $2 WHERE version = $1', [
+      baseline.version,
+      baseline.checksum,
+    ]);
+    console.log(`Recorded reviewed baseline checksum for migration ${baseline.version}.`);
+  }
+
+  const appliedNow: string[] = [];
+  for (const migration of pending) {
+    try {
+      await withTransaction(pool, async (client) => {
+        if (migration.version === '002_unique_network_tx_hash') {
+          await applyUniqueNetworkTxHashMigration(client);
+        } else {
+          await client.query(migration.sql);
+        }
+        await client.query('INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)', [
+          migration.version,
+          migration.checksum,
+        ]);
       });
     } catch (error) {
       if (error instanceof DuplicateTransactionHashesError) {
@@ -218,7 +310,19 @@ export async function migrate(options: MigrateOptions = {}): Promise<MigrationRu
       return { status: 'completed', applied };
     } finally {
       await releaseMigrationLock(client, lockHeld);
+      }
+      throw error;
     }
+    console.log(`Applied migration ${migration.version}.`);
+    appliedNow.push(migration.version);
+  }
+  return appliedNow;
+}
+
+export async function migrate(options: MigrationOptions = {}): Promise<string[]> {
+  const pool = createMigrationPool(resolvedMigrationUrl);
+  try {
+    return await runMigrations(pool, options);
   } finally {
     await pool.end();
   }
@@ -237,4 +341,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       console.error('Database migration failed:', error);
       process.exitCode = 1;
     });
+  migrate({ baselineChecksums: process.argv.includes('--baseline-checksums') }).catch((error) => {
+    console.error('Database migration failed:', error);
+    process.exitCode = 1;
+  });
 }
