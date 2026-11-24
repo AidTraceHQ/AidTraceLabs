@@ -22,6 +22,15 @@ import {
   type HorizonActivityRecord,
 } from './activity';
 import {
+  EMPTY_VIEW_SEARCHES,
+  filterActivity,
+  isActivityRangeInvalid,
+  ledgerQueryString,
+  setViewSearch,
+  type SearchView,
+  type ViewSearches,
+} from './activity-filters';
+import {
   Activity,
   ArrowDownToLine,
   ArrowUpRight,
@@ -286,7 +295,14 @@ export default function App() {
   const [toast, setToast] = useState('');
   const [theme, setTheme] = useState<Theme>(readThemePreference);
   const dark = theme === 'dark';
-  const [search, setSearch] = useState('');
+  // The ledger and activity views each keep their own search text (#163).
+  const [searches, setSearches] = useState<ViewSearches>(EMPTY_VIEW_SEARCHES);
+  const search = searches.ledger;
+  const activitySearch = searches.activity;
+  const setSearch = useCallback(
+    (view: SearchView, value: string) => setSearches((s) => setViewSearch(s, view, value)),
+    [],
+  );
   const [orgFilter, setOrgFilter] = useState('all');
   const [assetFilter, setAssetFilter] = useState('all');
   const [networkFilter, setNetworkFilter] = useState('all');
@@ -377,15 +393,15 @@ export default function App() {
   const fetchLedgerPage = useCallback(
     async (index: number, cursors: Array<string | null>) => {
       const requestId = ++transparencyRequestId.current;
-      const params = new URLSearchParams();
-      if (search.trim()) params.set('q', search.trim());
-      if (orgFilter !== 'all') params.set('organization', orgFilter);
-      if (assetFilter !== 'all') params.set('asset', assetFilter);
-      if (networkFilter !== 'all') params.set('network', networkFilter);
-      if (statusFilter !== 'all') params.set('status', statusFilter);
-      if (fromDate) params.set('from', fromDate);
-      if (toDate) params.set('to', toDate);
-      const query = params.toString();
+      const query = ledgerQueryString({
+        search,
+        organization: orgFilter,
+        asset: assetFilter,
+        network: networkFilter,
+        status: statusFilter,
+        from: fromDate,
+        to: toDate,
+      });
       const cursor = cursors[index] ?? null;
       if (index === 0) setLoading(true);
       else setLedgerPageLoading(true);
@@ -1138,20 +1154,16 @@ export default function App() {
     sortBy,
     sortDir,
   ]);
-  const activityRangeInvalid = Boolean(activityFrom && activityTo && activityFrom > activityTo);
+  const activityRangeInvalid = isActivityRangeInvalid(activityFrom, activityTo);
   const filteredActivity = useMemo(
     () =>
-      activity.filter(
-        (a) =>
-          [a.hash, a.type, a.asset, a.counterparty]
-            .join(' ')
-            .toLowerCase()
-            .includes(search.toLowerCase()) &&
-          (activityType === 'all' || a.type === activityType) &&
-          (activityRangeInvalid || !activityFrom || a.date.slice(0, 10) >= activityFrom) &&
-          (activityRangeInvalid || !activityTo || a.date.slice(0, 10) <= activityTo),
-      ),
-    [activity, search, activityType, activityFrom, activityTo, activityRangeInvalid],
+      filterActivity(activity, {
+        search: activitySearch,
+        type: activityType,
+        from: activityFrom,
+        to: activityTo,
+      }),
+    [activity, activitySearch, activityType, activityFrom, activityTo],
   );
   const filteredAudit = useMemo(
     () =>
@@ -1195,15 +1207,15 @@ export default function App() {
     }
   }
   async function exportCsv() {
-    const params = new URLSearchParams();
-    if (search.trim()) params.set('q', search.trim());
-    if (orgFilter !== 'all') params.set('organization', orgFilter);
-    if (assetFilter !== 'all') params.set('asset', assetFilter);
-    if (networkFilter !== 'all') params.set('network', networkFilter);
-    if (statusFilter !== 'all') params.set('status', statusFilter);
-    if (fromDate) params.set('from', fromDate);
-    if (toDate) params.set('to', toDate);
-    const query = params.toString();
+    const query = ledgerQueryString({
+      search,
+      organization: orgFilter,
+      asset: assetFilter,
+      network: networkFilter,
+      status: statusFilter,
+      from: fromDate,
+      to: toDate,
+    });
     try {
       const result = await api.getAllPages<AidRecord>(
         '/api/transparency' + (query ? '?' + query : ''),
@@ -1490,7 +1502,7 @@ export default function App() {
                   aria-label="Search records"
                   placeholder="Search purpose, organization or record"
                   value={search}
-                  onChange={(event) => setSearch(event.target.value)}
+                  onChange={(event) => setSearch('ledger', event.target.value)}
                 />
               </label>
               <select
@@ -1716,8 +1728,8 @@ export default function App() {
                 <input
                   aria-label="Search activity"
                   placeholder="Search activity"
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
+                  value={activitySearch}
+                  onChange={(event) => setSearch('activity', event.target.value)}
                 />
               </label>
               <select
