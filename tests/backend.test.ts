@@ -60,6 +60,8 @@ describe('Freighter signed challenge creates a secure session', () => {
   });
 
   it('correlates unexpected API failures and logs only redacted structured fields', async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     const query = vi.spyOn(pool, 'query').mockRejectedValue(
       new Error('database password=do-not-log signature=private-signature'),
@@ -101,6 +103,8 @@ describe('Freighter signed challenge creates a secure session', () => {
     } finally {
       query.mockRestore();
       log.mockRestore();
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
     }
   });
 
