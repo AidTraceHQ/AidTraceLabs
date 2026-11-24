@@ -1,5 +1,22 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ApiError, api, resetCursorStack } from './api';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
+import {
+  ApiError,
+  api,
+  attachSessionFocusRefresh,
+  createSessionState,
+  resetCursorStack,
+  sessionHasRole,
+  setSessionAuthErrorHandler,
+  type Session,
+} from './api';
 import { getNetwork, isConnected, requestAccess, signMessage } from '@stellar/freighter-api';
 import {
   networkPassphrase,
@@ -7,20 +24,8 @@ import {
   throwFreighterError,
   waitForFreighter,
 } from './freighter';
-import {
-  describeNetworkEnvironment,
-  readNetworkPreference,
-  writeNetworkPreference,
-} from './network-preference';
-import { readThemePreference, writeThemePreference, type Theme } from './theme-preference';
-import { localDateString } from './date';
-import { createToastScheduler } from './toast';
-import {
-  HORIZON_ACTIVITY_PAGE_SIZE,
-  mergeActivityItems,
-  parseHorizonActivityPage,
-  type HorizonActivityRecord,
-} from './activity';
+import { readNetworkPreference, writeNetworkPreference } from './network-preference';
+import { buildCsvExportQuery, recordsToCsv } from './csv';
 import {
   Activity,
   ArrowDownToLine,
@@ -48,13 +53,6 @@ type Network = 'testnet' | 'mainnet';
 type Role = 'donor' | 'organization' | 'beneficiary' | 'admin';
 type Verification = 'verified' | 'mismatch' | 'not-found' | 'unverified' | 'pending' | 'voided';
 type LedgerTotal = { status: Verification; asset: string; amount: string };
-type Session = {
-  address: string;
-  network: Network;
-  role: Role;
-  expiresAt: string;
-  csrfToken: string;
-};
 type AidRecord = {
   id: string;
   recipient: string;
@@ -249,7 +247,8 @@ function useDialogFocus(
 }
 
 export default function App() {
-  const [session, setSession] = useState<Session | null>(null);
+  const sessionState = useMemo(() => createSessionState(), []);
+  const session = useSyncExternalStore(sessionState.subscribe, sessionState.getSession);
   const [network, setNetwork] = useState<Network>(readNetworkPreference);
   const [page, setPage] = useState<'transparency' | 'activity' | 'beneficiary' | 'admin'>(
     'transparency',
@@ -490,7 +489,7 @@ export default function App() {
   }
   const loadAudit = useCallback(
     async (options: { append?: boolean } = {}) => {
-      if (!session || session.role !== 'admin') return;
+      if (!sessionHasRole(session, 'admin')) return;
       if (auditRequestInFlight.current) return;
       auditRequestInFlight.current = true;
       setAuditLoading(true);
@@ -531,17 +530,6 @@ export default function App() {
     },
     [session, auditAction, auditSearch],
   );
-  const restoreSession = useCallback(async () => {
-    try {
-      const r = await api.get<{ session: Session | null }>('/api/me');
-      const restored = r.data.session;
-      setSession(restored);
-      if (restored) setNetwork(restored.network);
-    } catch (e) {
-      setSession(null);
-      setError(messageOf(e));
-    }
-  }, []);
   const loadRoles = useCallback(async (options: { append?: boolean } = {}) => {
     if (rolesRequestInFlight.current) return;
     rolesRequestInFlight.current = true;
@@ -578,17 +566,25 @@ export default function App() {
     }
   }, []);
   useEffect(() => {
-    void restoreSession();
-  }, [restoreSession]);
+    void sessionState.refresh();
+    setSessionAuthErrorHandler((error) => {
+      void sessionState.onAuthError(error);
+    });
+    const detach = attachSessionFocusRefresh(sessionState);
+    return () => {
+      setSessionAuthErrorHandler(undefined);
+      detach();
+    };
+  }, [sessionState]);
   useEffect(() => {
     const timer = window.setTimeout(() => void loadTransparency(), 200);
     return () => window.clearTimeout(timer);
   }, [loadTransparency, sortBy, sortDir]);
   useEffect(() => {
-    if (session?.role === 'admin') void loadRoles();
+    if (sessionHasRole(session, 'admin')) void loadRoles();
   }, [session, loadRoles]);
   useEffect(() => {
-    if (session?.role === 'admin') void loadAudit();
+    if (sessionHasRole(session, 'admin')) void loadAudit();
   }, [session, loadAudit]);
   useEffect(() => {
     if (page === 'beneficiary' && session) void loadBeneficiaryRecords();
@@ -885,7 +881,7 @@ export default function App() {
         network,
         signature,
       });
-      setSession(verified.data.session);
+      sessionState.setSession(verified.data.session);
       notify('Wallet ownership verified.');
       await loadTransparency();
     } catch (e) {
@@ -904,7 +900,7 @@ export default function App() {
       await api.post(everywhere ? '/api/auth/logout-everywhere' : '/api/auth/logout', {
         csrfToken: session?.csrfToken,
       });
-      setSession(null);
+      sessionState.setSession(null);
       setActivity([]);
       setSelected(null);
       setPage('transparency');
@@ -1177,11 +1173,11 @@ export default function App() {
   const otherStatusTotals = ledgerTotals
     .filter((total) => total.status !== 'verified')
     .map((total) => `${labelStatus(total.status)}: ${formatAmount(total.amount)} ${total.asset}`);
-  const canManageRecords = session?.role === 'organization' || session?.role === 'admin';
+  const canManageRecords = session?.role === 'organization' || sessionHasRole(session, 'admin');
   const canVoidSelected =
     !!selected &&
     !!session &&
-    (session.role === 'admin' ||
+    (sessionHasRole(session, 'admin') ||
       (session.role === 'organization' && selected.organization === session.address));
   const selectedDifferences = selected?.verification?.differences || [];
   const selectedMismatchDetails = selected ? mismatchDetails(selected) : [];
@@ -1195,40 +1191,21 @@ export default function App() {
     }
   }
   async function exportCsv() {
-    const params = new URLSearchParams();
-    if (search.trim()) params.set('q', search.trim());
-    if (orgFilter !== 'all') params.set('organization', orgFilter);
-    if (assetFilter !== 'all') params.set('asset', assetFilter);
-    if (networkFilter !== 'all') params.set('network', networkFilter);
-    if (statusFilter !== 'all') params.set('status', statusFilter);
-    if (fromDate) params.set('from', fromDate);
-    if (toDate) params.set('to', toDate);
-    const query = params.toString();
+    const query = buildCsvExportQuery({
+      search,
+      orgFilter,
+      assetFilter,
+      networkFilter,
+      statusFilter,
+      fromDate,
+      toDate,
+    });
     try {
       const result = await api.getAllPages<AidRecord>(
         '/api/transparency' + (query ? '?' + query : ''),
         'records',
       );
-      const rows = result.data.records || [];
-      const columns = [
-        'recipient',
-        'recipientAddress',
-        'purpose',
-        'amount',
-        'asset',
-        'network',
-        'txHash',
-        'date',
-        'organization',
-        'status',
-      ];
-      const escape = (value: unknown) => '"' + String(value ?? '').replace(/"/g, '""') + '"';
-      const csv = [
-        columns.join(','),
-        ...rows.map((record) =>
-          columns.map((column) => escape(record[column as keyof AidRecord])).join(','),
-        ),
-      ].join('\r\n');
+      const csv = recordsToCsv(result.data.records || []);
       const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
       const link = document.createElement('a');
       link.href = url;
@@ -1394,7 +1371,7 @@ export default function App() {
               My Activity
             </button>
           )}
-          {session && (session.role === 'beneficiary' || session.role === 'admin') && (
+          {session && (session.role === 'beneficiary' || sessionHasRole(session, 'admin')) && (
             <button
               className={`tab${page === 'beneficiary' ? ' active' : ''}`}
               onClick={() => setPage('beneficiary')}
@@ -1402,7 +1379,7 @@ export default function App() {
               Beneficiary Records
             </button>
           )}
-          {session?.role === 'admin' && (
+          {sessionHasRole(session, 'admin') && (
             <button
               className={`tab${page === 'admin' ? ' active' : ''}`}
               onClick={() => setPage('admin')}
@@ -1843,7 +1820,7 @@ export default function App() {
 
         {page === 'beneficiary' &&
           session &&
-          (session.role === 'beneficiary' || session.role === 'admin') && (
+          (session.role === 'beneficiary' || sessionHasRole(session, 'admin')) && (
             <section className="panel">
               <div className="section-head">
                 <div>
@@ -1910,7 +1887,7 @@ export default function App() {
             </section>
           )}
 
-        {page === 'admin' && session?.role === 'admin' && (
+        {page === 'admin' && !!session && sessionHasRole(session, 'admin') && (
           <section className="panel admin-panel">
             <div className="section-head">
               <div>
@@ -2498,7 +2475,7 @@ export default function App() {
             </div>
             {session &&
               canManageRecords &&
-              (session.role === 'admin' || selected.organization === session.address) &&
+              (sessionHasRole(session, 'admin') || selected.organization === session.address) &&
               !selected.voidedAt && (
                 <form className="inline-edit" onSubmit={editRecord}>
                   <h3>Edit record</h3>

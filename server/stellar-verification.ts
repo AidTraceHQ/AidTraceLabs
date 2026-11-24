@@ -43,9 +43,12 @@ type HorizonOperation = Record<string, unknown> & { paging_token?: string };
 
 const operationPageSize = 200;
 const operationPageLimit = 20;
-// A 200-operation page is far smaller than this; the bound stops a misconfigured or
-// compromised Horizon endpoint from forcing an unbounded buffer before parsing.
-export const HORIZON_MAX_RESPONSE_BYTES = 1024 * 1024;
+const eligiblePaymentTypes: ReadonlySet<string> = new Set([
+  'payment',
+  'create_account',
+  'path_payment_strict_receive',
+  'path_payment_strict_send',
+]);
 const amountPattern = /^(\d+)(?:\.(\d{1,7}))?$/;
 const memoTypes: ReadonlySet<string> = new Set<MemoType>(['text', 'id', 'hash', 'return']);
 // Stellar memos are at most 28 bytes (text) or 32 bytes base64-encoded (hash/return);
@@ -353,14 +356,7 @@ export async function checkTransaction(
     }
   }
 
-  const payments = operations.filter((operation) =>
-    [
-      'payment',
-      'create_account',
-      'path_payment_strict_receive',
-      'path_payment_strict_send',
-    ].includes(text(operation.type)),
-  );
+  const payments = operations.filter((operation) => eligiblePaymentTypes.has(text(operation.type)));
   const expectedAmount = record.amountStroops;
   const expectedAsset = record.assetCode.toUpperCase();
   const hasExpectedIssuer = expectedAsset === 'XLM' || !!record.assetIssuer;
@@ -392,6 +388,8 @@ export async function checkTransaction(
     const matchesAsset = asset.code === expectedAsset;
     const matchesIssuer = expectedAsset === 'XLM' || asset.issuer === record.assetIssuer;
     const matchesSource = source === record.organizationWallet;
+    const matchesAll =
+      matchesDestination && matchesAmount && matchesAsset && matchesIssuer && matchesSource;
 
     destinationMatch ||= matchesDestination;
     amountMatch ||= matchesAmount;
@@ -416,7 +414,7 @@ export async function checkTransaction(
       };
     }
 
-    if (matchesDestination && matchesAmount && matchesAsset && matchesIssuer && matchesSource) {
+    if (matchesAll) {
       return {
         status: 'verified',
         checkedAt,

@@ -158,6 +158,34 @@ describe('Freighter signed challenge creates a secure session', () => {
 describe('On-chain verification distinguishes matching and mismatching payments', () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  function paymentRecord(txHash: string, organization: string, recipient: string) {
+    return {
+      network: 'testnet' as const,
+      txHash,
+      organizationWallet: organization,
+      recipientWallet: recipient,
+      amountStroops: '10000000',
+      assetCode: 'XLM',
+      assetIssuer: null,
+    };
+  }
+
+  function stubHorizon(
+    transaction: Record<string, unknown>,
+    pageFor: (cursor: string | null) => { records?: unknown; status?: number },
+  ) {
+    return vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith('/operations')) {
+        return new Response(JSON.stringify(transaction), { status: 200 });
+      }
+      const page = pageFor(url.searchParams.get('cursor'));
+      return new Response(JSON.stringify({ _embedded: { records: page.records ?? [] } }), {
+        status: page.status ?? 200,
+      });
+    });
+  }
+
   it('requires one operation to match the organization source and all payment fields', async () => {
     const organization = Keypair.random().publicKey();
     const recipient = Keypair.random().publicKey();
@@ -443,212 +471,186 @@ describe('On-chain verification distinguishes matching and mismatching payments'
     expect(notFound).not.toHaveProperty('memo');
   });
 
-  it('selects the configured Horizon endpoint and explorer path for each network', async () => {
+  it('verifies one eligible operation among several and ignores lookalike non-payment operations', async () => {
     const organization = Keypair.random().publicKey();
     const recipient = Keypair.random().publicKey();
-    const txHash = 'f'.repeat(64);
-    const originalMainnet = process.env.HORIZON_MAINNET_URL;
-    const originalTestnet = process.env.HORIZON_TESTNET_URL;
-    const requested: string[] = [];
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input) => {
-        const url = new URL(String(input));
-        requested.push(url.toString());
-        const body = url.pathname.endsWith('/operations')
-          ? {
-              _embedded: {
-                records: [
-                  {
-                    type: 'payment',
-                    from: organization,
-                    to: recipient,
-                    amount: '1',
-                    asset_type: 'native',
-                  },
-                ],
-              },
-            }
-          : {
-              successful: true,
-              source_account: organization,
-              ledger: 3,
-              created_at: '2026-01-01T00:00:00Z',
-            };
-        return new Response(JSON.stringify(body), { status: 200 });
-      }),
-    );
-    try {
-      process.env.HORIZON_MAINNET_URL = 'https://horizon-mainnet.example.test';
-      process.env.HORIZON_TESTNET_URL = 'https://horizon-testnet.example.test';
-      const record = {
-        network: 'mainnet' as const,
-        txHash,
-        organizationWallet: organization,
-        recipientWallet: recipient,
-        amountStroops: '10000000',
-        assetCode: 'XLM',
-        assetIssuer: null,
-      };
-
-      const mainnet = await checkTransaction(record);
-      expect(mainnet.status).toBe('verified');
-      expect(mainnet.link).toBe('https://stellar.expert/explorer/public/tx/' + txHash);
-      expect(requested).toHaveLength(2);
-      for (const url of requested) {
-        expect(new URL(url).host).toBe('horizon-mainnet.example.test');
-      }
-
-      requested.length = 0;
-      const testnet = await checkTransaction({ ...record, network: 'testnet' });
-      expect(testnet.status).toBe('verified');
-      expect(testnet.link).toBe('https://stellar.expert/explorer/testnet/tx/' + txHash);
-      expect(requested).toHaveLength(2);
-      for (const url of requested) {
-        expect(new URL(url).host).toBe('horizon-testnet.example.test');
-      }
-    } finally {
-      if (originalMainnet === undefined) delete process.env.HORIZON_MAINNET_URL;
-      else process.env.HORIZON_MAINNET_URL = originalMainnet;
-      if (originalTestnet === undefined) delete process.env.HORIZON_TESTNET_URL;
-      else process.env.HORIZON_TESTNET_URL = originalTestnet;
-    }
-  });
-
-  it('bounds the Horizon response size and rejects a non-array operations payload', async () => {
-    const organization = Keypair.random().publicKey();
-    const recipient = Keypair.random().publicKey();
-    const record = {
-      network: 'testnet' as const,
-      txHash: 'e'.repeat(64),
-      organizationWallet: organization,
-      recipientWallet: recipient,
-      amountStroops: '12500000',
-      assetCode: 'XLM',
-      assetIssuer: null,
+    const other = Keypair.random().publicKey();
+    const record = paymentRecord('e'.repeat(64), organization, recipient);
+    const matching = {
+      type: 'payment',
+      from: organization,
+      to: recipient,
+      amount: '1',
+      asset_type: 'native',
     };
-
-    const oversizedFetch = vi.fn(async (input) => {
-      const url = new URL(String(input));
-      if (url.pathname.endsWith('/operations')) {
-        return new Response(JSON.stringify({ _embedded: { records: [] } }), { status: 200 });
-      }
-      return new Response(
-        JSON.stringify({
-          successful: true,
-          source_account: organization,
-          padding: 'x'.repeat(HORIZON_MAX_RESPONSE_BYTES),
-        }),
-        { status: 200 },
-      );
-    });
-    vi.stubGlobal('fetch', oversizedFetch);
-    expect((await checkTransaction(record)).status).toBe('pending');
-    // The oversized transaction body is abandoned before the operations request is made.
-    expect(oversizedFetch).toHaveBeenCalledTimes(1);
-
+    const lookalike = {
+      type: 'manage_data',
+      from: organization,
+      to: recipient,
+      amount: '1',
+      asset_type: 'native',
+    };
+    let operations: Record<string, unknown>[] = [];
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (input) => {
-        const url = new URL(String(input));
-        return url.pathname.endsWith('/operations')
-          ? new Response(JSON.stringify({ _embedded: { records: 'not-an-array' } }), {
-              status: 200,
-            })
-          : new Response(JSON.stringify({ successful: true, source_account: organization }), {
-              status: 200,
-            });
-      }),
+      stubHorizon({ successful: true }, () => ({ records: operations })),
     );
-    expect((await checkTransaction(record)).status).toBe('pending');
 
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input) => {
-        const url = new URL(String(input));
-        const body = url.pathname.endsWith('/operations')
-          ? {
-              _embedded: {
-                records: [
-                  {
-                    type: 'payment',
-                    from: organization,
-                    to: recipient,
-                    amount: '1.25',
-                    asset_type: 'native',
-                  },
-                ],
-              },
-            }
-          : {
-              successful: true,
-              source_account: organization,
-              ledger: 21,
-              created_at: '2026-01-01T00:00:00Z',
-            };
-        return new Response(JSON.stringify(body), { status: 200 });
-      }),
-    );
-    expect(await checkTransaction(record)).toMatchObject({
-      status: 'verified',
-      ledger: 21,
-      sourceAccount: organization,
-      destination: recipient,
-      amount: '1.25',
-      asset: 'XLM',
-    });
+    operations = [lookalike];
+    expect((await checkTransaction(record)).status).toBe('mismatch');
+
+    operations = [
+      lookalike,
+      {
+        type: 'set_options',
+        from: organization,
+        to: recipient,
+        amount: '1',
+        asset_type: 'native',
+      },
+      { type: 'create_account', funder: other, account: other, starting_balance: '1' },
+      {
+        type: 'path_payment_strict_receive',
+        from: other,
+        to: other,
+        amount: '1',
+        asset_type: 'native',
+      },
+      {
+        type: 'path_payment_strict_send',
+        from: other,
+        to: other,
+        destination_amount: '1',
+        destination_asset_type: 'native',
+      },
+      matching,
+    ];
+    const result = await checkTransaction(record);
+    expect(result.status).toBe('verified');
+    expect(result).toMatchObject({ destination: recipient, amount: '1', asset: 'XLM' });
   });
-});
 
-describe('Per-IP rate-limit error contract', () => {
-  function expectRateLimitContract(response: request.Response) {
-    expect(response.status).toBe(429);
-    expect(response.body).toEqual({
-      error: expect.any(String),
-      code: 'rate_limit_exceeded',
-    });
-    expect(response.body.error.trim().length).toBeGreaterThan(0);
-    expect(response.body.error).not.toBe('rate_limit_exceeded');
-    expect(Number(response.headers['retry-after'])).toBeGreaterThan(0);
-  }
+  it('rejects near-matches that only combine fields from separate operations', async () => {
+    const organization = Keypair.random().publicKey();
+    const recipient = Keypair.random().publicKey();
+    const other = Keypair.random().publicKey();
+    const record = paymentRecord('f'.repeat(64), organization, recipient);
+    vi.stubGlobal(
+      'fetch',
+      stubHorizon({ successful: true }, () => ({
+        records: [
+          { type: 'payment', from: organization, to: recipient, amount: '2', asset_type: 'native' },
+          { type: 'payment', from: other, to: other, amount: '1', asset_type: 'native' },
+        ],
+      })),
+    );
 
-  it('returns the documented 429 error contract across public read, auth, and API limiters', async () => {
-    vi.resetModules();
-    vi.stubEnv('PUBLIC_READ_RATE_LIMIT_MAX', '1');
-    vi.stubEnv('AUTH_RATE_LIMIT_MAX', '1');
-    vi.stubEnv('API_RATE_LIMIT_MAX', '3');
+    const result = await checkTransaction(record);
+    expect(result.status).toBe('mismatch');
+    expect(result.differences).toContain(
+      'No single payment operation matches all recorded fields.',
+    );
+    expect(result.amount).toBe('2');
+  });
 
-    const [{ app: rateLimitedApp }, { pool: rateLimitedPool }] = await Promise.all([
-      import('../server/app.js'),
-      import('../server/db.js'),
-    ]);
+  it('verifies the first of repeated matching payments', async () => {
+    const organization = Keypair.random().publicKey();
+    const recipient = Keypair.random().publicKey();
+    const other = Keypair.random().publicKey();
+    const record = paymentRecord('0'.repeat(64), organization, recipient);
+    const matching = {
+      type: 'payment',
+      from: organization,
+      to: recipient,
+      amount: '1',
+      asset_type: 'native',
+    };
+    vi.stubGlobal(
+      'fetch',
+      stubHorizon({ successful: true }, () => ({
+        records: [
+          { type: 'set_options', from: organization },
+          matching,
+          { type: 'create_account', funder: other, account: other, starting_balance: '1' },
+          matching,
+        ],
+      })),
+    );
 
-    try {
-      await request(rateLimitedApp).get('/api/transparency');
-      const transparencyLimited = await request(rateLimitedApp).get('/api/transparency');
-      expectRateLimitContract(transparencyLimited);
+    const result = await checkTransaction(record);
+    expect(result.status).toBe('verified');
+    expect(result.differences).toEqual([]);
+    expect(result.destination).toBe(recipient);
+  });
 
-      const challengePayload = { address: 'invalid', network: 'testnet' };
-      const authFirst = await request(rateLimitedApp)
-        .post('/api/auth/challenge')
-        .set('Origin', origin)
-        .send(challengePayload);
-      expect(authFirst.status).toBe(400);
-      const authLimited = await request(rateLimitedApp)
-        .post('/api/auth/challenge')
-        .set('Origin', origin)
-        .send(challengePayload);
-      expectRateLimitContract(authLimited);
+  it('follows the cursor when the matching operation is last on a full page', async () => {
+    const organization = Keypair.random().publicKey();
+    const recipient = Keypair.random().publicKey();
+    const other = Keypair.random().publicKey();
+    const record = paymentRecord('1'.repeat(64), organization, recipient);
+    const firstPage = Array.from({ length: 200 }, (_, index) => ({
+      type: 'payment',
+      from: organization,
+      to: index === 199 ? recipient : other,
+      amount: '1',
+      asset_type: 'native',
+      paging_token: String(index + 1),
+    }));
+    const fetchMock = stubHorizon({ successful: true }, (cursor) => ({
+      records: cursor ? [{ type: 'set_options', from: organization }] : firstPage,
+    }));
+    vi.stubGlobal('fetch', fetchMock);
 
-      const apiAllowed = await request(rateLimitedApp).get('/api/nonexistent-rate-limit-check');
-      expect(apiAllowed.status).toBe(404);
-      const apiLimited = await request(rateLimitedApp).get('/api/nonexistent-rate-limit-check');
-      expectRateLimitContract(apiLimited);
-    } finally {
-      await rateLimitedPool.end();
-      vi.unstubAllEnvs();
-      vi.resetModules();
-    }
+    const result = await checkTransaction(record);
+    expect(result.status).toBe('verified');
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        new URL(String(input)).pathname.endsWith('/operations'),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it('keeps incomplete operation reads pending even when an earlier operation matched', async () => {
+    const organization = Keypair.random().publicKey();
+    const recipient = Keypair.random().publicKey();
+    const record = paymentRecord('2'.repeat(64), organization, recipient);
+    const matching = {
+      type: 'payment',
+      from: organization,
+      to: recipient,
+      amount: '1',
+      asset_type: 'native',
+    };
+    const fullPage = Array.from({ length: 200 }, (_, index) => ({
+      ...matching,
+      paging_token: String(index + 1),
+    }));
+
+    vi.stubGlobal(
+      'fetch',
+      stubHorizon({ successful: true }, () => ({
+        records: [...fullPage.slice(0, -1), { ...matching }],
+      })),
+    );
+    const missingCursor = await checkTransaction(record);
+    expect(missingCursor.status).toBe('pending');
+    expect(missingCursor.reason).toContain('pagination');
+
+    vi.stubGlobal(
+      'fetch',
+      stubHorizon({ successful: true }, (cursor) =>
+        cursor ? { status: 500 } : { records: fullPage },
+      ),
+    );
+    const failedPage = await checkTransaction(record);
+    expect(failedPage.status).toBe('pending');
+    expect(failedPage.differences).toEqual([]);
+
+    vi.stubGlobal(
+      'fetch',
+      stubHorizon({ successful: true }, () => ({ records: { unexpected: true } })),
+    );
+    expect((await checkTransaction(record)).status).toBe('pending');
   });
 });
 

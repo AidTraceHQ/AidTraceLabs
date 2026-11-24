@@ -12,12 +12,17 @@ export class ApiError extends Error {
   readonly status: number;
 }
 
-export class ApiTimeoutError extends Error {
-  constructor(method: string, path: string, timeoutMs: number) {
-    super(method + ' ' + path + ' timed out after ' + timeoutMs + 'ms. Please try again.');
-    this.name = 'ApiTimeoutError';
-  }
-}
+export type Role = 'donor' | 'organization' | 'beneficiary' | 'admin';
+export type Network = 'testnet' | 'mainnet';
+export type Session = {
+  address: string;
+  network: Network;
+  role: Role;
+  expiresAt: string;
+  csrfToken: string;
+};
+
+export const SESSION_REFRESH_MIN_INTERVAL_MS = 1000;
 
 type CollectionKey = 'records' | 'roles' | 'entries';
 export type PageEnvelope = {
@@ -80,42 +85,22 @@ async function request<T>(
     init.body = JSON.stringify(body);
   }
   try {
-    let response: Response;
-    try {
-      response = await fetch(resolveApiUrl(path), init);
-    } catch (error) {
-      if (deadline.signal.aborted) {
-        throw new ApiTimeoutError(method, path, timeoutMs);
-      }
-      const detail = error instanceof Error ? ': ' + error.message : '';
-      const requestError = new Error(method + ' ' + path + ' failed' + detail);
-      Object.defineProperty(requestError, 'cause', { value: error });
-      throw requestError;
-    }
-    const failurePrefix = method + ' ' + path + ' failed (' + response.status + ')';
-    let data: unknown;
-    try {
-      data = await response.json();
-    } catch {
-      if (deadline.signal.aborted) {
-        throw new ApiTimeoutError(method, path, timeoutMs);
-      }
-      throw new Error(
-        response.ok
-          ? method + ' ' + path + ' returned an invalid response.'
-          : failurePrefix + ': the API returned an invalid response.',
-      );
-    }
-    if (!response.ok) {
-      const message =
-        data !== null && typeof data === 'object' && 'error' in data && typeof data.error === 'string'
-          ? data.error
-          : 'request was rejected.';
-      throw new ApiError(method, path, response.status, message);
-    }
-    return { data: data as T };
-  } finally {
-    deadline.dispose();
+    data = await response.json();
+  } catch {
+    throw new Error(
+      response.ok
+        ? method + ' ' + path + ' returned an invalid response.'
+        : failurePrefix + ': the API returned an invalid response.',
+    );
+  }
+  if (!response.ok) {
+    const message =
+      data !== null && typeof data === 'object' && 'error' in data && typeof data.error === 'string'
+        ? data.error
+        : 'request was rejected.';
+    const apiError = new ApiError(method, path, response.status, message);
+    if (path !== '/api/me' && isSessionAuthError(apiError)) sessionAuthErrorHandler?.(apiError);
+    throw apiError;
   }
 }
 
@@ -207,3 +192,97 @@ export const api = {
   delete: <T = unknown>(path: string, body?: unknown, options?: RequestOptions) =>
     request<T>('DELETE', path, body, options),
 };
+
+let sessionAuthErrorHandler: ((error: ApiError) => void) | undefined;
+
+export function setSessionAuthErrorHandler(handler?: (error: ApiError) => void): void {
+  sessionAuthErrorHandler = handler;
+}
+
+export function isSessionAuthError(error: unknown): boolean {
+  return error instanceof ApiError && (error.status === 401 || error.status === 403);
+}
+
+export function sessionHasRole(session: Session | null, role: Role): boolean {
+  return session?.role === role;
+}
+
+export type SessionState = {
+  getSession: () => Session | null;
+  subscribe: (listener: () => void) => () => void;
+  setSession: (session: Session | null) => void;
+  refresh: (options?: { force?: boolean }) => Promise<Session | null>;
+  onAuthError: (error: unknown) => Promise<Session | null> | null;
+};
+
+function sameSession(left: Session | null, right: Session | null): boolean {
+  return (
+    left === right ||
+    (!!left &&
+      !!right &&
+      left.address === right.address &&
+      left.network === right.network &&
+      left.role === right.role &&
+      left.expiresAt === right.expiresAt &&
+      left.csrfToken === right.csrfToken)
+  );
+}
+
+export function createSessionState(options: { minIntervalMs?: number } = {}): SessionState {
+  const minIntervalMs = options.minIntervalMs ?? SESSION_REFRESH_MIN_INTERVAL_MS;
+  let current: Session | null = null;
+  let lastAttempt = Number.NEGATIVE_INFINITY;
+  let inFlight: Promise<Session | null> | undefined;
+  const listeners = new Set<() => void>();
+
+  const setSession = (session: Session | null) => {
+    if (sameSession(current, session)) return;
+    current = session;
+    for (const listener of [...listeners]) listener();
+  };
+
+  const state: SessionState = {
+    getSession: () => current,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    setSession,
+    refresh({ force = false } = {}) {
+      if (inFlight) return inFlight;
+      const now = Date.now();
+      if (!force && now - lastAttempt < minIntervalMs) return Promise.resolve(current);
+      lastAttempt = now;
+      inFlight = api
+        .get<{ session: Session | null }>('/api/me')
+        .then((response) => {
+          setSession(response.data.session);
+          return response.data.session;
+        })
+        .catch(() => current)
+        .finally(() => {
+          inFlight = undefined;
+        });
+      return inFlight;
+    },
+    onAuthError(error) {
+      if (!isSessionAuthError(error)) return null;
+      setSession(null);
+      return state.refresh({ force: true });
+    },
+  };
+  return state;
+}
+
+export function attachSessionFocusRefresh(
+  state: SessionState,
+  target: EventTarget = window,
+): () => void {
+  const onFocus = () => {
+    void state.refresh();
+  };
+  target.addEventListener('focus', onFocus);
+  return () => target.removeEventListener('focus', onFocus);
+}
