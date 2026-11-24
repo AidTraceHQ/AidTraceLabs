@@ -52,6 +52,18 @@ Provision distinct PostgreSQL login roles before the first migration: `aidtrace_
 
 Run `npm run db:migrate` as a deployment step before starting the API, using only the isolated development/test branch during development. Migration `005_audit_events_append_only` transfers `audit_events` ownership to the migration identity, removes public/runtime privileges, and grants the runtime role only `SELECT` and `INSERT`. For emergency audit maintenance, use the controlled `aidtrace_migration` owner credential through an approved operator session; never grant that credential to the application. This owner-level path can change or remove audit rows and does not protect against a database superuser. Set `ADMIN_WALLET` to a public G-address and run `npm run db:seed-admin` for first-time bootstrap; do not expose this command as a public route.
 
+### Migration file checksums
+
+Each applied migration is recorded in `schema_migrations` with a SHA-256 checksum of its SQL file. Every run recomputes the checksums and fails before applying anything if a released file changed. Do not edit an applied migration; add a new forward-only migration instead. The failure message names the affected version and checksums only; it never prints file contents or connection credentials.
+
+Databases migrated before checksums existed have `NULL` checksums. Review every recorded file against the deployed schema, then record the reviewed baselines once:
+
+```bash
+npm run db:migrate -- --baseline-checksums
+```
+
+The baseline command writes checksums only for `NULL` rows. Later runs fail closed on any change to a checksummed file.
+
 ## Scheduled verification refresh
 
 There is no hosted scheduler configured. An operator may run `npm run records:reverify` as a standalone Node.js job after applying database migrations. Schedule it externally only where the operator controls the environment and can monitor its exit status and JSON summary.
