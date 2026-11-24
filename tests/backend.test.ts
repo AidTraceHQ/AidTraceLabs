@@ -57,6 +57,9 @@ describe('Freighter signed challenge creates a secure session', () => {
 
     const protectedRequest = await request(app).post('/api/records').set('Origin', origin).send({});
     expect(protectedRequest.status).toBe(401);
+
+    const auditRequest = await request(app).get('/api/audit');
+    expect(auditRequest.status).toBe(401);
   });
 
   it('correlates unexpected API failures and logs only redacted structured fields', async () => {
@@ -886,6 +889,155 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       await maintenancePool.end();
       await pool.end();
     }
+  });
+
+  it('filters audit events by actor address and record ID, including empty results', async () => {
+    const adminSession = await login(admin);
+    const organization = Keypair.random();
+    await assignRole(adminSession, organization, 'organization');
+    const organizationSession = await login(organization);
+    const created = await createRecord(organizationSession, Keypair.random(), 'Audit filter test');
+    expect(created.status).toBe(201);
+    const recordId = created.body.record.id as string;
+    const address = organization.publicKey();
+
+    const byAddress = await request(app)
+      .get('/api/audit')
+      .query({ address })
+      .set('Cookie', adminSession.cookie);
+    expect(byAddress.status).toBe(200);
+    expect(
+      byAddress.body.entries.some(
+        (entry: { address: string; recordId?: string }) =>
+          entry.address === address && entry.recordId === recordId,
+      ),
+    ).toBe(true);
+
+    const byRecordId = await request(app)
+      .get('/api/audit')
+      .query({ recordId })
+      .set('Cookie', adminSession.cookie);
+    expect(byRecordId.status).toBe(200);
+    expect(byRecordId.body.entries.length).toBeGreaterThan(0);
+    expect(
+      byRecordId.body.entries.every((entry: { recordId?: string }) => entry.recordId === recordId),
+    ).toBe(true);
+
+    const byBoth = await request(app)
+      .get('/api/audit')
+      .query({ address, recordId })
+      .set('Cookie', adminSession.cookie);
+    expect(byBoth.status).toBe(200);
+    expect(byBoth.body.entries).toHaveLength(1);
+    expect(byBoth.body.entries[0]).toMatchObject({ address, recordId });
+
+    const empty = await request(app)
+      .get('/api/audit')
+      .query({ address: Keypair.random().publicKey(), recordId })
+      .set('Cookie', adminSession.cookie);
+    expect(empty.status).toBe(200);
+    expect(empty.body.entries).toEqual([]);
+  });
+
+  it('lets an organization update its own display name and applies it to existing and new records', async () => {
+    const adminSession = await login(admin);
+    const organization = Keypair.random();
+    const otherOrganization = Keypair.random();
+    await assignRole(adminSession, organization, 'organization');
+    await assignRole(adminSession, otherOrganization, 'organization');
+    const organizationSession = await login(organization);
+    const otherProfile = await request(app)
+      .get(`/api/organizations/${otherOrganization.publicKey()}/profile`)
+      .set('Cookie', organizationSession.cookie);
+    expect(otherProfile.status).toBe(403);
+
+    const beforeRecord = await createRecord(
+      organizationSession,
+      Keypair.random(),
+      'Before organization rename',
+    );
+    expect(beforeRecord.status).toBe(201);
+    const recordId = beforeRecord.body.record.id as string;
+    const defaultOtherName = `Organization ${otherOrganization.publicKey().slice(-4)}`;
+    const profilePath = `/api/organizations/${organization.publicKey()}/profile`;
+
+    const forbiddenUpdate = await request(app)
+      .put(`/api/organizations/${otherOrganization.publicKey()}/profile`)
+      .set('Origin', origin)
+      .set('Cookie', organizationSession.cookie)
+      .send({ csrfToken: organizationSession.csrfToken, displayName: 'Unauthorized Name' });
+    expect(forbiddenUpdate.status).toBe(403);
+
+    const afterForbiddenUpdate = await pool.query<{ display_name: string }>(
+      'SELECT display_name FROM organizations WHERE wallet_address = $1',
+      [otherOrganization.publicKey()],
+    );
+    expect(afterForbiddenUpdate.rows[0]?.display_name).toBe(defaultOtherName);
+    const rejectedAudit = await pool.query<{ count: string }>(
+      `SELECT COUNT(*) FROM audit_events
+       WHERE actor_wallet = $1 AND action = 'organization_profile_updated'`,
+      [organization.publicKey()],
+    );
+    expect(rejectedAudit.rows[0]?.count).toBe('0');
+
+    const duplicateName = await request(app)
+      .put(profilePath)
+      .set('Origin', origin)
+      .set('Cookie', organizationSession.cookie)
+      .send({
+        csrfToken: organizationSession.csrfToken,
+        displayName: `  ${defaultOtherName.toUpperCase()}  `,
+      });
+    expect(duplicateName.status).toBe(409);
+    const afterDuplicateName = await pool.query<{ display_name: string }>(
+      'SELECT display_name FROM organizations WHERE wallet_address = $1',
+      [organization.publicKey()],
+    );
+    expect(afterDuplicateName.rows[0]?.display_name).toBe(
+      `Organization ${organization.publicKey().slice(-4)}`,
+    );
+    const duplicateAudit = await pool.query<{ count: string }>(
+      `SELECT COUNT(*) FROM audit_events
+       WHERE actor_wallet = $1 AND action = 'organization_profile_updated'`,
+      [organization.publicKey()],
+    );
+    expect(duplicateAudit.rows[0]?.count).toBe('0');
+
+    const updatedProfile = await request(app)
+      .put(profilePath)
+      .set('Origin', origin)
+      .set('Cookie', organizationSession.cookie)
+      .send({ csrfToken: organizationSession.csrfToken, displayName: '  Community   Relief  ' });
+    expect(updatedProfile.status).toBe(200);
+    expect(updatedProfile.body.profile).toEqual({
+      address: organization.publicKey(),
+      displayName: 'Community Relief',
+    });
+
+    const readProfile = await request(app)
+      .get(profilePath)
+      .set('Cookie', organizationSession.cookie);
+    expect(readProfile.status).toBe(200);
+    expect(readProfile.body.profile.displayName).toBe('Community Relief');
+
+    const existingRecord = await request(app).get(`/api/records/${recordId}`);
+    expect(existingRecord.status).toBe(200);
+    expect(existingRecord.body.record.organizationName).toBe('Community Relief');
+
+    const afterRecord = await createRecord(
+      organizationSession,
+      Keypair.random(),
+      'After organization rename',
+    );
+    expect(afterRecord.status).toBe(201);
+    expect(afterRecord.body.record.organizationName).toBe('Community Relief');
+
+    const profileAudit = await pool.query<{ count: string }>(
+      `SELECT COUNT(*) FROM audit_events
+       WHERE actor_wallet = $1 AND action = 'organization_profile_updated'`,
+      [organization.publicKey()],
+    );
+    expect(profileAudit.rows[0]?.count).toBe('1');
   });
 
   it('reports duplicate hashes and aborts migration 002 before creating the unique constraint', async () => {
