@@ -19,7 +19,7 @@ The Vite development server listens on port 5173 and proxies `/api` to port 3001
 
 ## Data Model
 
-All application tables use PostgreSQL. Migration `001_initial_schema.sql` creates the tables and indexes below. The migration runner separately creates `schema_migrations` to track applied files. Migration `002_unique_network_tx_hash.sql` normalizes transaction hashes and adds the unique network/hash constraint. Migration `003_wallet_roles_updated_index.sql` adds an index for the admin role-list ordering. No foreign key declares `ON DELETE CASCADE`; PostgreSQL's default referential behavior applies.
+All application tables use PostgreSQL. Migration `001_initial_schema.sql` creates the tables and indexes below. The migration runner separately creates `schema_migrations` to track applied files. Migration `002_unique_network_tx_hash.sql` normalizes transaction hashes and adds the unique network/hash constraint. Migration `003_wallet_roles_updated_index.sql` adds an index for the admin role-list ordering. Migration `005_record_pagination_indexes.sql` adds the ordering index used by filtered record pages. No foreign key declares `ON DELETE CASCADE`; PostgreSQL's default referential behavior applies.
 
 ### `schema_migrations`
 
@@ -67,16 +67,16 @@ The wallet address is the organization's account used by payment-source verifica
 
 ### `sessions`
 
-| Column            | Type          | Constraint/default                                         |
-| ----------------- | ------------- | ---------------------------------------------------------- |
-| `session_hash`    | `TEXT`        | Primary key; stores the token digest, not the cookie token |
-| `wallet_address`  | `TEXT`        | `NOT NULL`; foreign key to `users.wallet_address`          |
-| `network`         | `TEXT`        | `NOT NULL`; check in `testnet`, `mainnet`                  |
-| `csrf_token_hash` | `TEXT`        | `NOT NULL`                                                 |
-| `created_at`      | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()`                                   |
-| `expires_at`      | `TIMESTAMPTZ` | `NOT NULL`                                                 |
-| `revoked_at`      | `TIMESTAMPTZ` | Nullable                                                   |
-| `last_seen_at`    | `TIMESTAMPTZ` | Nullable; not currently updated by request handling        |
+| Column            | Type          | Constraint/default                                                                |
+| ----------------- | ------------- | --------------------------------------------------------------------------------- |
+| `session_hash`    | `TEXT`        | Primary key; stores the token digest, not the cookie token                        |
+| `wallet_address`  | `TEXT`        | `NOT NULL`; foreign key to `users.wallet_address`                                 |
+| `network`         | `TEXT`        | `NOT NULL`; check in `testnet`, `mainnet`                                         |
+| `csrf_token_hash` | `TEXT`        | `NOT NULL`                                                                        |
+| `created_at`      | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()`                                                          |
+| `expires_at`      | `TIMESTAMPTZ` | `NOT NULL`                                                                        |
+| `revoked_at`      | `TIMESTAMPTZ` | Nullable                                                                          |
+| `last_seen_at`    | `TIMESTAMPTZ` | Nullable; advanced on authenticated requests, at most once per minute per session |
 
 Indexes: `sessions_wallet_expiry_idx(wallet_address, revoked_at, expires_at)` and partial `sessions_expiry_idx(expires_at) WHERE revoked_at IS NULL`, plus the primary key.
 
@@ -122,7 +122,7 @@ Indexes: `challenges_wallet_expiry_idx(wallet_address, expires_at, used_at)`, th
 
 The void-field check requires `void_reason`, `voided_by`, and `voided_at` to be either all NULL or all populated. Migration 002 converts blank hashes to NULL, lowercases nonblank hashes, and adds `UNIQUE (network, tx_hash)`; PostgreSQL permits multiple NULLs under this unique constraint. Its preflight groups case-insensitively by network/hash and aborts with the duplicate rows if conflicts exist.
 
-Indexes: `aid_records_created_idx(created_at DESC, id DESC)`, `aid_records_organization_created_idx(organization_wallet, created_at DESC, id DESC)`, `aid_records_recipient_created_idx(recipient_wallet, created_at DESC, id DESC)`, `aid_records_network_status_date_idx(network, status, disbursement_date, id)`, the primary key, and the migration-002 unique index on `(network, tx_hash)`.
+Indexes: `aid_records_created_idx(created_at DESC, id DESC)`, `aid_records_organization_created_idx(organization_wallet, created_at DESC, id DESC)`, `aid_records_recipient_created_idx(recipient_wallet, created_at DESC, id DESC)`, `aid_records_network_status_date_idx(network, status, disbursement_date, id)`, `aid_records_network_status_created_idx(network, status, created_at DESC, id DESC)` (migration 005), the primary key, and the migration-002 unique index on `(network, tx_hash)`.
 
 ### `verification_results`
 
@@ -173,7 +173,40 @@ Index: `rate_limits_expiry_idx(expires_at)`. The application stores digests of r
 | `metadata_json`  | `JSONB`       | `NOT NULL DEFAULT '{}'::jsonb`                  |
 | `created_at`     | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()`                        |
 
-Indexes: `audit_events_created_idx(created_at DESC, id DESC)`, `audit_events_actor_created_idx(actor_wallet, created_at DESC, id DESC)`, `audit_events_record_created_idx(record_id, created_at DESC, id DESC)`, `audit_events_action_created_idx(action, created_at DESC, id DESC)`, and the primary key. The migrations do not enforce database-level append-only permissions.
+Indexes: `audit_events_created_idx(created_at DESC, id DESC)`, `audit_events_actor_created_idx(actor_wallet, created_at DESC, id DESC)`, `audit_events_record_created_idx(record_id, created_at DESC, id DESC)`, `audit_events_action_created_idx(action, created_at DESC, id DESC)`, and the primary key. Migration 005 gives `aidtrace_runtime` `SELECT` and `INSERT` only; `aidtrace_migration` owns the table and retains maintenance access.
+
+Audit writes pass structured detail in `metadata_json` as a parameterized `$n::jsonb` argument, never by interpolating values into SQL text. Role changes store `previousRole` and `newRole`; record voids store `voidReason`; verification checks store `status` and `ledger`; record creates and updates store `network` and `status` (updates also store `version`); and session events store `network` (logout-everywhere also stores `scope`). Session tokens and CSRF tokens are never written to audit rows. The `GET /api/audit` response contract does not include `metadata_json`.
+
+## Filtered Record Pagination
+
+Record lists always order by `created_at DESC, id DESC`. `GET /api/transparency?network=testnet&status=verified` filters on `(network, status)`, so migration 005 adds `aid_records_network_status_created_idx(network, status, created_at DESC, id DESC)`. The index supplies both the filter and the page order, so the plan needs no `Sort` node above the index scan.
+
+Capture below: PostgreSQL 16, 20,000 synthetic `aid_records` rows with 400 `verified` rows, `ANALYZE` run before each plan, and `EXPLAIN (ANALYZE, BUFFERS, COSTS OFF)` on the `listRows` query shape.
+
+Before migration 005 (existing indexes only):
+
+```text
+ Limit (actual time=0.051..0.684 rows=21 loops=1)
+   Buffers: shared hit=2140
+   ->  Nested Loop (actual time=0.050..0.681 rows=21 loops=1)
+         ->  Index Scan using aid_records_created_idx on aid_records r (actual time=0.040..0.665 rows=21 loops=1)
+               Filter: ((network = 'testnet'::text) AND (status = 'verified'::text))
+               Rows Removed by Filter: 1029
+               Buffers: shared hit=2139
+```
+
+After migration 005:
+
+```text
+ Limit (actual time=0.036..0.055 rows=21 loops=1)
+   Buffers: shared hit=2 read=3
+   ->  Nested Loop (actual time=0.035..0.053 rows=21 loops=1)
+         ->  Index Scan using aid_records_network_status_created_idx on aid_records r (actual time=0.026..0.039 rows=21 loops=1)
+               Index Cond: ((network = 'testnet'::text) AND (status = 'verified'::text))
+               Buffers: shared hit=1 read=3
+```
+
+Both plans return the same rows in the same order. The new index turns the filter into an `Index Cond` and reduces the buffer count from 2,140 to 5. Page contents, `hasMore`, and signed cursors are unchanged because the query and cursor comparison are untouched.
 
 ## API Routes
 
@@ -208,7 +241,7 @@ List limit defaults to 20 and must be an integer from 1 to 100. Cursors are sign
 2. `POST /api/auth/challenge` checks the allowed Origin and validates the address/network. It creates a 24-byte random challenge ID and 32-byte random nonce, stores the exact message and expiry, and returns expiry as milliseconds. The signed message includes the configured origin, address, network, nonce, issuance time, five-minute expiry, and the purpose statement.
 3. Freighter signs the exact UTF-8 message. The server verifies `SHA-256(UTF-8("Stellar Signed Message:\\n" + message))` with Ed25519 verification from `@stellar/stellar-sdk` and the public key. Signatures may be valid 64-byte hex or canonical base64.
 4. The server conditionally consumes the challenge in a PostgreSQL transaction, resolves the current wallet role, stores a SHA-256 digest of a random 32-byte session token, stores a digest of a session-derived CSRF token, and writes a wallet-authenticated audit event. Replay returns 409; missing, expired, mismatched, or invalid challenges/signatures return 401.
-5. The cookie is `aidtrace_session`, HttpOnly, Secure, SameSite=Lax, path `/`, seven-day max age. Every authenticated request reloads active, unexpired session and current role from PostgreSQL. `GET /api/me` also returns the CSRF token to the authenticated client.
+5. The cookie is `aidtrace_session`, HttpOnly, Secure, SameSite=Lax, path `/`, seven-day max age. Every authenticated request reloads active, unexpired session and current role from PostgreSQL. It also advances `sessions.last_seen_at`, but only when the stored value is at least one minute old, so recency tracking does not add one `UPDATE` per request. `GET /api/me` also returns the CSRF token to the authenticated client.
 6. State-changing routes check Origin and constant-time comparison of the supplied CSRF token's digest. Logout revokes one session; logout-everywhere revokes every active session for the wallet. Both clear the cookie and audit revocation.
 
 `SESSION_SECRET` must be at least 32 bytes. It keys the CSRF derivation and cursor signatures. `PSEUDONYM_SECRET` is a separate HMAC key for consent-off beneficiary labels; it must be at least 32 bytes, and production does not accept a missing key or the example placeholder. Only `NODE_ENV=development` with no configured key uses the explicitly named development fallback.
@@ -245,10 +278,11 @@ Verified and mismatch results may be cached for one hour. Pending and other stat
 ## Deployment Requirements
 
 - Use Node.js 20 or newer and PostgreSQL. The local example uses PostgreSQL on port 5432; CI uses PostgreSQL 16. The project also has Docker API and Compose configuration, but Compose execution is not verified on every machine.
-- Set `DATABASE_URL` for the runtime pool. The migration command uses `DATABASE_URL_UNPOOLED` when supplied, otherwise `DATABASE_URL`; use a direct (non-pooled) endpoint for migration where available. Remote connection examples should use `sslmode=verify-full`.
+- The runtime pool sets `idle_in_transaction_session_timeout` (30 s, `IDLE_IN_TRANSACTION_TIMEOUT_MS` in `server/db.ts`) so a client that opens a transaction and stalls is ended by PostgreSQL and releases its row locks; `statement_timeout` (15 s) and `query_timeout` (20 s) still bound individual statements.
+- Set `DATABASE_URL` for the `aidtrace_runtime` pool and `DATABASE_URL_UNPOOLED` for the `aidtrace_migration` identity. The runtime role must not own or inherit write access to `audit_events`. Use a direct (non-pooled) endpoint for migration where available. Remote connection examples should use `sslmode=verify-full`.
 - Configure distinct 32-byte-minimum `SESSION_SECRET` and `PSEUDONYM_SECRET`; exact `PUBLIC_APP_ORIGIN` and `CORS_ALLOWED_ORIGINS`; `PORT`; network-specific Horizon URLs; and optionally `DEFAULT_STELLAR_NETWORK`. Bootstrap the first admin by setting a public Stellar `ADMIN_WALLET` and running `npm run db:seed-admin`; there is no public bootstrap route.
 - Integration tests use `TEST_DATABASE_URL` and require `TEST_DATABASE_BRANCH=test`, `TEST_DATABASE_URL_UNPOOLED`, and `PRODUCTION_DATABASE_HOST`. The test setup rejects a test endpoint that matches the production hostname or runtime endpoint. Use Neon dev for local runtime and a separate Neon test branch for integration tests; never target production.
-- `npm run db:migrate` applies ordered `NNN_name.sql` migrations and records versions in `schema_migrations`. Migration 002 checks for case-insensitive duplicate hashes before creating the unique index and aborts without applying that migration if duplicates exist. Migration 003 adds the `wallet_roles` ordering index used by admin role listings.
+- `npm run db:migrate` applies ordered `NNN_name.sql` migrations and records versions in `schema_migrations`. Migration 002 checks for case-insensitive duplicate hashes before creating the unique index and aborts without applying that migration if duplicates exist. Migration 003 adds the `wallet_roles` ordering index used by admin role listings. Migration 005 adds the ordering index used by filtered record pages.
 - For production, serve the built Vite assets behind HTTPS with Express behind the same-origin `/api` proxy where possible. The cookie is Secure and SameSite=Lax. A cross-site deployment requires a separate cookie/CORS review.
 - Configure PostgreSQL access restrictions, least-privilege app/migration identities, backup retention, and tested restore procedures before production operation. No production deployment, backup/restore exercise, or browser-level Freighter cookie verification is claimed by this design.
 

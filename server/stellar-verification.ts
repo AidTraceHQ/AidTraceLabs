@@ -143,6 +143,33 @@ function operationSource(operation: HorizonOperation, transaction: HorizonTransa
   );
 }
 
+// Reads at most HORIZON_MAX_RESPONSE_BYTES, cancelling the stream as soon as the bound is
+// exceeded, so an oversized body is never fully buffered or parsed.
+async function readBoundedBody(response: Response): Promise<string | null> {
+  if (!response.body) {
+    const text = await response.text();
+    return Buffer.byteLength(text) > HORIZON_MAX_RESPONSE_BYTES ? null : text;
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > HORIZON_MAX_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 async function getJson<T>(
   url: URL,
   signal?: AbortSignal,
@@ -154,8 +181,14 @@ async function getJson<T>(
       : AbortSignal.timeout(10_000),
   });
   if (!response.ok) return { response };
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > HORIZON_MAX_RESPONSE_BYTES) {
+    return { response };
+  }
   try {
-    return { response, data: (await response.json()) as T };
+    const text = await readBoundedBody(response);
+    if (text === null) return { response };
+    return { response, data: JSON.parse(text) as T };
   } catch {
     return { response };
   }

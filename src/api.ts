@@ -41,6 +41,9 @@ export type PageEnvelope = {
 
 const configuredBase = import.meta.env.VITE_API_BASE_URL?.trim() || '';
 
+/** Default deadline for a single API request, in milliseconds. */
+export const DEFAULT_API_TIMEOUT_MS = 15000;
+
 export function resolveApiUrl(
   path: string,
   base = configuredBase,
@@ -51,29 +54,36 @@ export function resolveApiUrl(
   return new URL(path, normalizedBase || origin).toString();
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<ApiResponse<T>> {
+interface RequestOptions {
+  timeoutMs?: number;
+}
+
+function createDeadline(timeoutMs: number): { signal: AbortSignal; dispose: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return { signal: controller.signal, dispose: () => clearTimeout(timer) };
+}
+
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  options: RequestOptions = {},
+): Promise<ApiResponse<T>> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_API_TIMEOUT_MS;
   const headers = new Headers({ Accept: 'application/json' });
+  const deadline = createDeadline(timeoutMs);
   const init: RequestInit = {
     method,
     headers,
     credentials: 'include',
     cache: 'no-store',
+    signal: deadline.signal,
   };
   if (body !== undefined) {
     headers.set('Content-Type', 'application/json');
     init.body = JSON.stringify(body);
   }
-  let response: Response;
-  try {
-    response = await fetch(resolveApiUrl(path), init);
-  } catch (error) {
-    const detail = error instanceof Error ? ': ' + error.message : '';
-    const requestError = new Error(method + ' ' + path + ' failed' + detail);
-    Object.defineProperty(requestError, 'cause', { value: error });
-    throw requestError;
-  }
-  const failurePrefix = method + ' ' + path + ' failed (' + response.status + ')';
-  let data: unknown;
   try {
     data = await response.json();
   } catch {
@@ -92,7 +102,6 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     if (path !== '/api/me' && isSessionAuthError(apiError)) sessionAuthErrorHandler?.(apiError);
     throw apiError;
   }
-  return { data: data as T };
 }
 
 async function getAllPages<TItem>(
@@ -170,14 +179,18 @@ export function resetCursorStack(): Array<string | null> {
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>('GET', path),
-  getRecord: <T>(id: string) =>
-    request<{ record: T }>('GET', '/api/records/' + encodeURIComponent(id)),
+  get: <T>(path: string, options?: RequestOptions) => request<T>('GET', path, undefined, options),
+  getRecord: <T>(id: string, options?: RequestOptions) =>
+    request<{ record: T }>('GET', '/api/records/' + encodeURIComponent(id), undefined, options),
   getAllPages,
   getPage,
-  post: <T = unknown>(path: string, body?: unknown) => request<T>('POST', path, body),
-  put: <T = unknown>(path: string, body?: unknown) => request<T>('PUT', path, body),
-  delete: <T = unknown>(path: string, body?: unknown) => request<T>('DELETE', path, body),
+  // Writes are never retried automatically; a timed-out write surfaces ApiTimeoutError.
+  post: <T = unknown>(path: string, body?: unknown, options?: RequestOptions) =>
+    request<T>('POST', path, body, options),
+  put: <T = unknown>(path: string, body?: unknown, options?: RequestOptions) =>
+    request<T>('PUT', path, body, options),
+  delete: <T = unknown>(path: string, body?: unknown, options?: RequestOptions) =>
+    request<T>('DELETE', path, body, options),
 };
 
 let sessionAuthErrorHandler: ((error: ApiError) => void) | undefined;
