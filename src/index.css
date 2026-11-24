@@ -658,6 +658,14 @@ td small.subcell {
 .activity-stats {
   padding-top: 0;
 }
+.activity-pagination {
+  display: flex;
+  justify-content: center;
+  padding: 14px 0;
+}
+.activity-pagination .button {
+  max-width: 100%;
+}
 .hash {
   font:
     10px ui-monospace,

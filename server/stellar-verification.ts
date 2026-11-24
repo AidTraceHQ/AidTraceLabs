@@ -24,20 +24,33 @@ export type Verification = {
   assetIssuer?: string;
   link?: string;
   reason?: string;
+  memo?: string;
+  memoType?: MemoType;
 };
+
+type MemoType = 'text' | 'id' | 'hash' | 'return';
 
 type HorizonTransaction = {
   successful?: boolean;
   ledger?: number;
   created_at?: string;
   source_account?: string;
+  memo_type?: string;
+  memo?: string;
 };
 
 type HorizonOperation = Record<string, unknown> & { paging_token?: string };
 
 const operationPageSize = 200;
 const operationPageLimit = 20;
+// A 200-operation page is far smaller than this; the bound stops a misconfigured or
+// compromised Horizon endpoint from forcing an unbounded buffer before parsing.
+export const HORIZON_MAX_RESPONSE_BYTES = 1024 * 1024;
 const amountPattern = /^(\d+)(?:\.(\d{1,7}))?$/;
+const memoTypes: ReadonlySet<string> = new Set<MemoType>(['text', 'id', 'hash', 'return']);
+// Stellar memos are at most 28 bytes (text) or 32 bytes base64-encoded (hash/return);
+// this bound only guards storage against an unexpected Horizon response.
+const memoMaxLength = 128;
 
 function horizonUrl(network: Network): URL {
   const configured =
@@ -127,6 +140,33 @@ function operationSource(operation: HorizonOperation, transaction: HorizonTransa
   );
 }
 
+// Reads at most HORIZON_MAX_RESPONSE_BYTES, cancelling the stream as soon as the bound is
+// exceeded, so an oversized body is never fully buffered or parsed.
+async function readBoundedBody(response: Response): Promise<string | null> {
+  if (!response.body) {
+    const text = await response.text();
+    return Buffer.byteLength(text) > HORIZON_MAX_RESPONSE_BYTES ? null : text;
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > HORIZON_MAX_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 async function getJson<T>(
   url: URL,
   signal?: AbortSignal,
@@ -138,11 +178,35 @@ async function getJson<T>(
       : AbortSignal.timeout(10_000),
   });
   if (!response.ok) return { response };
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > HORIZON_MAX_RESPONSE_BYTES) {
+    return { response };
+  }
   try {
-    return { response, data: (await response.json()) as T };
+    const text = await readBoundedBody(response);
+    if (text === null) return { response };
+    return { response, data: JSON.parse(text) as T };
   } catch {
     return { response };
   }
+}
+
+function isMemoType(value: unknown): value is MemoType {
+  return typeof value === 'string' && memoTypes.has(value);
+}
+
+/**
+ * Capture-only: the memo is reported as on-chain evidence and never affects matching.
+ * `none`, unknown types, and missing/non-string/empty values yield no memo fields.
+ * An id memo is a uint64, so it stays a string (Number loses precision past 2^53);
+ * hash/return memos keep Horizon's base64 encoding. NUL characters are removed because
+ * PostgreSQL TEXT cannot store them and the insert would otherwise fail the verification.
+ */
+function transactionMemo(transaction: HorizonTransaction): Pick<Verification, 'memo' | 'memoType'> {
+  const { memo_type: memoType } = transaction;
+  if (!isMemoType(memoType) || typeof transaction.memo !== 'string') return {};
+  const memo = transaction.memo.replaceAll('\u0000', '').slice(0, memoMaxLength);
+  return memo ? { memo, memoType } : {};
 }
 
 function explorerLink(network: Network, txHash: string): string {
@@ -220,6 +284,7 @@ export async function checkTransaction(
       createdAt: transaction.created_at,
       sourceAccount: transaction.source_account,
       link,
+      ...transactionMemo(transaction),
     };
   }
   if (transaction.successful !== true) {
@@ -259,7 +324,7 @@ export async function checkTransaction(
         reason: 'Horizon operations endpoint is unavailable.',
       };
     }
-    if (!response.ok || !pageRecords) {
+    if (!response.ok || !Array.isArray(pageRecords)) {
       return {
         status: 'pending',
         checkedAt,
@@ -364,6 +429,7 @@ export async function checkTransaction(
         asset: asset.code,
         assetIssuer: asset.issuer || undefined,
         link,
+        ...transactionMemo(transaction),
       };
     }
   }
@@ -391,5 +457,6 @@ export async function checkTransaction(
     asset: bestCandidate?.assetCode || undefined,
     assetIssuer: bestCandidate?.assetIssuer || undefined,
     link,
+    ...transactionMemo(transaction),
   };
 }

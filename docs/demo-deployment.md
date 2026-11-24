@@ -121,7 +121,8 @@ clean parent (or delete the copied rows) if the demo must not expose existing re
 2. Set the environment variables from the table above.
 3. Deploy. `npm run build` produces `dist/`, and Vercel builds `api/index.ts` as a Function.
 4. Check `https://aidtrace-demo.vercel.app/api/_healthcheck` returns `{"ok":true,...}` and that the
-   frontend loads from the same origin.
+   frontend loads from the same origin. `npm run smoke:remote -- <base-url>` checks both with
+   bounded timeouts (see below).
 
 The Vercel GitHub app is uninstalled, so pushes do not trigger redeployments. Redeploy from the
 repository root with the authenticated CLI:
@@ -130,6 +131,22 @@ repository root with the authenticated CLI:
 $config = Join-Path $env:LOCALAPPDATA 'VercelConfig'
 npx --yes vercel --global-config $config deploy --prod --yes
 ```
+
+## HTTP smoke check for a deployed URL
+
+`npm run smoke` still exercises the in-process Express app. To verify a deployed origin, pass its
+base URL to the separate remote command:
+
+```bash
+npm run smoke:remote -- https://aidtrace-demo.vercel.app
+```
+
+The command fetches the base URL (liveness) and `/api/_healthcheck` (readiness) with a fixed
+five-second timeout per request. It prints exactly three lines — `liveness`, `readiness`, and
+`health` — and exits non-zero if a request fails or times out, the frontend is not HTTP 200, or the
+health JSON does not contain `ok: true`. A timeout, a non-200 response, and malformed health JSON
+each produce a distinct status. The output never includes the base URL, environment values, error
+text, or response bodies; the only value taken from a response body is the health boolean.
 
 ## Remaining verification
 
