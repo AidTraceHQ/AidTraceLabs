@@ -177,6 +177,10 @@ Indexes: `audit_events_created_idx(created_at DESC, id DESC)`, `audit_events_act
 
 Audit writes pass structured detail in `metadata_json` as a parameterized `$n::jsonb` argument, never by interpolating values into SQL text. Role changes store `previousRole` and `newRole`; record voids store `voidReason`; verification checks store `status` and `ledger`; record creates and updates store `network` and `status` (updates also store `version`); and session events store `network` (logout-everywhere also stores `scope`). Session tokens and CSRF tokens are never written to audit rows. The `GET /api/audit` response contract does not include `metadata_json`.
 
+## Transparency Aggregate Caching
+
+`GET /api/transparency` computes the grouped amount/status summary and the global distinct organization and asset facets once per view rather than once per cursor page. The summary and facets are returned on the first page (the request with no `cursor`), and continuation pages omit them. `getAllPages` in `server/records.ts` retains the first-page summary and facets when it combines pages, so the combined response contains the expected summary and facets. Filtered summary values and page collection are correct for empty, one-page, and multi-page results. Verification of this behavior asserts the summary/facet query count per view in `tests/backend.test.ts` and `tests/api.test.ts`. Before/after query count and timing are recorded on a seeded synthetic dataset only. This is a per-view request-scoped deduplication; no general caching service, cursor replacement, or totals-semantics change is introduced.
+
 ## API Routes
 
 All handlers use `Cache-Control: no-store`; errors generally return `{ "error": "..." }`. The `Origin` allowlist comes from `CORS_ALLOWED_ORIGINS` (defaulting to `PUBLIC_APP_ORIGIN`). Protected writes require a valid session, allowed Origin, session-bound CSRF token, and applicable role. The API does not expose a database-readiness health route.

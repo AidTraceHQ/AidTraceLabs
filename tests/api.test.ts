@@ -163,6 +163,29 @@ describe('api.getPage cursor pagination', () => {
     });
   });
 
+  it('returns first-page summary and facets with the combined response shape', async () => {
+    vi.stubGlobal('window', { location: { origin: 'http://localhost:5173' } });
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          records: [{ id: 'only' }],
+          nextCursor: null,
+          hasMore: false,
+          total: 1,
+          summary: { count: 1 },
+          facets: { organizations: ['org-a'] },
+        }),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const page = await api.getPage<{ id: string }>('/api/transparency', 'records', { limit: 10 });
+    expect(page.data.total).toBe(1);
+    expect(page.data.summary).toEqual({ count: 1 });
+    expect(page.data.facets).toEqual({ organizations: ['org-a'] });
+  });
+
   it('stops at end of list without issuing another request', async () => {
     vi.stubGlobal('window', { location: { origin: 'http://localhost:5173' } });
     const fetchMock = vi

@@ -767,28 +767,36 @@ async function transparencyHandler(request: Request, response: Response): Promis
   const conditions = ['TRUE'];
   const values: unknown[] = [];
   if (!applyRecordFilters(request, response, conditions, values)) return;
-  const summaryResult = await pool.query<{
-    status: RecordStatus;
-    asset_code: string;
-    amount_stroops: string;
-  }>(
-    `SELECT r.status, r.asset_code, SUM(r.amount_stroops)::text AS amount_stroops
-     FROM aid_records r
-     JOIN organizations o ON o.wallet_address = r.organization_wallet
-     WHERE ${conditions.join(' AND ')}
-     GROUP BY r.status, r.asset_code
-     ORDER BY r.status, r.asset_code`,
-    values,
-  );
-  // Count must run before listRows mutates conditions/values with the cursor clause.
-  const countResult = await pool.query<{ total: number }>(
-    `SELECT COUNT(*)::int AS total
-     FROM aid_records r
-     JOIN organizations o ON o.wallet_address = r.organization_wallet
-     WHERE ${conditions.join(' AND ')}`,
-    values,
-  );
-  const total = countResult.rows[0]?.total ?? 0;
+  // Summary, total and facets are only computed on the first page of a view;
+  // subsequent cursor pages omit them and clients keep the first-page metadata.
+  const isFirstPage = page.cursor === null;
+  let summaryResult: { rows: { status: RecordStatus; asset_code: string; amount_stroops: string }[] } =
+    { rows: [] };
+  let total = 0;
+  if (isFirstPage) {
+    summaryResult = await pool.query<{
+      status: RecordStatus;
+      asset_code: string;
+      amount_stroops: string;
+    }>(
+      `SELECT r.status, r.asset_code, SUM(r.amount_stroops)::text AS amount_stroops
+       FROM aid_records r
+       JOIN organizations o ON o.wallet_address = r.organization_wallet
+       WHERE ${conditions.join(' AND ')}
+       GROUP BY r.status, r.asset_code
+       ORDER BY r.status, r.asset_code`,
+      values,
+    );
+    // Count must run before listRows mutates conditions/values with the cursor clause.
+    const countResult = await pool.query<{ total: number }>(
+      `SELECT COUNT(*)::int AS total
+       FROM aid_records r
+       JOIN organizations o ON o.wallet_address = r.organization_wallet
+       WHERE ${conditions.join(' AND ')}`,
+      values,
+    );
+    total = countResult.rows[0]?.total ?? 0;
+  }
   const result = await listRows<RecordRow>(
     recordSelect,
     conditions,
@@ -797,14 +805,17 @@ async function transparencyHandler(request: Request, response: Response): Promis
     'r.id',
     page,
   );
-  const facets = await pool.query<{ organizations: string[]; assets: string[] }>(
-    `SELECT ARRAY(
-       SELECT DISTINCT organization_wallet FROM aid_records ORDER BY organization_wallet
-     ) AS organizations,
-     ARRAY(
-       SELECT DISTINCT asset_code FROM aid_records ORDER BY asset_code
-     ) AS assets`,
-  );
+  let facets: { rows: { organizations: string[]; assets: string[] }[] } = { rows: [] };
+  if (isFirstPage) {
+    facets = await pool.query<{ organizations: string[]; assets: string[] }>(
+      `SELECT ARRAY(
+         SELECT DISTINCT organization_wallet FROM aid_records ORDER BY organization_wallet
+       ) AS organizations,
+       ARRAY(
+         SELECT DISTINCT asset_code FROM aid_records ORDER BY asset_code
+       ) AS assets`,
+    );
+  }
   const records = result.rows.map((row) => {
     const record = mapRecord(row);
     const mayViewPrivateData =
@@ -815,7 +826,7 @@ async function transparencyHandler(request: Request, response: Response): Promis
     return mayViewPrivateData ? record : publicRecord(record, row.recipient_consent);
   });
   const summary = {
-    byStatus: summaryResult.rows.map((row) => ({
+    byStatus: summaryResult.rows.map((row: { status: RecordStatus; asset_code: string; amount_stroops: string }) => ({
       status: row.status,
       asset: row.asset_code,
       amount: stroopsToAmount(row.amount_stroops),
@@ -833,7 +844,7 @@ async function transparencyHandler(request: Request, response: Response): Promis
       id: item.id,
     }),
     {
-      facets: facets.rows[0] || { organizations: [], assets: [] },
+      facets: isFirstPage ? facets.rows[0] || { organizations: [], assets: [] } : undefined,
       summary,
       total,
     },
