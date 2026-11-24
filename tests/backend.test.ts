@@ -383,6 +383,78 @@ describe('On-chain verification distinguishes matching and mismatching payments'
     expect(notFound).not.toHaveProperty('memo');
   });
 
+  it('selects the configured Horizon endpoint and explorer path for each network', async () => {
+    const organization = Keypair.random().publicKey();
+    const recipient = Keypair.random().publicKey();
+    const txHash = 'f'.repeat(64);
+    const originalMainnet = process.env.HORIZON_MAINNET_URL;
+    const originalTestnet = process.env.HORIZON_TESTNET_URL;
+    const requested: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = new URL(String(input));
+        requested.push(url.toString());
+        const body = url.pathname.endsWith('/operations')
+          ? {
+              _embedded: {
+                records: [
+                  {
+                    type: 'payment',
+                    from: organization,
+                    to: recipient,
+                    amount: '1',
+                    asset_type: 'native',
+                  },
+                ],
+              },
+            }
+          : {
+              successful: true,
+              source_account: organization,
+              ledger: 3,
+              created_at: '2026-01-01T00:00:00Z',
+            };
+        return new Response(JSON.stringify(body), { status: 200 });
+      }),
+    );
+    try {
+      process.env.HORIZON_MAINNET_URL = 'https://horizon-mainnet.example.test';
+      process.env.HORIZON_TESTNET_URL = 'https://horizon-testnet.example.test';
+      const record = {
+        network: 'mainnet' as const,
+        txHash,
+        organizationWallet: organization,
+        recipientWallet: recipient,
+        amountStroops: '10000000',
+        assetCode: 'XLM',
+        assetIssuer: null,
+      };
+
+      const mainnet = await checkTransaction(record);
+      expect(mainnet.status).toBe('verified');
+      expect(mainnet.link).toBe('https://stellar.expert/explorer/public/tx/' + txHash);
+      expect(requested).toHaveLength(2);
+      for (const url of requested) {
+        expect(new URL(url).host).toBe('horizon-mainnet.example.test');
+      }
+
+      requested.length = 0;
+      const testnet = await checkTransaction({ ...record, network: 'testnet' });
+      expect(testnet.status).toBe('verified');
+      expect(testnet.link).toBe('https://stellar.expert/explorer/testnet/tx/' + txHash);
+      expect(requested).toHaveLength(2);
+      for (const url of requested) {
+        expect(new URL(url).host).toBe('horizon-testnet.example.test');
+      }
+    } finally {
+      if (originalMainnet === undefined) delete process.env.HORIZON_MAINNET_URL;
+      else process.env.HORIZON_MAINNET_URL = originalMainnet;
+      if (originalTestnet === undefined) delete process.env.HORIZON_TESTNET_URL;
+      else process.env.HORIZON_TESTNET_URL = originalTestnet;
+    }
+  });
+
   it('bounds the Horizon response size and rejects a non-array operations payload', async () => {
     const organization = Keypair.random().publicKey();
     const recipient = Keypair.random().publicKey();
@@ -1945,5 +2017,37 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       },
       60_000,
     );
+  });
+});
+
+describe('transparency date range filter', () => {
+  it('returns 400 for a reversed range and runs no record list query', async () => {
+    const spy = vi.spyOn(pool, 'query');
+    try {
+      const res = await request(app)
+        .get('/api/transparency')
+        .query({ from: '2026-02-01', to: '2026-01-01' });
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(res.body)).toMatch(/from must be on or before to/i);
+      const listQueries = spy.mock.calls.filter(
+        ([sql]) => typeof sql === 'string' && /FROM\s+records/i.test(sql),
+      );
+      expect(listQueries).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it.each([
+    ['equal', '2026-01-01', '2026-01-01'],
+    ['ascending', '2026-01-01', '2026-02-01'],
+  ])('accepts %s ranges', async (_label, from, to) => {
+    const spy = vi.spyOn(pool, 'query').mockResolvedValue({ rows: [], rowCount: 0 } as never);
+    try {
+      const res = await request(app).get('/api/transparency').query({ from, to });
+      expect(res.status).toBe(200);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
