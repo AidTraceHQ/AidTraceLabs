@@ -33,3 +33,12 @@ Set distinct random values of at least 32 bytes for `SESSION_SECRET` and `PSEUDO
 General per-IP/read rate limiting, last-admin protection, complete failure/rejection audit coverage, and explicit evidence of beneficiary consent are not implemented. Public records can still reveal amounts, dates, purposes, organization, and creator. A `verified` status does not establish identity, consent, purpose, or impact.
 
 Report vulnerabilities privately using [SECURITY.md](../SECURITY.md). Use a dedicated test database and Stellar testnet for authorized checks; do not test against a live deployment without permission.
+
+
+## API error logging and request correlation
+
+Every API request receives a random request correlation ID. The API returns it in the `X-Request-Id` response header; cross-origin clients may read that header because it is included in the CORS exposed-header list.
+
+Unexpected API failures are emitted as one-line JSON events containing only the HTTP method, matched route template, response status, request ID, and a coarse error category. Request bodies, cookies, authorization values, signatures, tokens, query strings, raw exception messages, stack traces, and database connection details are not included. Client-facing generic error responses remain unchanged.
+
+Treat request IDs as diagnostic correlation values, not authentication credentials. Avoid copying sensitive request data into error messages or separate logs.
