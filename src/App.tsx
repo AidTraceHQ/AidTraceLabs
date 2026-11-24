@@ -264,6 +264,11 @@ export default function App() {
   const [ledgerHasMore, setLedgerHasMore] = useState(false);
   const [ledgerPageLoading, setLedgerPageLoading] = useState(false);
   const [beneficiaryRecords, setBeneficiaryRecords] = useState<AidRecord[]>([]);
+  const [beneficiarySearch, setBeneficiarySearch] = useState('');
+  const [beneficiaryStatusFilter, setBeneficiaryStatusFilter] = useState('all');
+  const [beneficiaryNetworkFilter, setBeneficiaryNetworkFilter] = useState('all');
+  const [beneficiaryFromDate, setBeneficiaryFromDate] = useState('');
+  const [beneficiaryToDate, setBeneficiaryToDate] = useState('');
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [activityHasMore, setActivityHasMore] = useState(false);
   const [activityPageLoading, setActivityPageLoading] = useState(false);
@@ -458,14 +463,27 @@ export default function App() {
       setError(messageOf(e));
     }
   }
-  const loadBeneficiaryRecords = useCallback(async () => {
-    try {
-      const result = await api.getAllPages<AidRecord>('/api/beneficiary', 'records');
-      setBeneficiaryRecords(result.data.records || []);
-    } catch (e) {
-      setError(messageOf(e));
-    }
-  }, []);
+  const loadBeneficiaryRecords = useCallback(
+    async () => {
+      try {
+        const params = new URLSearchParams();
+        if (beneficiarySearch.trim()) params.set('q', beneficiarySearch.trim());
+        if (beneficiaryStatusFilter !== 'all') params.set('status', beneficiaryStatusFilter);
+        if (beneficiaryNetworkFilter !== 'all') params.set('network', beneficiaryNetworkFilter);
+        if (beneficiaryFromDate) params.set('from', beneficiaryFromDate);
+        if (beneficiaryToDate) params.set('to', beneficiaryToDate);
+        const query = params.toString();
+        const result = await api.getAllPages<AidRecord>(
+          '/api/beneficiary' + (query ? '?' + query : ''),
+          'records',
+        );
+        setBeneficiaryRecords(result.data.records || []);
+      } catch (e) {
+        setError(messageOf(e));
+      }
+    },
+    [beneficiarySearch, beneficiaryStatusFilter, beneficiaryNetworkFilter, beneficiaryFromDate, beneficiaryToDate],
+  );
 
   function chooseNetwork(value: string) {
     if (value !== 'testnet' && value !== 'mainnet') return;
@@ -1857,6 +1875,77 @@ export default function App() {
                 >
                   <RefreshCw size={14} />
                   Refresh
+                </button>
+              </div>
+              <div className="toolbar filters">
+                <label className="search">
+                  <Search size={15} />
+                  <input
+                    aria-label="Search beneficiary records"
+                    placeholder="Search purpose or record"
+                    value={beneficiarySearch}
+                    onChange={(event) => setBeneficiarySearch(event.target.value)}
+                  />
+                </label>
+                <select
+                  aria-label="Filter status"
+                  value={beneficiaryStatusFilter}
+                  onChange={(event) => setBeneficiaryStatusFilter(event.target.value)}
+                >
+                  <option value="all">All statuses</option>
+                  {(
+                    [
+                      'verified',
+                      'mismatch',
+                      'not-found',
+                      'unverified',
+                      'pending',
+                      'voided',
+                    ] as Verification[]
+                  ).map((status) => (
+                    <option key={status} value={status}>
+                      {labelStatus(status)}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  aria-label="Filter network"
+                  value={beneficiaryNetworkFilter}
+                  onChange={(event) => setBeneficiaryNetworkFilter(event.target.value)}
+                >
+                  <option value="all">All networks</option>
+                  <option value="testnet">Testnet</option>
+                  <option value="mainnet">Mainnet</option>
+                </select>
+                <label className="date-filter">
+                  From
+                  <input
+                    aria-label="From date"
+                    type="date"
+                    value={beneficiaryFromDate}
+                    onChange={(event) => setBeneficiaryFromDate(event.target.value)}
+                  />
+                </label>
+                <label className="date-filter">
+                  To
+                  <input
+                    aria-label="To date"
+                    type="date"
+                    value={beneficiaryToDate}
+                    onChange={(event) => setBeneficiaryToDate(event.target.value)}
+                  />
+                </label>
+                <button
+                  className="button secondary compact"
+                  onClick={() => {
+                    setBeneficiarySearch('');
+                    setBeneficiaryStatusFilter('all');
+                    setBeneficiaryNetworkFilter('all');
+                    setBeneficiaryFromDate('');
+                    setBeneficiaryToDate('');
+                  }}
+                >
+                  Clear filters
                 </button>
               </div>
               <div className="table-wrap">
