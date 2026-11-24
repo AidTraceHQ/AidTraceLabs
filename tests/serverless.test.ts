@@ -6,12 +6,15 @@ vi.mock('../server/app.js', () => ({
 
 afterEach(() => {
   delete process.env.VERCEL;
+  vi.unstubAllEnvs();
   vi.resetModules();
 });
 
 describe('serverless runtime configuration', () => {
   it('caps the connection pool and shortens the idle timeout on Vercel', async () => {
     process.env.VERCEL = '1';
+    // Vercel deployments use the default shared store; per-process counters are rejected there.
+    vi.stubEnv('RATE_LIMIT_STORE', undefined);
     const { pool } = await import('../server/db.js');
 
     expect(pool.options.max).toBe(3);

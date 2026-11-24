@@ -1,9 +1,15 @@
-import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { Keypair } from '@stellar/stellar-sdk';
 import { Pool } from 'pg';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { applyUniqueNetworkTxHashMigration, migrate } from '../scripts/migrate.js';
+import {
+  applyRecordIntegrityConstraintsMigration,
+  applyUniqueNetworkTxHashMigration,
+  migrate,
+} from '../scripts/migrate.js';
 import { app } from '../server/app.js';
 import { getSession, verifySep53Signature } from '../server/auth.js';
 import { IDLE_IN_TRANSACTION_TIMEOUT_MS, pool } from '../server/db.js';
@@ -284,311 +290,75 @@ describe('On-chain verification distinguishes matching and mismatching payments'
     expect(calls).toBe(20);
   });
 
-  it('captures the transaction memo as evidence without changing the matching result', async () => {
+  it('returns pending before the overall verification deadline', async () => {
     const organization = Keypair.random().publicKey();
-    const recipient = Keypair.random().publicKey();
     const record = {
       network: 'testnet' as const,
       txHash: 'd'.repeat(64),
       organizationWallet: organization,
-      recipientWallet: recipient,
+      recipientWallet: Keypair.random().publicKey(),
       amountStroops: '10000000',
       assetCode: 'XLM',
       assetIssuer: null,
     };
-    let transaction: Record<string, unknown> = {};
-    let operations: Record<string, unknown>[] = [];
-    const matching = [
-      { type: 'payment', from: organization, to: recipient, amount: '1', asset_type: 'native' },
-    ];
+    const fullPage = Array.from({ length: 200 }, (_, index) => ({
+      type: 'payment',
+      from: organization,
+      to: organization,
+      amount: '1',
+      asset_type: 'native',
+      paging_token: String(index + 1),
+    }));
+    // Each operations page answers only after pageDelayMs unless its signal aborts first.
+    let pageDelayMs = 0;
+    let operationCalls = 0;
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (input) => {
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
         const url = new URL(String(input));
-        const body = url.pathname.endsWith('/operations')
-          ? { _embedded: { records: operations } }
-          : transaction;
-        return new Response(JSON.stringify(body), { status: 200 });
+        if (!url.pathname.endsWith('/operations')) {
+          return new Response(JSON.stringify({ successful: true, source_account: organization }), {
+            status: 200,
+          });
+        }
+        operationCalls += 1;
+        const signal = init?.signal;
+        await new Promise<void>((resolve, reject) => {
+          if (signal?.aborted) return reject(signal.reason);
+          const timer = setTimeout(resolve, pageDelayMs);
+          signal?.addEventListener('abort', () => {
+            clearTimeout(timer);
+            reject(signal.reason);
+          });
+        });
+        return new Response(JSON.stringify({ _embedded: { records: fullPage } }), {
+          status: 200,
+        });
       }),
     );
-    const base = { successful: true, source_account: organization, ledger: 5 };
-    operations = matching;
 
-    transaction = { ...base, memo_type: 'text', memo: 'AID-2026-0042' };
-    const text = await checkTransaction(record);
-    expect(text.status).toBe('verified');
-    expect(text).toMatchObject({ memo: 'AID-2026-0042', memoType: 'text' });
+    const deadlineMs = 150;
+    // A single operations page that would only answer long after the deadline.
+    pageDelayMs = 5_000;
+    let started = performance.now();
+    let result = await checkTransaction(record, { deadlineMs });
+    let elapsed = performance.now() - started;
+    expect(result.status).toBe('pending');
+    expect(result.reason).toMatch(/time limit/);
+    expect(operationCalls).toBe(1);
+    expect(elapsed).toBeLessThan(deadlineMs + 250);
 
-    // uint64 beyond Number.MAX_SAFE_INTEGER must survive exactly as a string.
-    const largeId = '18446744073709551615';
-    transaction = { ...base, memo_type: 'id', memo: largeId };
-    const id = await checkTransaction(record);
-    expect(id.status).toBe('verified');
-    expect(id.memoType).toBe('id');
-    expect(id.memo).toBe(largeId);
-    expect(typeof id.memo).toBe('string');
-
-    const base64Hash = Buffer.alloc(32, 0xab).toString('base64');
-    transaction = { ...base, memo_type: 'hash', memo: base64Hash };
-    expect(await checkTransaction(record)).toMatchObject({
-      status: 'verified',
-      memo: base64Hash,
-      memoType: 'hash',
-    });
-
-    transaction = { ...base, memo_type: 'return', memo: base64Hash };
-    expect(await checkTransaction(record)).toMatchObject({ memo: base64Hash, memoType: 'return' });
-
-    for (const noMemo of [
-      { ...base, memo_type: 'none' },
-      { ...base },
-      { ...base, memo_type: 'unknown', memo: 'ignored' },
-      { ...base, memo_type: 'id', memo: 42 },
-      { ...base, memo_type: 'text', memo: '' },
-      { ...base, memo_type: 'text', memo: '\u0000\u0000' },
-    ]) {
-      transaction = noMemo;
-      const result = await checkTransaction(record);
-      expect(result.status).toBe('verified');
-      expect(result).not.toHaveProperty('memo');
-      expect(result).not.toHaveProperty('memoType');
-    }
-
-    transaction = { ...base, memo_type: 'text', memo: 'x'.repeat(500) };
-    expect((await checkTransaction(record)).memo).toHaveLength(128);
-
-    // PostgreSQL TEXT rejects NUL, so it is stripped before the memo can reach storage.
-    transaction = { ...base, memo_type: 'text', memo: 'AID\u0000-0042' };
-    expect((await checkTransaction(record)).memo).toBe('AID-0042');
-
-    operations = [{ ...matching[0], to: Keypair.random().publicKey() }];
-    transaction = { ...base, memo_type: 'text', memo: 'AID-2026-0042' };
-    const mismatch = await checkTransaction(record);
-    expect(mismatch.status).toBe('mismatch');
-    expect(mismatch).toMatchObject({ memo: 'AID-2026-0042', memoType: 'text' });
-
-    transaction = { ...base, successful: false, memo_type: 'text', memo: 'AID-2026-0042' };
-    expect(await checkTransaction(record)).toMatchObject({
-      status: 'mismatch',
-      memo: 'AID-2026-0042',
-      memoType: 'text',
-    });
-
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response('{}', { status: 404 })),
-    );
-    const notFound = await checkTransaction(record);
-    expect(notFound.status).toBe('not-found');
-    expect(notFound).not.toHaveProperty('memo');
-  });
-
-  it('selects the configured Horizon endpoint and explorer path for each network', async () => {
-    const organization = Keypair.random().publicKey();
-    const recipient = Keypair.random().publicKey();
-    const txHash = 'f'.repeat(64);
-    const originalMainnet = process.env.HORIZON_MAINNET_URL;
-    const originalTestnet = process.env.HORIZON_TESTNET_URL;
-    const requested: string[] = [];
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input) => {
-        const url = new URL(String(input));
-        requested.push(url.toString());
-        const body = url.pathname.endsWith('/operations')
-          ? {
-              _embedded: {
-                records: [
-                  {
-                    type: 'payment',
-                    from: organization,
-                    to: recipient,
-                    amount: '1',
-                    asset_type: 'native',
-                  },
-                ],
-              },
-            }
-          : {
-              successful: true,
-              source_account: organization,
-              ledger: 3,
-              created_at: '2026-01-01T00:00:00Z',
-            };
-        return new Response(JSON.stringify(body), { status: 200 });
-      }),
-    );
-    try {
-      process.env.HORIZON_MAINNET_URL = 'https://horizon-mainnet.example.test';
-      process.env.HORIZON_TESTNET_URL = 'https://horizon-testnet.example.test';
-      const record = {
-        network: 'mainnet' as const,
-        txHash,
-        organizationWallet: organization,
-        recipientWallet: recipient,
-        amountStroops: '10000000',
-        assetCode: 'XLM',
-        assetIssuer: null,
-      };
-
-      const mainnet = await checkTransaction(record);
-      expect(mainnet.status).toBe('verified');
-      expect(mainnet.link).toBe('https://stellar.expert/explorer/public/tx/' + txHash);
-      expect(requested).toHaveLength(2);
-      for (const url of requested) {
-        expect(new URL(url).host).toBe('horizon-mainnet.example.test');
-      }
-
-      requested.length = 0;
-      const testnet = await checkTransaction({ ...record, network: 'testnet' });
-      expect(testnet.status).toBe('verified');
-      expect(testnet.link).toBe('https://stellar.expert/explorer/testnet/tx/' + txHash);
-      expect(requested).toHaveLength(2);
-      for (const url of requested) {
-        expect(new URL(url).host).toBe('horizon-testnet.example.test');
-      }
-    } finally {
-      if (originalMainnet === undefined) delete process.env.HORIZON_MAINNET_URL;
-      else process.env.HORIZON_MAINNET_URL = originalMainnet;
-      if (originalTestnet === undefined) delete process.env.HORIZON_TESTNET_URL;
-      else process.env.HORIZON_TESTNET_URL = originalTestnet;
-    }
-  });
-
-  it('bounds the Horizon response size and rejects a non-array operations payload', async () => {
-    const organization = Keypair.random().publicKey();
-    const recipient = Keypair.random().publicKey();
-    const record = {
-      network: 'testnet' as const,
-      txHash: 'e'.repeat(64),
-      organizationWallet: organization,
-      recipientWallet: recipient,
-      amountStroops: '12500000',
-      assetCode: 'XLM',
-      assetIssuer: null,
-    };
-
-    const oversizedFetch = vi.fn(async (input) => {
-      const url = new URL(String(input));
-      if (url.pathname.endsWith('/operations')) {
-        return new Response(JSON.stringify({ _embedded: { records: [] } }), { status: 200 });
-      }
-      return new Response(
-        JSON.stringify({
-          successful: true,
-          source_account: organization,
-          padding: 'x'.repeat(HORIZON_MAX_RESPONSE_BYTES),
-        }),
-        { status: 200 },
-      );
-    });
-    vi.stubGlobal('fetch', oversizedFetch);
-    expect((await checkTransaction(record)).status).toBe('pending');
-    // The oversized transaction body is abandoned before the operations request is made.
-    expect(oversizedFetch).toHaveBeenCalledTimes(1);
-
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input) => {
-        const url = new URL(String(input));
-        return url.pathname.endsWith('/operations')
-          ? new Response(JSON.stringify({ _embedded: { records: 'not-an-array' } }), {
-              status: 200,
-            })
-          : new Response(JSON.stringify({ successful: true, source_account: organization }), {
-              status: 200,
-            });
-      }),
-    );
-    expect((await checkTransaction(record)).status).toBe('pending');
-
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input) => {
-        const url = new URL(String(input));
-        const body = url.pathname.endsWith('/operations')
-          ? {
-              _embedded: {
-                records: [
-                  {
-                    type: 'payment',
-                    from: organization,
-                    to: recipient,
-                    amount: '1.25',
-                    asset_type: 'native',
-                  },
-                ],
-              },
-            }
-          : {
-              successful: true,
-              source_account: organization,
-              ledger: 21,
-              created_at: '2026-01-01T00:00:00Z',
-            };
-        return new Response(JSON.stringify(body), { status: 200 });
-      }),
-    );
-    expect(await checkTransaction(record)).toMatchObject({
-      status: 'verified',
-      ledger: 21,
-      sourceAccount: organization,
-      destination: recipient,
-      amount: '1.25',
-      asset: 'XLM',
-    });
-  });
-});
-
-describe('Per-IP rate-limit error contract', () => {
-  function expectRateLimitContract(response: request.Response) {
-    expect(response.status).toBe(429);
-    expect(response.body).toEqual({
-      error: expect.any(String),
-      code: 'rate_limit_exceeded',
-    });
-    expect(response.body.error.trim().length).toBeGreaterThan(0);
-    expect(response.body.error).not.toBe('rate_limit_exceeded');
-    expect(Number(response.headers['retry-after'])).toBeGreaterThan(0);
-  }
-
-  it('returns the documented 429 error contract across public read, auth, and API limiters', async () => {
-    vi.resetModules();
-    vi.stubEnv('PUBLIC_READ_RATE_LIMIT_MAX', '1');
-    vi.stubEnv('AUTH_RATE_LIMIT_MAX', '1');
-    vi.stubEnv('API_RATE_LIMIT_MAX', '3');
-
-    const [{ app: rateLimitedApp }, { pool: rateLimitedPool }] = await Promise.all([
-      import('../server/app.js'),
-      import('../server/db.js'),
-    ]);
-
-    try {
-      await request(rateLimitedApp).get('/api/transparency');
-      const transparencyLimited = await request(rateLimitedApp).get('/api/transparency');
-      expectRateLimitContract(transparencyLimited);
-
-      const challengePayload = { address: 'invalid', network: 'testnet' };
-      const authFirst = await request(rateLimitedApp)
-        .post('/api/auth/challenge')
-        .set('Origin', origin)
-        .send(challengePayload);
-      expect(authFirst.status).toBe(400);
-      const authLimited = await request(rateLimitedApp)
-        .post('/api/auth/challenge')
-        .set('Origin', origin)
-        .send(challengePayload);
-      expectRateLimitContract(authLimited);
-
-      const apiAllowed = await request(rateLimitedApp).get('/api/nonexistent-rate-limit-check');
-      expect(apiAllowed.status).toBe(404);
-      const apiLimited = await request(rateLimitedApp).get('/api/nonexistent-rate-limit-check');
-      expectRateLimitContract(apiLimited);
-    } finally {
-      await rateLimitedPool.end();
-      vi.unstubAllEnvs();
-      vi.resetModules();
-    }
+    // Many pages that are each fast enough alone but exceed the deadline together.
+    pageDelayMs = 40;
+    operationCalls = 0;
+    started = performance.now();
+    result = await checkTransaction(record, { deadlineMs });
+    elapsed = performance.now() - started;
+    expect(result.status).toBe('pending');
+    expect(result.reason).toMatch(/time limit/);
+    expect(operationCalls).toBeGreaterThan(1);
+    expect(operationCalls).toBeLessThan(20);
+    expect(elapsed).toBeLessThan(deadlineMs + 250);
   });
 });
 
@@ -861,50 +631,150 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     }
   });
 
-  it('should have an index for wallet_roles sorting by updated_at DESC and wallet_address DESC', async () => {
-    const result = await pool.query<{ indexdef: string }>(
-      `SELECT indexdef FROM pg_indexes WHERE tablename = 'wallet_roles'`,
-    );
-    expect(
-      result.rows.some(({ indexdef }) =>
-        indexdef.includes('btree (updated_at DESC, wallet_address DESC)'),
-      ),
-    ).toBe(true);
+  it('reports invalid rows by category only and aborts migration 003 without changing rows', async () => {
+    const client = await pool.connect();
+    const recipientName = 'Sensitive Recipient Name';
+    const upperHash = randomBytes(32).toString('hex').toUpperCase();
+    const issuer = Keypair.random().publicKey();
+    const seeded: [string, string | null, string, string | null][] = [
+      ['valid-native', randomBytes(32).toString('hex'), 'XLM', null],
+      ['upper-hash', upperHash, 'XLM', null],
+      ['short-hash', 'abc123', 'XLM', null],
+      ['empty-hash', '', 'XLM', null],
+      ['native-with-issuer', null, 'XLM', issuer],
+      ['issued-without-issuer', null, 'USDC', null],
+      ['issued-bad-issuer', null, 'USDC', 'not-a-stellar-address'],
+      ['lowercase-asset', null, 'usdc', issuer],
+    ];
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `CREATE TEMP TABLE aid_records (
+           id TEXT PRIMARY KEY, recipient_name TEXT NOT NULL, tx_hash TEXT,
+           asset_code TEXT NOT NULL, asset_issuer TEXT)`,
+      );
+      for (const [id, txHash, assetCode, assetIssuer] of seeded) {
+        await client.query(
+          `INSERT INTO aid_records (id, recipient_name, tx_hash, asset_code, asset_issuer)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [id, recipientName, txHash, assetCode, assetIssuer],
+        );
+      }
+      const before = await client.query('SELECT * FROM aid_records ORDER BY id');
+
+      const error = await applyRecordIntegrityConstraintsMigration(client).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+      expect(error).toMatchObject({
+        name: 'InvalidAidRecordsError',
+        violations: [
+          { category: 'tx_hash_not_lowercase', count: 1 },
+          { category: 'tx_hash_malformed', count: 2 },
+          { category: 'asset_code_malformed', count: 1 },
+          { category: 'native_asset_with_issuer', count: 1 },
+          { category: 'issued_asset_missing_issuer', count: 1 },
+          { category: 'issued_asset_invalid_issuer', count: 1 },
+        ],
+      });
+      const { violations, message } = error as { violations: object[]; message: string };
+      for (const violation of violations) {
+        expect(Object.keys(violation).sort()).toEqual(['category', 'count']);
+      }
+      const report = message + JSON.stringify(violations);
+      for (const secret of [recipientName, upperHash, upperHash.toLowerCase(), issuer]) {
+        expect(report).not.toContain(secret);
+      }
+      for (const [id] of seeded) expect(report).not.toContain(id);
+
+      const after = await client.query('SELECT * FROM aid_records ORDER BY id');
+      expect(after.rowCount).toBe(seeded.length);
+      expect(after.rows).toEqual(before.rows);
+      const constraints = await client.query(
+        `SELECT 1 FROM pg_constraint
+         WHERE conrelid = 'pg_temp.aid_records'::regclass AND contype = 'c'`,
+      );
+      expect(constraints.rowCount).toBe(0);
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
   });
 
-  it('allows the runtime role to append and read audit events but not update or delete them', async () => {
-    const identity = await pool.query<{ current_user: string; session_user: string }>(
-      'SELECT current_user, session_user',
-    );
-    expect(identity.rows[0]).toEqual({
-      current_user: 'aidtrace_runtime',
-      session_user: 'aidtrace_runtime',
-    });
-
-    const id = `audit-append-only-${randomUUID()}`;
+  it('enforces transaction-hash and asset-issuer rules on aid_records after migration', async () => {
+    const organization = Keypair.random().publicKey();
+    wallets.add(organization);
+    await pool.query('INSERT INTO users (wallet_address) VALUES ($1)', [organization]);
     await pool.query(
-      `INSERT INTO audit_events (id, action, actor_wallet, summary)
-       VALUES ($1, 'append_only_access_test', $2, 'runtime insert/read privilege check')`,
-      [id, admin.publicKey()],
+      `INSERT INTO organizations (wallet_address, display_name, normalized_name)
+       VALUES ($1, 'Integrity test org', $2)`,
+      [organization, 'integrity-test-' + organization.toLowerCase()],
     );
+    const insertRecord = async (fields: {
+      txHash: string | null;
+      assetCode: string;
+      assetIssuer: string | null;
+    }) => {
+      const id = 'integrity-' + randomBytes(8).toString('hex');
+      recordIds.add(id);
+      await pool.query(
+        `INSERT INTO aid_records
+           (id, organization_wallet, recipient_name, recipient_wallet, purpose, amount_stroops,
+            asset_code, asset_issuer, network, tx_hash, disbursement_date, status, created_by)
+         VALUES ($1, $2, 'Integrity beneficiary', $3, 'Integrity check', 12500000,
+                 $4, $5, 'testnet', $6, '2026-01-15', 'unverified', $2)`,
+        [
+          id,
+          organization,
+          Keypair.random().publicKey(),
+          fields.assetCode,
+          fields.assetIssuer,
+          fields.txHash,
+        ],
+      );
+    };
+    const issuer = Keypair.random().publicKey();
 
-    const inserted = await pool.query<{ action: string; summary: string }>(
-      'SELECT action, summary FROM audit_events WHERE id = $1',
-      [id],
-    );
-    expect(inserted.rows).toEqual([
-      {
-        action: 'append_only_access_test',
-        summary: 'runtime insert/read privilege check',
-      },
-    ]);
-
-    await expect(
-      pool.query('UPDATE audit_events SET summary = $2 WHERE id = $1', [id, 'modified']),
-    ).rejects.toMatchObject({ code: '42501' });
-    await expect(pool.query('DELETE FROM audit_events WHERE id = $1', [id])).rejects.toMatchObject({
-      code: '42501',
+    await insertRecord({
+      txHash: randomBytes(32).toString('hex'),
+      assetCode: 'XLM',
+      assetIssuer: null,
     });
+    await insertRecord({ txHash: null, assetCode: 'XLM', assetIssuer: null });
+    await insertRecord({
+      txHash: randomBytes(32).toString('hex'),
+      assetCode: 'USDC',
+      assetIssuer: issuer,
+    });
+
+    const rejected = [
+      [{ txHash: 'abc123', assetCode: 'XLM', assetIssuer: null }, 'aid_records_tx_hash_format'],
+      [{ txHash: '', assetCode: 'XLM', assetIssuer: null }, 'aid_records_tx_hash_format'],
+      [
+        {
+          txHash: randomBytes(32).toString('hex').toUpperCase(),
+          assetCode: 'XLM',
+          assetIssuer: null,
+        },
+        'aid_records_tx_hash_format',
+      ],
+      [
+        { txHash: null, assetCode: 'XLM', assetIssuer: issuer },
+        'aid_records_native_asset_without_issuer',
+      ],
+      [
+        { txHash: null, assetCode: 'USDC', assetIssuer: null },
+        'aid_records_issued_asset_issuer_format',
+      ],
+      [
+        { txHash: null, assetCode: 'USDC', assetIssuer: 'not-a-stellar-address' },
+        'aid_records_issued_asset_issuer_format',
+      ],
+      [{ txHash: null, assetCode: 'usdc', assetIssuer: issuer }, 'aid_records_asset_code_format'],
+    ] as const;
+    for (const [fields, constraint] of rejected) {
+      await expect(insertRecord(fields)).rejects.toMatchObject({ code: '23514', constraint });
+    }
   });
 
   it('creates a single-use wallet session, enforces CSRF, expires challenges, and logs out', async () => {

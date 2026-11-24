@@ -103,9 +103,57 @@ export async function applyUniqueNetworkTxHashMigration(
   );
 }
 
-export async function runMigrations(pool: Pool, options: MigrationOptions = {}): Promise<string[]> {
-  const directory = options.migrationDirectory ?? migrationDirectory;
-  await pool.query(`
+// Each category is the negation of one rule in 003_record_integrity_constraints.sql. A row
+// can fall into more than one category. Only counts leave this query, never row contents.
+const recordIntegrityChecks = {
+  tx_hash_not_lowercase: `tx_hash IS NOT NULL AND tx_hash ~ '^[0-9a-fA-F]{64}$' AND tx_hash !~ '^[0-9a-f]{64}$'`,
+  tx_hash_malformed: `tx_hash IS NOT NULL AND tx_hash !~ '^[0-9a-fA-F]{64}$'`,
+  asset_code_malformed: `asset_code !~ '^[A-Z0-9]{1,12}$'`,
+  native_asset_with_issuer: `asset_code = 'XLM' AND asset_issuer IS NOT NULL`,
+  issued_asset_missing_issuer: `asset_code <> 'XLM' AND asset_issuer IS NULL`,
+  issued_asset_invalid_issuer: `asset_code <> 'XLM' AND asset_issuer !~ '^G[A-Z2-7]{55}$'`,
+} as const;
+
+export type RecordIntegrityCategory = keyof typeof recordIntegrityChecks;
+export type RecordIntegrityViolation = { category: RecordIntegrityCategory; count: number };
+
+export class InvalidAidRecordsError extends Error {
+  constructor(readonly violations: RecordIntegrityViolation[]) {
+    super(
+      'Migration 003 aborted: fix the aid_records rows in these categories, then re-run npm run db:migrate: ' +
+        violations.map(({ category, count }) => `${category}=${count}`).join(', ') +
+        '.',
+    );
+    this.name = 'InvalidAidRecordsError';
+  }
+}
+
+export async function applyRecordIntegrityConstraintsMigration(
+  client: Pick<import('pg').PoolClient, 'query'>,
+) {
+  // Block writes until the constraints exist so the counts below stay accurate.
+  await client.query('LOCK TABLE aid_records IN SHARE ROW EXCLUSIVE MODE');
+  const counts = await client.query<Record<RecordIntegrityCategory, string>>(
+    `SELECT ${Object.entries(recordIntegrityChecks)
+      .map(([category, condition]) => `COUNT(*) FILTER (WHERE ${condition})::text AS ${category}`)
+      .join(', ')}
+     FROM aid_records`,
+  );
+  const row = counts.rows[0];
+  const violations = (Object.keys(recordIntegrityChecks) as RecordIntegrityCategory[])
+    .map((category) => ({ category, count: Number(row?.[category] ?? 0) }))
+    .filter(({ count }) => count > 0);
+  if (violations.length) {
+    throw new InvalidAidRecordsError(violations);
+  }
+  await client.query(
+    await readFile(join(migrationDirectory, '003_record_integrity_constraints.sql'), 'utf8'),
+  );
+}
+
+export async function migrate() {
+  try {
+    await migrationPool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version TEXT PRIMARY KEY,
       applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -153,27 +201,31 @@ export async function runMigrations(pool: Pool, options: MigrationOptions = {}):
           `Expected checksum ${stored}, found ${checksum}. ` +
           'Restore the file or add a new migration instead of editing it.',
       );
-    }
-  }
+      if (alreadyApplied.rowCount) continue;
 
-  // Verify every applied checksum before writing baselines or applying anything, so a
-  // mismatch fails closed without partially migrating the database.
-  for (const baseline of baselines) {
-    await pool.query('UPDATE schema_migrations SET checksum = $2 WHERE version = $1', [
-      baseline.version,
-      baseline.checksum,
-    ]);
-    console.log(`Recorded reviewed baseline checksum for migration ${baseline.version}.`);
-  }
-
-  const appliedNow: string[] = [];
-  for (const migration of pending) {
-    try {
-      await withTransaction(pool, async (client) => {
-        if (migration.version === '002_unique_network_tx_hash') {
-          await applyUniqueNetworkTxHashMigration(client);
-        } else {
-          await client.query(migration.sql);
+      const sql = await readFile(join(migrationDirectory, file), 'utf8');
+      try {
+        await withTransaction(async (client) => {
+          if (version === '002_unique_network_tx_hash') {
+            await applyUniqueNetworkTxHashMigration(client);
+          } else if (version === '003_record_integrity_constraints') {
+            await applyRecordIntegrityConstraintsMigration(client);
+          } else {
+            await client.query(sql);
+          }
+          await client.query('INSERT INTO schema_migrations (version) VALUES ($1)', [version]);
+        });
+      } catch (error) {
+        if (error instanceof DuplicateTransactionHashesError) {
+          console.error(
+            'Migration 002 aborted: duplicate network/transaction hashes require resolution:',
+          );
+          console.error(JSON.stringify(error.duplicates, null, 2));
+        } else if (error instanceof InvalidAidRecordsError) {
+          console.error(
+            'Migration 003 aborted: aid_records rows violate the new rules (counts only):',
+          );
+          console.error(JSON.stringify(error.violations, null, 2));
         }
         await client.query('INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)', [
           migration.version,
