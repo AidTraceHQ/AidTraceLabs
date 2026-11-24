@@ -1,20 +1,40 @@
 # Manual Test Checklist
 
-## Dialog focus (Add record and record details)
+Use this checklist for accessibility work that automated checks cannot cover. Record the
+browser, operating system, and screen reader you used.
 
-Run `npm run dev` and check both dialogs: "Add record" (New disbursement, signed in as an organization or admin) and the record details dialog. Use only the keyboard unless a step says otherwise. Repeat the checks in Safari if you can.
+## Data tables: semantics, sorting, and keyboard scrolling
 
-- [ ] Entry points: "Add record", "View" in the Public Transparency table, "View" in the Beneficiary Records table, and "View record" in My Activity.
-- [ ] Open each dialog with Enter or Space, and with a mouse click. Focus moves to the dialog's first control (its close button), and a screen reader announces the dialog's name. Only that button shows a focus outline, not the whole dialog.
-- [ ] Tab and Shift+Tab move only through the dialog's controls and wrap at both ends. Pressing Tab 20 times never reaches the top bar, the section tabs, or the page behind. This also holds for a dialog with one control (record details while signed out).
-- [ ] In Chrome and Firefox, Tab still moves between the month, day, and year parts of the "Disbursement date" field.
-- [ ] While a dialog is open, the header, main content, and footer (the other children of `div.app`) have `inert`, and the dialog is not inside an inert element. `div.app` itself is not made inert, because the dialogs render inside it.
-- [ ] Escape closes the dialog.
-- [ ] The X button, Cancel (Add record), and a click on the backdrop close the dialog. A click inside the dialog does not. Closing the record details also clears the edit-conflict banner.
-- [ ] After any close, focus goes to the "Add record" button or to the record's View button, also on a later ledger page (Next) and after the record was refreshed while the dialog was open (Verify, Save changes). After opening from My Activity, that is the View button in the Public Transparency table.
-- [ ] If that button is not on the page (after Confirm void, the ledger reloads at page 1), focus goes to the active section tab.
-- [ ] Record details: typing in the edit fields, Save changes, Verify, and Reload latest keep the dialog open and focus inside it. When Reload latest removes its own button, focus moves to the dialog.
-- [ ] Add record: values typed before closing are still there after reopening. Publish record saves, shows a disabled "Saving…" button while busy, and closes the dialog.
-- [ ] Focus outlines stay visible on dialog controls.
-- [ ] After closing, `inert` is removed: the header, filters, and table can be clicked and tabbed to again.
-- [ ] Other flows (sign-in, filters, ledger Previous and Next, admin Load more, toasts, and admin tabs) behave as before.
+Applies to all five data tables: transparency ledger, wallet activity, beneficiary records,
+role assignments, and audit log events.
+
+### Table semantics
+
+1. Run `npm run dev` and open the app.
+2. In a screen reader (for example NVDA with Firefox, or VoiceOver with Safari), navigate to
+   each table by table navigation (for example `T` in NVDA browse mode).
+3. Confirm the table is announced with its caption:
+   - "Transparency ledger records"
+   - "Wallet activity records"
+   - "Beneficiary records"
+   - "Role assignments"
+   - "Audit log events"
+4. Confirm each column header is announced with its column when moving between cells.
+
+### Sort state
+
+1. On the transparency ledger table, focus the AMOUNT header button and activate it.
+2. Confirm `aria-sort="ascending"` is exposed for AMOUNT and `aria-sort="none"` for RECIPIENT,
+   PURPOSE, and DATE (inspect the accessibility tree or the DOM).
+3. Confirm the screen reader reports the sort direction for the AMOUNT column.
+4. Activate AMOUNT again and confirm it becomes `aria-sort="descending"`.
+5. Confirm the row order matches the selected direction and that the record count is unchanged.
+
+### Keyboard scrolling at 360px
+
+1. Narrow the viewport to 360px (or use the browser device toolbar).
+2. Press `Tab` until focus enters a table region. Confirm a visible focus ring appears around
+   the table container and that focus order continues into the table content afterwards.
+3. With the region focused, use the arrow keys to scroll the table horizontally.
+4. Repeat for each of the five tables, confirming each region has a distinct accessible name.
+5. Turn on a screen reader and confirm the region is announced as a region with its label.
