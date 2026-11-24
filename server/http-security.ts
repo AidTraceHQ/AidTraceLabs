@@ -1,4 +1,20 @@
+import { randomUUID } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
+
+declare global {
+  namespace Express {
+    interface Request {
+      requestId: string;
+    }
+  }
+}
+
+export function requestContext(request: Request, response: Response, next: NextFunction) {
+  const requestId = randomUUID();
+  request.requestId = requestId;
+  response.set('X-Request-Id', requestId);
+  next();
+}
 
 const publicOrigin = process.env.PUBLIC_APP_ORIGIN || 'http://localhost:5173';
 const allowedOrigins = new Set(
@@ -31,7 +47,7 @@ export function cors(request: Request, response: Response, next: NextFunction) {
     response.set('Access-Control-Allow-Origin', origin);
     response.set('Access-Control-Allow-Credentials', 'true');
     response.vary('Origin');
-    response.set('Access-Control-Expose-Headers', 'X-Next-Cursor, X-Has-More, Link');
+    response.set('Access-Control-Expose-Headers', 'X-Next-Cursor, X-Has-More, Link, X-Request-Id');
   }
 
   if (request.method === 'OPTIONS') {
