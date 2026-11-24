@@ -57,6 +57,9 @@ describe('Freighter signed challenge creates a secure session', () => {
 
     const protectedRequest = await request(app).post('/api/records').set('Origin', origin).send({});
     expect(protectedRequest.status).toBe(401);
+
+    const auditRequest = await request(app).get('/api/audit');
+    expect(auditRequest.status).toBe(401);
   });
 
   it('rejects malformed JSON and returns a credentialed CORS preflight', async () => {
@@ -826,6 +829,54 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       await maintenancePool.end();
       await pool.end();
     }
+  });
+
+  it('filters audit events by actor address and record ID, including empty results', async () => {
+    const adminSession = await login(admin);
+    const organization = Keypair.random();
+    await assignRole(adminSession, organization, 'organization');
+    const organizationSession = await login(organization);
+    const created = await createRecord(organizationSession, Keypair.random(), 'Audit filter test');
+    expect(created.status).toBe(201);
+    const recordId = created.body.record.id as string;
+    const address = organization.publicKey();
+
+    const byAddress = await request(app)
+      .get('/api/audit')
+      .query({ address })
+      .set('Cookie', adminSession.cookie);
+    expect(byAddress.status).toBe(200);
+    expect(
+      byAddress.body.entries.some(
+        (entry: { address: string; recordId?: string }) =>
+          entry.address === address && entry.recordId === recordId,
+      ),
+    ).toBe(true);
+
+    const byRecordId = await request(app)
+      .get('/api/audit')
+      .query({ recordId })
+      .set('Cookie', adminSession.cookie);
+    expect(byRecordId.status).toBe(200);
+    expect(byRecordId.body.entries.length).toBeGreaterThan(0);
+    expect(
+      byRecordId.body.entries.every((entry: { recordId?: string }) => entry.recordId === recordId),
+    ).toBe(true);
+
+    const byBoth = await request(app)
+      .get('/api/audit')
+      .query({ address, recordId })
+      .set('Cookie', adminSession.cookie);
+    expect(byBoth.status).toBe(200);
+    expect(byBoth.body.entries).toHaveLength(1);
+    expect(byBoth.body.entries[0]).toMatchObject({ address, recordId });
+
+    const empty = await request(app)
+      .get('/api/audit')
+      .query({ address: Keypair.random().publicKey(), recordId })
+      .set('Cookie', adminSession.cookie);
+    expect(empty.status).toBe(200);
+    expect(empty.body.entries).toEqual([]);
   });
 
   it('reports duplicate hashes and aborts migration 002 before creating the unique constraint', async () => {
