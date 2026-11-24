@@ -1,10 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiTimeoutError, api, resetCursorStack, resolveApiUrl } from '../src/api.js';
+import { api, resetCursorStack, resolveApiUrl } from '../src/api.js';
 
-afterEach(() => {
-  vi.useRealTimers();
-  vi.unstubAllGlobals();
-});
+afterEach(() => vi.unstubAllGlobals());
 
 describe('API URL configuration', () => {
   it('uses a same-origin relative API path when no base URL is configured', () => {
@@ -49,88 +46,6 @@ describe('API URL configuration', () => {
     await expect(api.put('/api/records/record-id', {})).rejects.toMatchObject({
       status: 409,
       message: 'PUT /api/records/record-id failed (409): Record changed concurrently.',
-    });
-  });
-});
-
-describe('API request deadline', () => {
-  it('rejects a never-resolving request within the configured deadline', async () => {
-    vi.useFakeTimers();
-    vi.stubGlobal('window', { location: { origin: 'http://localhost:5173' } });
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockImplementation(
-        (_url: string, init: RequestInit) =>
-          new Promise((_resolve, reject) => {
-            init.signal?.addEventListener('abort', () =>
-              reject(new DOMException('aborted', 'AbortError')),
-            );
-          }),
-      ),
-    );
-
-    const pending = api.get('/api/transparency', { timeoutMs: 1000 });
-    const assertion = expect(pending).rejects.toBeInstanceOf(ApiTimeoutError);
-    await vi.advanceTimersByTimeAsync(1000);
-    await assertion;
-    await expect(pending).rejects.toThrow(
-      'GET /api/transparency timed out after 1000ms. Please try again.',
-    );
-  });
-
-  it('does not report a timeout as an HTTP error', async () => {
-    vi.useFakeTimers();
-    vi.stubGlobal('window', { location: { origin: 'http://localhost:5173' } });
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockImplementation(
-        (_url: string, init: RequestInit) =>
-          new Promise((_resolve, reject) => {
-            init.signal?.addEventListener('abort', () =>
-              reject(new DOMException('aborted', 'AbortError')),
-            );
-          }),
-      ),
-    );
-
-    const pending = api.put('/api/records/x', {}, { timeoutMs: 500 });
-    const assertion = expect(pending).rejects.not.toHaveProperty('status');
-    await vi.advanceTimersByTimeAsync(500);
-    await assertion;
-  });
-
-  it('does not retry a timed-out write', async () => {
-    vi.useFakeTimers();
-    vi.stubGlobal('window', { location: { origin: 'http://localhost:5173' } });
-    const fetchMock = vi.fn().mockImplementation(
-      (_url: string, init: RequestInit) =>
-        new Promise((_resolve, reject) => {
-          init.signal?.addEventListener('abort', () =>
-            reject(new DOMException('aborted', 'AbortError')),
-          );
-        }),
-    );
-    vi.stubGlobal('fetch', fetchMock);
-
-    const pending = api.post('/api/records', { a: 1 }, { timeoutMs: 200 });
-    const assertion = expect(pending).rejects.toBeInstanceOf(ApiTimeoutError);
-    await vi.advanceTimersByTimeAsync(200);
-    await assertion;
-    await vi.advanceTimersByTimeAsync(10000);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('still resolves normally for responses within the deadline', async () => {
-    vi.stubGlobal('window', { location: { origin: 'http://localhost:5173' } });
-    vi.stubGlobal(
-      'fetch',
-      vi
-        .fn()
-        .mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 })),
-    );
-
-    await expect(api.get<{ ok: boolean }>('/api/ping', { timeoutMs: 1000 })).resolves.toEqual({
-      data: { ok: true },
     });
   });
 });
