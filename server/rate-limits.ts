@@ -2,13 +2,18 @@ import './environment.js';
 import { rateLimit } from 'express-rate-limit';
 import { integerEnvironmentVariable } from './environment.js';
 
+const rateLimitExceededMessage = {
+  error: 'Too many requests. Wait a few minutes and try again.',
+  code: 'rate_limit_exceeded',
+} as const;
+
 export function createIpRateLimiter(windowMs: number, limit: number) {
   return rateLimit({
     windowMs,
     limit,
     standardHeaders: 'draft-8',
     legacyHeaders: false,
-    message: { error: 'rate_limit_exceeded' },
+    message: rateLimitExceededMessage,
   });
 }
 
@@ -18,7 +23,7 @@ export function createApiIpRateLimiter(windowMs: number, limit: number) {
     limit,
     standardHeaders: 'draft-8',
     legacyHeaders: false,
-    message: { error: 'rate_limit_exceeded' },
+    message: rateLimitExceededMessage,
     skip: (request) =>
       request.method === 'GET' &&
       (request.path === '/transparency' || request.path === '/_healthcheck'),
