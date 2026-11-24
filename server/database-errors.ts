@@ -62,16 +62,6 @@ export function isTransientDatabaseError(error: unknown): boolean {
   return false;
 }
 
-function errorClass(error: unknown): string {
-  if (error instanceof DatabaseUnavailableError) return errorClass(error.cause);
-  if (error instanceof Error) return error.constructor.name;
-  return typeof error;
-}
-
-function logDatabaseFailure(method: string, route: string, error: unknown): void {
-  console.error(`Database failure ${method} ${route} (${errorClass(error)})`);
-}
-
 export async function retryReadOnlyDatabase<T>(
   route: string,
   operation: () => Promise<T>,
@@ -80,7 +70,6 @@ export async function retryReadOnlyDatabase<T>(
     return await operation();
   } catch (error) {
     if (!isTransientDatabaseError(error)) throw error;
-    logDatabaseFailure('GET', route, error);
     try {
       return await operation();
     } catch (retryError) {
@@ -96,6 +85,5 @@ export function databaseUnavailableResponse(
   route: string,
 ): { status: 503; body: { error: 'database_unavailable' } } | null {
   if (!isTransientDatabaseError(error)) return null;
-  logDatabaseFailure(method, route, error);
   return { status: 503, body: { error: 'database_unavailable' } };
 }
