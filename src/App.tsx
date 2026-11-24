@@ -14,6 +14,7 @@ import {
 } from './network-preference';
 import { readThemePreference, writeThemePreference, type Theme } from './theme-preference';
 import { localDateString } from './date';
+import { activityRequestUrls, resolveHorizonEndpoints } from './horizon';
 import { createToastScheduler } from './toast';
 import {
   HORIZON_ACTIVITY_PAGE_SIZE,
@@ -113,10 +114,7 @@ type AuditItem = {
   recordId?: string;
   createdAt: string;
 };
-const horizon: Record<Network, string> = {
-  testnet: 'https://horizon-testnet.stellar.org',
-  mainnet: 'https://horizon.stellar.org',
-};
+const horizon = resolveHorizonEndpoints();
 const explorer = (network: Network, hash: string) =>
   (network === 'mainnet'
     ? 'https://stellar.expert/explorer/public/tx/'
@@ -614,6 +612,11 @@ export default function App() {
       }
 
       try {
+        const urls = activityRequestUrls(horizon[selectedNetwork], address);
+        const [accountRes, paymentsRes, txRes] = await Promise.all([
+          fetch(urls.account, { headers: { Accept: 'application/json' } }),
+          fetch(urls.payments, { headers: { Accept: 'application/json' } }),
+          fetch(urls.transactions, { headers: { Accept: 'application/json' } }),
         const base = horizon[selectedNetwork];
         const accountUrl = base + '/accounts/' + encodeURIComponent(address);
         const cursors =
@@ -801,12 +804,7 @@ export default function App() {
     };
     void loadActivity(session.address, network, 'reset');
     try {
-      source = new EventSource(
-        horizon[network] +
-          '/accounts/' +
-          encodeURIComponent(session.address) +
-          '/payments?cursor=now',
-      );
+      source = new EventSource(activityRequestUrls(horizon[network], session.address).stream);
       source.onopen = () => {
         setActivityStream('live');
         if (pollTimer) {
