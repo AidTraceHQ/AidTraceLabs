@@ -81,8 +81,8 @@ export async function retryReadOnlyDatabase<T>(
 
 export function databaseUnavailableResponse(
   error: unknown,
-  method: string,
-  route: string,
+  _method: string,
+  _route: string,
 ): { status: 503; body: { error: 'database_unavailable' } } | null {
   if (!isTransientDatabaseError(error)) return null;
   return { status: 503, body: { error: 'database_unavailable' } };
