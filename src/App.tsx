@@ -7,20 +7,8 @@ import {
   throwFreighterError,
   waitForFreighter,
 } from './freighter';
-import {
-  describeNetworkEnvironment,
-  readNetworkPreference,
-  writeNetworkPreference,
-} from './network-preference';
-import { readThemePreference, writeThemePreference, type Theme } from './theme-preference';
-import { localDateString } from './date';
-import { createToastScheduler } from './toast';
-import {
-  HORIZON_ACTIVITY_PAGE_SIZE,
-  mergeActivityItems,
-  parseHorizonActivityPage,
-  type HorizonActivityRecord,
-} from './activity';
+import { readNetworkPreference, writeNetworkPreference } from './network-preference';
+import { formatReceipt } from './receipt';
 import {
   Activity,
   ArrowDownToLine,
@@ -1238,6 +1226,16 @@ export default function App() {
     } catch (e) {
       setError(messageOf(e));
     }
+  }
+
+  function downloadReceipt(record: AidRecord) {
+    const text = formatReceipt(record);
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `aidtrace-receipt-${record.id.slice(0, 8).replace(/[^a-zA-Z0-9-]/g, '') || 'record'}.txt`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   return (
@@ -2477,6 +2475,14 @@ export default function App() {
               </div>
             )}
             <div className="detail-actions">
+              <button
+                className="button secondary compact receipt-download"
+                type="button"
+                onClick={() => downloadReceipt(selected)}
+              >
+                <ArrowDownToLine size={14} />
+                Download receipt
+              </button>
               {selected.txHash && (
                 <a
                   className="explorer-link"
