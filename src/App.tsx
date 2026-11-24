@@ -1138,6 +1138,7 @@ export default function App() {
     sortBy,
     sortDir,
   ]);
+  const activityRangeInvalid = Boolean(activityFrom && activityTo && activityFrom > activityTo);
   const filteredActivity = useMemo(
     () =>
       activity.filter(
@@ -1147,10 +1148,10 @@ export default function App() {
             .toLowerCase()
             .includes(search.toLowerCase()) &&
           (activityType === 'all' || a.type === activityType) &&
-          (!activityFrom || a.date.slice(0, 10) >= activityFrom) &&
-          (!activityTo || a.date.slice(0, 10) <= activityTo),
+          (activityRangeInvalid || !activityFrom || a.date.slice(0, 10) >= activityFrom) &&
+          (activityRangeInvalid || !activityTo || a.date.slice(0, 10) <= activityTo),
       ),
-    [activity, search, activityType, activityFrom, activityTo],
+    [activity, search, activityType, activityFrom, activityTo, activityRangeInvalid],
   );
   const filteredAudit = useMemo(
     () =>
@@ -1745,6 +1746,11 @@ export default function App() {
                   onChange={(event) => setActivityTo(event.target.value)}
                 />
               </label>
+              {activityRangeInvalid && (
+                <p className="alert error" role="alert">
+                  Invalid range: "From" must be on or before "To".
+                </p>
+              )}
               <button
                 className="button secondary compact"
                 onClick={() => void loadActivity(session.address, network)}

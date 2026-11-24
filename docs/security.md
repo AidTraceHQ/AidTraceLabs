@@ -20,8 +20,25 @@ AidTrace handles wallet public addresses, session state, role assignments, aid r
 
 Set distinct random values of at least 32 bytes for `SESSION_SECRET` and `PSEUDONYM_SECRET`. Values beginning with `replace-with-` are treated as placeholders and rejected. Production startup fails if `PSEUDONYM_SECRET` is missing or too short. Startup also fails, in any environment, if `SESSION_SECRET` and `PSEUDONYM_SECRET` are set to the same value. Only local `NODE_ENV=development` has a clearly marked fallback; configure an explicit key for any shared environment. Never expose these values through `VITE_*`, source control, logs, or issue reports.
 
+## Backup and recovery
+
+- Backups are operator-owned and encrypted; encryption keys are stored separately from backups in an approved secret manager.
+- Restores run only into isolated non-production databases or provider branches. The documented procedure contains no destructive production restore step.
+- Recovery targets are an RPO of 24 hours and an RTO of 4 hours until the operator measures them in the deployed environment.
+- An isolated restore exercise on 2026-11-23 restored a synthetic record, applied migrations, and passed the remote smoke check. No beneficiary data, connection strings, or row contents were printed. See [deployment.md](deployment.md#backups-and-restore).
+- Hosted-provider backup configuration and a production-like restore remain unexercised.
+
 ## Known gaps
 
 General per-IP/read rate limiting, last-admin protection, complete failure/rejection audit coverage, and explicit evidence of beneficiary consent are not implemented. Public records can still reveal amounts, dates, purposes, organization, and creator. A `verified` status does not establish identity, consent, purpose, or impact.
 
 Report vulnerabilities privately using [SECURITY.md](../SECURITY.md). Use a dedicated test database and Stellar testnet for authorized checks; do not test against a live deployment without permission.
+
+
+## API error logging and request correlation
+
+Every API request receives a random request correlation ID. The API returns it in the `X-Request-Id` response header; cross-origin clients may read that header because it is included in the CORS exposed-header list.
+
+Unexpected API failures are emitted as one-line JSON events containing only the HTTP method, matched route template, response status, request ID, and a coarse error category. Request bodies, cookies, authorization values, signatures, tokens, query strings, raw exception messages, stack traces, and database connection details are not included. Client-facing generic error responses remain unchanged.
+
+Treat request IDs as diagnostic correlation values, not authentication credentials. Avoid copying sensitive request data into error messages or separate logs.

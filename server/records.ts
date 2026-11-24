@@ -643,6 +643,10 @@ function applyRecordFilters(
     }
     addFilter(conditions, values, 'r.disbursement_date <= ?', to);
   }
+  if (typeof from === 'string' && typeof to === 'string' && from > to) {
+    error(response, 400, 'Invalid date range: from must be on or before to.');
+    return false;
+  }
   if (typeof search === 'string') {
     if (!search.trim()) {
       error(response, 400, 'Search query cannot be empty.');
