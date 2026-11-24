@@ -13,17 +13,19 @@ const server = app.listen(port, () => {
 
 async function shutdown(signal: string) {
   console.log(`Received ${signal}; shutting down.`);
-  server.close(async (error) => {
-    try {
-      await pool.end();
-    } catch (poolError) {
-      console.error('Failed to close database pool:', poolError);
-      process.exitCode = 1;
-    }
-    if (error) {
-      console.error('Failed to close HTTP server:', error);
-      process.exitCode = 1;
-    }
+  server.close((error) => {
+    void (async () => {
+      try {
+        await pool.end();
+      } catch (poolError) {
+        console.error('Failed to close database pool:', poolError);
+        process.exitCode = 1;
+      }
+      if (error) {
+        console.error('Failed to close HTTP server:', error);
+        process.exitCode = 1;
+      }
+    })();
   });
 }
 

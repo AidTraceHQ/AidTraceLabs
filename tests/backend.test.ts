@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID } from 'node:crypto';
-import { Keypair } from '@stellar/stellar-sdk';
+import { Account, Keypair, MuxedAccount } from '@stellar/stellar-sdk';
 import { Pool } from 'pg';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -443,6 +443,19 @@ describe('On-chain verification distinguishes matching and mismatching payments'
     expect(notFound).not.toHaveProperty('memo');
   });
 
+  it('matches muxed recipients only when the payment names the same muxed account', async () => {
+    const organization = Keypair.random().publicKey();
+    const base = Keypair.random();
+    const muxed = new MuxedAccount(new Account(base.publicKey(), '0'), '42').accountId();
+    const otherMuxed = new MuxedAccount(new Account(base.publicKey(), '0'), '43').accountId();
+    const txHash = 'b'.repeat(64);
+    const transaction = {
+      successful: true,
+      source_account: organization,
+      ledger: 50,
+      created_at: '2026-01-01T00:00:00Z',
+    };
+    let operations: Record<string, unknown>[] = [];
   it('selects the configured Horizon endpoint and explorer path for each network', async () => {
     const organization = Keypair.random().publicKey();
     const recipient = Keypair.random().publicKey();
@@ -567,6 +580,170 @@ describe('On-chain verification distinguishes matching and mismatching payments'
       vi.fn(async (input) => {
         const url = new URL(String(input));
         const body = url.pathname.endsWith('/operations')
+          ? { _embedded: { records: operations } }
+          : transaction;
+        return new Response(JSON.stringify(body), { status: 200 });
+      }),
+    );
+    const record = (recipientWallet: string) => ({
+      network: 'testnet' as const,
+      txHash,
+      organizationWallet: organization,
+      recipientWallet,
+      amountStroops: '12500000',
+      assetCode: 'XLM',
+      assetIssuer: null,
+    });
+
+    operations = [
+      {
+        type: 'payment',
+        from: organization,
+        to: base.publicKey(),
+        to_muxed: muxed,
+        to_muxed_id: '42',
+        amount: '1.25',
+        asset_type: 'native',
+      },
+    ];
+    const muxedMatch = await checkTransaction(record(muxed));
+    expect(muxedMatch.status).toBe('verified');
+    expect(muxedMatch.destination).toBe(muxed);
+
+    operations = [
+      {
+        type: 'payment',
+        from: organization,
+        to: base.publicKey(),
+        amount: '1.25',
+        asset_type: 'native',
+      },
+    ];
+    const bareDestination = await checkTransaction(record(muxed));
+    expect(bareDestination.status).toBe('mismatch');
+    expect(bareDestination.differences).toContain(
+      'Destination differs from the recorded beneficiary.',
+    );
+
+    operations = [
+      {
+        type: 'payment',
+        from: organization,
+        to: base.publicKey(),
+        to_muxed: muxed,
+        to_muxed_id: '42',
+        amount: '1.25',
+        asset_type: 'native',
+      },
+    ];
+    expect((await checkTransaction(record(base.publicKey()))).status).toBe('verified');
+
+    operations = [
+      {
+        type: 'payment',
+        from: organization,
+        to: base.publicKey(),
+        to_muxed: otherMuxed,
+        to_muxed_id: '43',
+        amount: '1.25',
+        asset_type: 'native',
+      },
+    ];
+    expect((await checkTransaction(record(muxed))).status).toBe('mismatch');
+  });
+});
+
+describe('Pagination cursor integrity and bounds', () => {
+  const digest = (value: string) =>
+    createHmac('sha256', process.env.SESSION_SECRET || '')
+      .update(value)
+      .digest('base64url');
+  const envelope = (payloadObject: unknown, signature?: string) => {
+    const payload = Buffer.from(JSON.stringify(payloadObject)).toString('base64url');
+    return Buffer.from(
+      JSON.stringify({ payload, signature: signature ?? digest(payload) }),
+    ).toString('base64url');
+  };
+  const validCursor = (overrides: Record<string, unknown> = {}) =>
+    envelope({
+      version: 1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      id: 'a'.repeat(32),
+      filters: digest(JSON.stringify([])),
+      ...overrides,
+    });
+  const decodeEnvelope = (cursor: string) =>
+    JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as {
+      payload: string;
+      signature: string;
+    };
+
+  it('rejects non-integer and out-of-range limits with the documented message', async () => {
+    for (const limit of ['0', '101', 'abc']) {
+      const response = await request(app).get('/api/transparency').query({ limit });
+      expect(response.status, `limit=${limit}`).toBe(400);
+      expect(response.body).toEqual({ error: 'limit must be an integer between 1 and 100.' });
+    }
+  });
+
+  it('rejects garbage, non-enveloped, and oversized cursors', async () => {
+    const garbage = await request(app).get('/api/transparency').query({ cursor: 'not-a-cursor' });
+    expect(garbage.status).toBe(400);
+    expect(garbage.body).toEqual({ error: 'Invalid pagination cursor.' });
+
+    const nonEnveloped = Buffer.from(
+      JSON.stringify({ createdAt: '2026-01-01T00:00:00.000Z', id: 'a'.repeat(32) }),
+    ).toString('base64url');
+    const nonEnvelopedResponse = await request(app)
+      .get('/api/transparency')
+      .query({ cursor: nonEnveloped });
+    expect(nonEnvelopedResponse.status).toBe(400);
+    expect(nonEnvelopedResponse.body).toEqual({ error: 'Invalid pagination cursor.' });
+
+    const oversized = await request(app)
+      .get('/api/transparency')
+      .query({ cursor: 'a'.repeat(513) });
+    expect(oversized.status).toBe(400);
+    expect(oversized.body).toEqual({ error: 'Invalid pagination cursor.' });
+  });
+
+  it('rejects a byte-flipped cursor signature', async () => {
+    const { payload, signature } = decodeEnvelope(validCursor());
+    const flipped = (signature[0] === 'A' ? 'B' : 'A') + signature.slice(1);
+    const tampered = Buffer.from(JSON.stringify({ payload, signature: flipped })).toString(
+      'base64url',
+    );
+    const response = await request(app).get('/api/transparency').query({ cursor: tampered });
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ error: 'Invalid pagination cursor.' });
+  });
+
+  it('rejects a re-encoded payload whose id or createdAt changed', async () => {
+    const { payload, signature } = decodeEnvelope(validCursor());
+    for (const change of [{ id: 'b'.repeat(32) }, { createdAt: '2026-02-02T00:00:00.000Z' }]) {
+      const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as Record<
+        string,
+        unknown
+      >;
+      const tamperedPayload = Buffer.from(JSON.stringify({ ...parsed, ...change })).toString(
+        'base64url',
+      );
+      const tampered = Buffer.from(
+        JSON.stringify({ payload: tamperedPayload, signature }),
+      ).toString('base64url');
+      const response = await request(app).get('/api/transparency').query({ cursor: tampered });
+      expect(response.status, JSON.stringify(change)).toBe(400);
+      expect(response.body).toEqual({ error: 'Invalid pagination cursor.' });
+    }
+  });
+
+  it('rejects a correctly signed cursor with an unsupported version', async () => {
+    const response = await request(app)
+      .get('/api/transparency')
+      .query({ cursor: validCursor({ version: 2 }) });
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ error: 'Invalid pagination cursor.' });
+  });
           ? {
               _embedded: {
                 records: [
@@ -1179,6 +1356,14 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       .send({ csrfToken: session.csrfToken });
     expect(cached.status).toBe(200);
     expect(horizonFetch).toHaveBeenCalledTimes(2);
+    const verifiedCache = await pool.query<{ active: boolean; within_hour: boolean }>(
+      `SELECT cache_expires_at > NOW() AS active,
+              cache_expires_at <= NOW() + INTERVAL '1 hour' AS within_hour
+       FROM verification_results
+       WHERE aid_record_id = $1 ORDER BY checked_at DESC, id DESC LIMIT 1`,
+      [verified.body.record.id],
+    );
+    expect(verifiedCache.rows[0]).toEqual({ active: true, within_hour: true });
     const editAfterVerify = await request(app)
       .put('/api/records/' + verified.body.record.id)
       .set('Origin', origin)
@@ -1278,6 +1463,199 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(duplicate.status).toBe(409);
   }, 120_000);
 
+  it('accepts muxed recipients and verifies only the matching muxed destination', async () => {
+    const adminSession = await login(admin);
+    const organization = Keypair.random();
+    await assignRole(adminSession, organization, 'organization');
+    const session = await login(organization);
+    const base = Keypair.random();
+    const muxed = new MuxedAccount(new Account(base.publicKey(), '0'), '9').accountId();
+    const token = 'muxed-' + Keypair.random().publicKey().slice(-8);
+    const matchedHash = createHash('sha256')
+      .update(token + '-matched')
+      .digest('hex');
+    const bareHash = createHash('sha256')
+      .update(token + '-bare')
+      .digest('hex');
+    const transactions = new Map<string, Record<string, unknown>>();
+    const operationBodies = new Map<string, Record<string, unknown>[]>();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = new URL(String(input));
+        const segments = url.pathname.split('/').filter(Boolean);
+        const hash = segments[segments.indexOf('transactions') + 1] || '';
+        if (url.pathname.endsWith('/operations')) {
+          return new Response(
+            JSON.stringify({ _embedded: { records: operationBodies.get(hash) || [] } }),
+            { status: 200 },
+          );
+        }
+        const transaction = transactions.get(hash);
+        return transaction
+          ? new Response(JSON.stringify(transaction), { status: 200 })
+          : new Response('{}', { status: 404 });
+      }),
+    );
+    for (const hash of [matchedHash, bareHash]) {
+      transactions.set(hash, {
+        successful: true,
+        source_account: organization.publicKey(),
+        ledger: 12,
+        created_at: '2026-01-15T00:00:00Z',
+      });
+    }
+    operationBodies.set(matchedHash, [
+      {
+        type: 'payment',
+        from: organization.publicKey(),
+        to: base.publicKey(),
+        to_muxed: muxed,
+        to_muxed_id: '9',
+        amount: '1.25',
+        asset_type: 'native',
+      },
+    ]);
+    operationBodies.set(bareHash, [
+      {
+        type: 'payment',
+        from: organization.publicKey(),
+        to: base.publicKey(),
+        amount: '1.25',
+        asset_type: 'native',
+      },
+    ]);
+
+    const createMuxed = (purpose: string, txHash: string) =>
+      request(app).post('/api/records').set('Origin', origin).set('Cookie', session.cookie).send({
+        csrfToken: session.csrfToken,
+        recipient: 'Muxed beneficiary',
+        recipientAddress: muxed,
+        purpose,
+        amount: '1.25',
+        asset: 'XLM',
+        assetIssuer: '',
+        network: 'testnet',
+        txHash,
+        date: '2026-01-15',
+        note: 'Muxed note',
+        recipientConsent: false,
+      });
+
+    const matched = await createMuxed(token + ' matched', matchedHash);
+    expect(matched.status).toBe(201);
+    expect(matched.body.record.recipientAddress).toBe(muxed);
+    expect(matched.body.record.status).toBe('verified');
+    expect(matched.body.record.verification.destination).toBe(muxed);
+    if (matched.body.record?.id) recordIds.add(matched.body.record.id);
+
+    const bare = await createMuxed(token + ' bare', bareHash);
+    expect(bare.status).toBe(201);
+    expect(bare.body.record.status).toBe('mismatch');
+    expect(bare.body.record.verification.differences).toContain(
+      'Destination differs from the recorded beneficiary.',
+    );
+    if (bare.body.record?.id) recordIds.add(bare.body.record.id);
+
+    const malformedAddress = await request(app)
+      .post('/api/records')
+      .set('Origin', origin)
+      .set('Cookie', session.cookie)
+      .send({
+        csrfToken: session.csrfToken,
+        recipient: 'Muxed beneficiary',
+        recipientAddress: muxed.slice(0, -1),
+        purpose: token + ' malformed address',
+        amount: '1.25',
+        asset: 'XLM',
+        assetIssuer: '',
+        network: 'testnet',
+        txHash: createHash('sha256')
+          .update(token + '-malformed')
+          .digest('hex'),
+        date: '2026-01-15',
+        note: 'Muxed note',
+        recipientConsent: false,
+      });
+    expect(malformedAddress.status).toBe(400);
+  }, 120_000);
+
+  it('caches not-found results for a bounded window but never caches pending results', async () => {
+    const adminSession = await login(admin);
+    const organization = Keypair.random();
+    await assignRole(adminSession, organization, 'organization');
+    const session = await login(organization);
+    const recipient = Keypair.random();
+    const token = 'negative-cache-' + Keypair.random().publicKey().slice(-8);
+    const notFoundHash = createHash('sha256')
+      .update(token + '-not-found')
+      .digest('hex');
+    const pendingHash = createHash('sha256')
+      .update(token + '-pending')
+      .digest('hex');
+    const horizonFetch = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      const segments = url.pathname.split('/').filter(Boolean);
+      const hash = segments[segments.indexOf('transactions') + 1] || '';
+      if (hash === pendingHash) throw new Error('Horizon is offline');
+      return new Response('{}', { status: 404 });
+    });
+    vi.stubGlobal('fetch', horizonFetch);
+
+    const notFound = await createRecord(session, recipient, token + ' not-found', {
+      txHash: notFoundHash,
+    });
+    expect(notFound.status).toBe(201);
+    expect(notFound.body.record.status).toBe('not-found');
+    expect(horizonFetch).toHaveBeenCalledTimes(1);
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const cached = await request(app)
+        .post('/api/records/' + notFound.body.record.id + '/verify')
+        .set('Origin', origin)
+        .set('Cookie', session.cookie)
+        .send({ csrfToken: session.csrfToken });
+      expect(cached.status).toBe(200);
+      expect(cached.body.record.status).toBe('not-found');
+    }
+    expect(horizonFetch).toHaveBeenCalledTimes(1);
+    const notFoundCache = await pool.query<{
+      status: string;
+      active: boolean;
+      bounded: boolean;
+    }>(
+      `SELECT status, cache_expires_at > NOW() AS active,
+              cache_expires_at < NOW() + INTERVAL '1 hour' AS bounded
+       FROM verification_results
+       WHERE aid_record_id = $1 ORDER BY checked_at DESC, id DESC LIMIT 1`,
+      [notFound.body.record.id],
+    );
+    expect(notFoundCache.rows[0]).toEqual({ status: 'not-found', active: true, bounded: true });
+
+    const pending = await createRecord(session, recipient, token + ' pending', {
+      txHash: pendingHash,
+    });
+    expect(pending.status).toBe(201);
+    expect(pending.body.record.status).toBe('pending');
+    const callsAfterPendingCreate = horizonFetch.mock.calls.length;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const rechecked = await request(app)
+        .post('/api/records/' + pending.body.record.id + '/verify')
+        .set('Origin', origin)
+        .set('Cookie', session.cookie)
+        .send({ csrfToken: session.csrfToken });
+      expect(rechecked.status).toBe(200);
+      expect(rechecked.body.record.status).toBe('pending');
+    }
+    expect(horizonFetch.mock.calls.length).toBe(callsAfterPendingCreate + 2);
+    const pendingCache = await pool.query<{ cache_expires_at: Date | null }>(
+      `SELECT cache_expires_at FROM verification_results
+       WHERE aid_record_id = $1 ORDER BY checked_at DESC, id DESC LIMIT 1`,
+      [pending.body.record.id],
+    );
+    expect(pendingCache.rows[0]?.cache_expires_at).toBeNull();
+  }, 120_000);
+
   it('stores the transaction memo and withholds it from consent-off public views', async () => {
     const adminSession = await login(admin);
     const organization = Keypair.random();
@@ -1322,7 +1700,8 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       }),
     );
 
-    // Created while Horizon returns 404, so the explicit verify call below is not cached.
+    // Created while Horizon returns 404, so the result is cached as not-found. Expire the
+    // cache so the explicit verify call below re-queries Horizon and finds the memo.
     const created = await createRecord(session, recipient, term + ' private', {
       txHash: privateHash,
     });
@@ -1330,6 +1709,12 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(created.body.record.status).toBe('not-found');
     expect(created.body.record.verification).not.toHaveProperty('memo');
     const recordId = created.body.record.id;
+    await pool.query(
+      `UPDATE verification_results
+       SET cache_expires_at = NOW() - INTERVAL '1 second'
+       WHERE aid_record_id = $1`,
+      [recordId],
+    );
 
     transactions.set(privateHash, {
       successful: true,

@@ -225,7 +225,7 @@ All handlers use `Cache-Control: no-store`; errors generally return `{ "error": 
 | `POST /api/records`                | Organization or admin, Origin + CSRF                     | Validates and creates record; begins verification, returns `201 {record}`. Writes limited to 60/minute per wallet.                                                   |
 | `PUT /api/records/:id`             | Owning organization or admin, Origin + CSRF              | Validates and updates a non-voided record; re-verifies and returns `{record}`.                                                                                       |
 | `POST /api/records/:id/void`       | Owning organization or admin, Origin + CSRF              | Body `{csrfToken,reason}`; reason must be at least five characters; stores actor/time/reason without deleting record.                                                |
-| `POST /api/records/:id/verify`     | Any authenticated role, Origin + CSRF                    | Rechecks record unless a latest verified/mismatch result is still cached; limit 30/minute per wallet.                                                                |
+| `POST /api/records/:id/verify`     | Any authenticated role, Origin + CSRF                    | Rechecks record unless a latest verified, mismatch, or not-found result is still cached; limit 30/minute per wallet.                                                 |
 | `GET /api/admin/roles`             | Admin                                                    | Filters `role`, `q`, `limit`, `cursor`; returns roles and pagination metadata.                                                                                       |
 | `POST /api/admin/roles`            | Admin, Origin + CSRF                                     | Body `{csrfToken,address,role}`; assigns role and creates organization metadata for organization role. Prevents self-demotion and demoting the last admin (409).     |
 | `DELETE /api/admin/roles/:address` | Admin, Origin + CSRF                                     | CSRF token in JSON body; removes explicit role, reverting wallet to donor; prevents self-removal and removing the last admin (409).                                  |
@@ -252,6 +252,8 @@ List limit defaults to 20 and must be an integer from 1 to 100. Cursors are sign
 
 Eligible operation types are `payment`, `create_account`, `path_payment_strict_receive`, and `path_payment_strict_send`. One operation must match all of: source organization wallet, recipient wallet, exact amount in stroops, asset code, and issuer. Path strict-send uses destination amount/asset fields. Create-account uses account, starting balance, native XLM, and funder/source. Fields from separate operations are never combined. Reaching the operation page bound without a complete read yields `pending`.
 
+Record validation accepts Stellar muxed recipients (`M...`) as well as base accounts (`G...`). A muxed record matches only a payment whose `to_muxed` equals the recorded address, so it does not match a payment addressed to the bare base account. A `G...` record continues to match the operation's base destination, including when the operation also carries a muxed destination.
+
 | Status       | Implemented meaning                                                                                                                         |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `verified`   | Successful transaction has one operation matching all checked record fields.                                                                |
@@ -263,7 +265,7 @@ Eligible operation types are `payment`, `create_account`, `path_payment_strict_r
 
 The transaction memo is captured as reconciliation evidence only; it is never compared with the record and never changes the result status. When Horizon reports `memo_type` `text`, `id`, `hash`, or `return` with a string memo, `verified` and `mismatch` results that reached the transaction carry `memo` and `memoType`; `none`, unknown types, and missing or non-string values yield no memo. Text memos are stored as given except that NUL characters, which PostgreSQL `TEXT` cannot hold, are removed; `id` memos stay decimal strings because they are uint64 values, and `hash`/`return` memos keep Horizon's base64 encoding. Stored values are bounded to 128 characters. `not-found`, `pending`, and `unverified` results have no memo.
 
-Verified and mismatch results may be cached for one hour. Pending and other statuses do not receive a cache expiry. Verification history is stored in `verification_results`; a later verification updates the record's status unless the record is already voided. `verified` proves only the checked public payment fields, not identity, consent, intended use, or real-world impact.
+Verified and mismatch results may be cached for one hour. `not-found` results are cached for 15 minutes so repeated verification of a hash Horizon has not indexed yet does not issue a new transaction lookup. `pending` and `unverified` results are never cached. Verification history is stored in `verification_results`; a later verification updates the record's status unless the record is already voided. `verified` proves only the checked public payment fields, not identity, consent, intended use, or real-world impact.
 
 ## Security and Current Gaps
 
@@ -273,7 +275,7 @@ Verified and mismatch results may be cached for one hour. Pending and other stat
 - Without recipient consent, public transparency replaces the beneficiary name with an HMAC label and withholds recipient wallet, transaction hash, note, and selected verification details (destination, explorer link, transaction time, ledger, and transaction memo). Organization and creator wallet, purpose, amount, and date remain visible. With consent, the public record projection includes the full record.
 - Database rate limits are atomic and keyed by digests for challenges (8/15m/address), signature verification (12/min/address), writes (60/min/wallet), and record verification (30/min/wallet). General per-IP and public-read rate limits are not implemented.
 - Successful authentication, logout, role change/removal, record create/update/void, and non-cached verification are audited. Challenge attempts, failed auth, admin seeding, and all security rejections are not comprehensively audited. The schema does not enforce append-only access for audit rows.
-- SQL values are parameterized. Application validation covers Stellar public keys, networks, hashes, amounts/stroops, assets/issuers, dates, text sizes, roles, list filters, and cursors. The server health route is process liveness only; a database readiness probe is not implemented.
+- SQL values are parameterized. Application validation covers Stellar public keys and muxed recipient addresses, networks, hashes, amounts/stroops, assets/issuers, dates, text sizes, roles, list filters, and cursors. The server health route is process liveness only; a database readiness probe is not implemented.
 
 ## Deployment Requirements
 

@@ -95,13 +95,15 @@ function text(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-function operationDestination(operation: HorizonOperation): string {
+function operationDestination(operation: HorizonOperation): { base: string; muxed: string } {
   const type = text(operation.type);
-  return (
-    text(operation.to) ||
-    text(operation.destination) ||
-    (type === 'create_account' ? text(operation.account) : '')
-  );
+  return {
+    base:
+      text(operation.to) ||
+      text(operation.destination) ||
+      (type === 'create_account' ? text(operation.account) : ''),
+    muxed: text(operation.to_muxed),
+  };
 }
 
 function operationAsset(operation: HorizonOperation): { code: string; issuer: string } {
@@ -383,11 +385,15 @@ export async function checkTransaction(
 
   for (const operation of payments) {
     const destination = operationDestination(operation);
+    const destinationAddress = destination.muxed || destination.base;
     const rawAmount = operationAmount(operation);
     const amount = toStroops(rawAmount);
     const asset = operationAsset(operation);
     const source = operationSource(operation, transaction);
-    const matchesDestination = destination === record.recipientWallet;
+    // A muxed record must name the same muxed account; a G-address record still matches the
+    // base destination even when the payment also carries a muxed destination.
+    const matchesDestination =
+      destination.muxed === record.recipientWallet || destination.base === record.recipientWallet;
     const matchesAmount = amount === expectedAmount;
     const matchesAsset = asset.code === expectedAsset;
     const matchesIssuer = expectedAsset === 'XLM' || asset.issuer === record.assetIssuer;
@@ -409,7 +415,7 @@ export async function checkTransaction(
       bestCandidate = {
         score,
         sourceAccount: source,
-        destination,
+        destination: destinationAddress,
         amount: amount ? amountFromStroops(amount) : rawAmount,
         assetCode: asset.code,
         assetIssuer: asset.issuer,
@@ -424,7 +430,7 @@ export async function checkTransaction(
         ledger: transaction.ledger,
         createdAt: transaction.created_at,
         sourceAccount: source,
-        destination,
+        destination: destinationAddress,
         amount: amountFromStroops(expectedAmount),
         asset: asset.code,
         assetIssuer: asset.issuer || undefined,
