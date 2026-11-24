@@ -59,6 +59,51 @@ describe('Freighter signed challenge creates a secure session', () => {
     expect(protectedRequest.status).toBe(401);
   });
 
+  it('correlates unexpected API failures and logs only redacted structured fields', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const query = vi.spyOn(pool, 'query').mockRejectedValue(
+      new Error('database password=do-not-log signature=private-signature'),
+    );
+
+    try {
+      const response = await request(app)
+        .get('/api/me?access_token=query-secret')
+        .set('Cookie', 'aidtrace_session=' + 's'.repeat(48) + '; private_cookie=cookie-secret')
+        .send({ bodySecret: 'request-body-secret', token: 'body-token' });
+
+      expect(response.status).toBe(500);
+      expect(response.body).toEqual({ error: 'Internal server error.' });
+      const requestId = response.headers['x-request-id'];
+      expect(requestId).toEqual(expect.any(String));
+
+      expect(log).toHaveBeenCalledTimes(1);
+      const event = JSON.parse(String(log.mock.calls[0][0])) as Record<string, unknown>;
+      expect(event).toEqual({
+        method: 'GET',
+        route: '/api/me',
+        status: 500,
+        requestId,
+        errorCategory: 'internal_error',
+      });
+
+      const emitted = log.mock.calls.map((call) => call.join(' ')).join('\n');
+      for (const secret of [
+        'request-body-secret',
+        'body-token',
+        'cookie-secret',
+        'access_token',
+        'query-secret',
+        'private-signature',
+        'database password',
+      ]) {
+        expect(emitted).not.toContain(secret);
+      }
+    } finally {
+      query.mockRestore();
+      log.mockRestore();
+    }
+  });
+
   it('rejects malformed JSON and returns a credentialed CORS preflight', async () => {
     const malformed = await request(app)
       .post('/api/records')
