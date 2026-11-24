@@ -1187,6 +1187,10 @@ export default function App() {
   const selectedMismatchDetails = selected ? mismatchDetails(selected) : [];
   const environment = describeNetworkEnvironment(network);
 
+  function sortState(field: string): 'ascending' | 'descending' | 'none' {
+    if (sortBy !== field) return 'none';
+    return sortDir === 'asc' ? 'ascending' : 'descending';
+  }
   function sortRecords(field: string) {
     if (sortBy === field) setSortDir((current) => (current === 'asc' ? 'desc' : 'asc'));
     else {
@@ -1564,33 +1568,39 @@ export default function App() {
                 />
               </label>
             </div>
-            <div className="table-wrap">
+            <div
+              className="table-wrap"
+              tabIndex={0}
+              role="region"
+              aria-label="Transparency ledger records"
+            >
               <table>
+                <caption>Transparency ledger records</caption>
                 <thead>
                   <tr>
-                    <th>
+                    <th scope="col" aria-sort={sortState('recipient')}>
                       <button className="sort-button" onClick={() => sortRecords('recipient')}>
                         RECIPIENT
                       </button>
                     </th>
-                    <th>
+                    <th scope="col" aria-sort={sortState('purpose')}>
                       <button className="sort-button" onClick={() => sortRecords('purpose')}>
                         PURPOSE
                       </button>
                     </th>
-                    <th>
+                    <th scope="col" aria-sort={sortState('amount')}>
                       <button className="sort-button" onClick={() => sortRecords('amount')}>
                         AMOUNT
                       </button>
                     </th>
-                    <th>NETWORK</th>
-                    <th>
+                    <th scope="col">NETWORK</th>
+                    <th scope="col" aria-sort={sortState('date')}>
                       <button className="sort-button" onClick={() => sortRecords('date')}>
                         DATE
                       </button>
                     </th>
-                    <th>STATUS</th>
-                    <th>DETAILS</th>
+                    <th scope="col">STATUS</th>
+                    <th scope="col">DETAILS</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1759,17 +1769,23 @@ export default function App() {
                 Refresh
               </button>
             </div>
-            <div className="table-wrap">
+            <div
+              className="table-wrap"
+              tabIndex={0}
+              role="region"
+              aria-label="Wallet activity records"
+            >
               <table>
+                <caption>Wallet activity records</caption>
                 <thead>
                   <tr>
-                    <th>TYPE</th>
-                    <th>AMOUNT</th>
-                    <th>COUNTERPARTY</th>
-                    <th>DATE</th>
-                    <th>STATUS</th>
-                    <th>AID RECORD</th>
-                    <th>TRANSACTION</th>
+                    <th scope="col">TYPE</th>
+                    <th scope="col">AMOUNT</th>
+                    <th scope="col">COUNTERPARTY</th>
+                    <th scope="col">DATE</th>
+                    <th scope="col">STATUS</th>
+                    <th scope="col">AID RECORD</th>
+                    <th scope="col">TRANSACTION</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1859,16 +1875,22 @@ export default function App() {
                   Refresh
                 </button>
               </div>
-              <div className="table-wrap">
+              <div
+                className="table-wrap"
+                tabIndex={0}
+                role="region"
+                aria-label="Beneficiary records"
+              >
                 <table>
+                  <caption>Beneficiary records</caption>
                   <thead>
                     <tr>
-                      <th>RECIPIENT</th>
-                      <th>PURPOSE</th>
-                      <th>AMOUNT</th>
-                      <th>DATE</th>
-                      <th>STATUS</th>
-                      <th>DETAILS</th>
+                      <th scope="col">RECIPIENT</th>
+                      <th scope="col">PURPOSE</th>
+                      <th scope="col">AMOUNT</th>
+                      <th scope="col">DATE</th>
+                      <th scope="col">STATUS</th>
+                      <th scope="col">DETAILS</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1976,15 +1998,16 @@ export default function App() {
                 Assign role
               </button>
             </form>
-            <div className="table-wrap">
+            <div className="table-wrap" tabIndex={0} role="region" aria-label="Role assignments">
               <table>
+                <caption>Role assignments</caption>
                 <thead>
                   <tr>
-                    <th>WALLET</th>
-                    <th>ROLE</th>
-                    <th>UPDATED</th>
-                    <th>UPDATED BY</th>
-                    <th>ACTION</th>
+                    <th scope="col">WALLET</th>
+                    <th scope="col">ROLE</th>
+                    <th scope="col">UPDATED</th>
+                    <th scope="col">UPDATED BY</th>
+                    <th scope="col">ACTION</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2050,15 +2073,16 @@ export default function App() {
                 ))}
               </select>
             </div>
-            <div className="table-wrap">
+            <div className="table-wrap" tabIndex={0} role="region" aria-label="Audit log events">
               <table>
+                <caption>Audit log events</caption>
                 <thead>
                   <tr>
-                    <th>ACTION</th>
-                    <th>SUMMARY</th>
-                    <th>WALLET</th>
-                    <th>RECORD</th>
-                    <th>TIME</th>
+                    <th scope="col">ACTION</th>
+                    <th scope="col">SUMMARY</th>
+                    <th scope="col">WALLET</th>
+                    <th scope="col">RECORD</th>
+                    <th scope="col">TIME</th>
                   </tr>
                 </thead>
                 <tbody>
