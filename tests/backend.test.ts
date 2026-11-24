@@ -2,6 +2,7 @@ import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { createHash, createHmac } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { Keypair } from '@stellar/stellar-sdk';
+import { Pool } from 'pg';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -10,9 +11,9 @@ import {
   migrate,
 } from '../scripts/migrate.js';
 import { app } from '../server/app.js';
-import { verifySep53Signature } from '../server/auth.js';
-import { pool } from '../server/db.js';
-import { checkTransaction } from '../server/stellar-verification.js';
+import { getSession, verifySep53Signature } from '../server/auth.js';
+import { IDLE_IN_TRANSACTION_TIMEOUT_MS, pool } from '../server/db.js';
+import { checkTransaction, HORIZON_MAX_RESPONSE_BYTES } from '../server/stellar-verification.js';
 
 const origin = 'http://localhost:5173';
 
@@ -71,6 +72,23 @@ describe('Freighter signed challenge creates a secure session', () => {
       .set('Content-Type', 'application/json')
       .send('{');
     expect(malformed.status).toBe(400);
+
+    const unsupportedCharset = await request(app)
+      .post('/api/records')
+      .set('Origin', origin)
+      .set('Content-Type', 'application/json; charset=utf-16le')
+      .send('{}');
+    expect(unsupportedCharset.status).toBe(415);
+    expect(unsupportedCharset.body).toEqual({ error: 'Unsupported request encoding.' });
+
+    const unsupportedEncoding = await request(app)
+      .post('/api/records')
+      .set('Origin', origin)
+      .set('Content-Type', 'application/json')
+      .set('Content-Encoding', 'compress')
+      .send('{}');
+    expect(unsupportedEncoding.status).toBe(415);
+    expect(unsupportedEncoding.body).toEqual({ error: 'Unsupported request encoding.' });
 
     const preflight = await request(app)
       .options('/api/records')
@@ -346,12 +364,88 @@ describe('On-chain verification distinguishes matching and mismatching payments'
 
 const integration = describe.skipIf(!process.env.TEST_DATABASE_URL);
 
+integration('Idle-in-transaction bound on the database', () => {
+  it('applies the configured idle_in_transaction_session_timeout to pooled clients', async () => {
+    const client = await pool.connect();
+    try {
+      const result = await client.query<{ idle_in_transaction_session_timeout: string }>(
+        'SHOW idle_in_transaction_session_timeout',
+      );
+      expect(result.rows[0].idle_in_transaction_session_timeout).toBe(
+        `${IDLE_IN_TRANSACTION_TIMEOUT_MS / 1000}s`,
+      );
+    } finally {
+      client.release();
+    }
+  });
+
+  it('terminates a client that runs BEGIN and then idles past the bound', async () => {
+    // Same pool option as server/db.ts with a short bound so the test runs quickly.
+    const short = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      max: 1,
+      idle_in_transaction_session_timeout: 500,
+    });
+    short.on('error', () => {});
+    const client = await short.connect();
+    client.on('error', () => {});
+    let broken: Error | undefined;
+    try {
+      await client.query('BEGIN');
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      const started = Date.now();
+      await expect(client.query('SELECT 1')).rejects.toThrow();
+      expect(Date.now() - started).toBeLessThan(5_000);
+      broken = new Error('session terminated by idle_in_transaction_session_timeout');
+    } finally {
+      client.release(broken);
+      await short.end();
+    }
+  });
+});
+
 integration('Database-backed wallet, records, and authorization flows', () => {
   const wallets = new Set<string>();
   const recordIds = new Set<string>();
   let admin: Keypair;
 
   afterEach(() => vi.unstubAllGlobals());
+
+  async function expectAuditEvent(
+    action: string,
+    actorWallet: string,
+    expected: {
+      subjectWallet?: string;
+      recordId?: string;
+      metadata?: Record<string, unknown>;
+    } = {},
+  ) {
+    const subjectWallet = expected.subjectWallet ?? null;
+    const recordId = expected.recordId ?? null;
+    const result = await pool.query<{
+      action: string;
+      actor_wallet: string;
+      subject_wallet: string | null;
+      record_id: string | null;
+      metadata_json: Record<string, unknown>;
+    }>(
+      `SELECT action, actor_wallet, subject_wallet, record_id, metadata_json
+       FROM audit_events
+       WHERE action = $1 AND actor_wallet = $2
+         AND subject_wallet IS NOT DISTINCT FROM $3
+         AND record_id IS NOT DISTINCT FROM $4
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [action, actorWallet, subjectWallet, recordId],
+    );
+    expect(result.rows[0], `Missing ${action} audit event for ${actorWallet}`).toMatchObject({
+      action,
+      actor_wallet: actorWallet,
+      subject_wallet: subjectWallet,
+      record_id: recordId,
+      ...(expected.metadata ? { metadata_json: expected.metadata } : {}),
+    });
+  }
 
   async function login(wallet: Keypair) {
     const address = wallet.publicKey();
@@ -460,34 +554,48 @@ integration('Database-backed wallet, records, and authorization flows', () => {
   afterAll(async () => {
     const addresses = [...wallets];
     const ids = [...recordIds];
-    if (addresses.length) {
-      await pool.query(
-        `DELETE FROM audit_events
-         WHERE actor_wallet = ANY($1::text[]) OR subject_wallet = ANY($1::text[])
-            OR record_id = ANY($2::text[])`,
-        [addresses, ids],
-      );
-      if (ids.length) {
-        await pool.query('DELETE FROM verification_results WHERE aid_record_id = ANY($1::text[])', [
-          ids,
+    const maintenancePool = new Pool({
+      connectionString: process.env.DATABASE_URL_UNPOOLED,
+    });
+    try {
+      if (addresses.length) {
+        await maintenancePool.query(
+          `DELETE FROM audit_events
+           WHERE actor_wallet = ANY($1::text[]) OR subject_wallet = ANY($1::text[])
+              OR record_id = ANY($2::text[])`,
+          [addresses, ids],
+        );
+        if (ids.length) {
+          await maintenancePool.query(
+            'DELETE FROM verification_results WHERE aid_record_id = ANY($1::text[])',
+            [ids],
+          );
+          await maintenancePool.query('DELETE FROM aid_records WHERE id = ANY($1::text[])', [ids]);
+        }
+        await maintenancePool.query(
+          'DELETE FROM organizations WHERE wallet_address = ANY($1::text[])',
+          [addresses],
+        );
+        await maintenancePool.query(
+          `DELETE FROM wallet_roles
+           WHERE wallet_address = ANY($1::text[]) OR updated_by = ANY($1::text[])`,
+          [addresses],
+        );
+        await maintenancePool.query('DELETE FROM sessions WHERE wallet_address = ANY($1::text[])', [
+          addresses,
         ]);
-        await pool.query('DELETE FROM aid_records WHERE id = ANY($1::text[])', [ids]);
+        await maintenancePool.query(
+          'DELETE FROM challenges WHERE wallet_address = ANY($1::text[])',
+          [addresses],
+        );
+        await maintenancePool.query('DELETE FROM users WHERE wallet_address = ANY($1::text[])', [
+          addresses,
+        ]);
       }
-      await pool.query('DELETE FROM organizations WHERE wallet_address = ANY($1::text[])', [
-        addresses,
-      ]);
-      await pool.query(
-        `DELETE FROM wallet_roles
-         WHERE wallet_address = ANY($1::text[]) OR updated_by = ANY($1::text[])`,
-        [addresses],
-      );
-      await pool.query('DELETE FROM sessions WHERE wallet_address = ANY($1::text[])', [addresses]);
-      await pool.query('DELETE FROM challenges WHERE wallet_address = ANY($1::text[])', [
-        addresses,
-      ]);
-      await pool.query('DELETE FROM users WHERE wallet_address = ANY($1::text[])', [addresses]);
+    } finally {
+      await maintenancePool.end();
+      await pool.end();
     }
-    await pool.end();
   });
 
   it('reports duplicate hashes and aborts migration 002 before creating the unique constraint', async () => {
@@ -740,6 +848,92 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     ).toBeNull();
   });
 
+  it('records throttled session activity and rejects expired or revoked sessions', async () => {
+    const wallet = Keypair.random();
+    const session = await login(wallet);
+    const token = decodeURIComponent(session.cookie.slice('aidtrace_session='.length));
+    const sessionHash = createHash('sha256').update(token).digest('hex');
+    const lastSeen = async () =>
+      (
+        await pool.query<{ last_seen_at: Date | null }>(
+          'SELECT last_seen_at FROM sessions WHERE session_hash = $1',
+          [sessionHash],
+        )
+      ).rows[0]?.last_seen_at ?? null;
+    const cookieRequest = (cookie: string) =>
+      ({
+        get: (name: string) => (name.toLowerCase() === 'cookie' ? cookie : undefined),
+      }) as unknown as Parameters<typeof getSession>[0];
+
+    expect(await lastSeen()).toBeNull();
+    const first = await request(app).get('/api/me').set('Cookie', session.cookie);
+    expect(first.body.session.address).toBe(wallet.publicKey());
+    const firstSeen = await lastSeen();
+    expect(firstSeen).not.toBeNull();
+
+    const second = await request(app).get('/api/me').set('Cookie', session.cookie);
+    expect(second.status).toBe(200);
+    expect((await lastSeen())?.getTime()).toBe(firstSeen?.getTime());
+
+    await pool.query(
+      "UPDATE sessions SET expires_at = NOW() - INTERVAL '1 second' WHERE session_hash = $1",
+      [sessionHash],
+    );
+    expect(await getSession(cookieRequest(session.cookie))).toBeNull();
+    expect(
+      (await request(app).get('/api/me').set('Cookie', session.cookie)).body.session,
+    ).toBeNull();
+
+    const revokedSession = await login(Keypair.random());
+    const revokedToken = decodeURIComponent(
+      revokedSession.cookie.slice('aidtrace_session='.length),
+    );
+    await pool.query('UPDATE sessions SET revoked_at = NOW() WHERE session_hash = $1', [
+      createHash('sha256').update(revokedToken).digest('hex'),
+    ]);
+    expect(await getSession(cookieRequest(revokedSession.cookie))).toBeNull();
+
+    const logout = await request(app)
+      .post('/api/auth/logout')
+      .set('Origin', origin)
+      .set('Cookie', revokedSession.cookie)
+      .send({ csrfToken: revokedSession.csrfToken });
+    expect(logout.status).toBe(200);
+    const clearedCookie = String(logout.headers['set-cookie']);
+    expect(clearedCookie).toContain('aidtrace_session=;');
+    expect(clearedCookie).toContain('Max-Age=0');
+  }, 60_000);
+
+  it('rejects an expired session, clears the cookie, and blocks protected writes', async () => {
+    const wallet = Keypair.random();
+    const session = await login(wallet);
+    const token = decodeURIComponent(session.cookie.slice('aidtrace_session='.length));
+    const sessionHash = createHash('sha256').update(token).digest('hex');
+
+    const active = await request(app).get('/api/me').set('Cookie', session.cookie);
+    expect(active.status).toBe(200);
+    expect(active.body.session).toMatchObject({ address: wallet.publicKey(), role: 'donor' });
+
+    await pool.query(
+      "UPDATE sessions SET expires_at = NOW() - INTERVAL '1 second' WHERE session_hash = $1",
+      [sessionHash],
+    );
+
+    const expired = await request(app).get('/api/me').set('Cookie', session.cookie);
+    expect(expired.status).toBe(200);
+    expect(expired.body.session).toBeNull();
+    const clearedCookie = String(expired.headers['set-cookie']);
+    expect(clearedCookie).toContain('aidtrace_session=;');
+    expect(clearedCookie).toContain('Max-Age=0');
+
+    const rejected = await request(app)
+      .post('/api/records')
+      .set('Origin', origin)
+      .set('Cookie', session.cookie)
+      .send({ csrfToken: session.csrfToken });
+    expect(rejected.status).toBe(401);
+  }, 60_000);
+
   it('verifies the matching source, stores evidence, and rejects duplicate network hashes', async () => {
     const adminSession = await login(admin);
     const organization = Keypair.random();
@@ -892,6 +1086,195 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       txHash: verifiedHash,
     });
     expect(duplicate.status).toBe(409);
+  }, 120_000);
+
+  it('stores the transaction memo and withholds it from consent-off public views', async () => {
+    const adminSession = await login(admin);
+    const organization = Keypair.random();
+    const otherOrganization = Keypair.random();
+    const recipient = Keypair.random();
+    await assignRole(adminSession, organization, 'organization');
+    await assignRole(adminSession, otherOrganization, 'organization');
+    const session = await login(organization);
+    const otherSession = await login(otherOrganization);
+    const term = 'memo-' + Keypair.random().publicKey().slice(-8);
+    const memo = 'AID-' + Keypair.random().publicKey().slice(-12);
+    const privateHash = createHash('sha256')
+      .update(term + '-private')
+      .digest('hex');
+    const consentHash = createHash('sha256')
+      .update(term + '-consent')
+      .digest('hex');
+    const largeId = '18446744073709551615';
+    const transactions = new Map<string, Record<string, unknown>>();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = new URL(String(input));
+        const segments = url.pathname.split('/').filter(Boolean);
+        const hash = segments[segments.indexOf('transactions') + 1] || '';
+        const transaction = transactions.get(hash);
+        if (!transaction) return new Response('{}', { status: 404 });
+        const records = url.pathname.endsWith('/operations')
+          ? [
+              {
+                type: 'payment',
+                from: organization.publicKey(),
+                to: recipient.publicKey(),
+                amount: '1.25',
+                asset_type: 'native',
+              },
+            ]
+          : undefined;
+        return new Response(JSON.stringify(records ? { _embedded: { records } } : transaction), {
+          status: 200,
+        });
+      }),
+    );
+
+    // Created while Horizon returns 404, so the explicit verify call below is not cached.
+    const created = await createRecord(session, recipient, term + ' private', {
+      txHash: privateHash,
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.record.status).toBe('not-found');
+    expect(created.body.record.verification).not.toHaveProperty('memo');
+    const recordId = created.body.record.id;
+
+    transactions.set(privateHash, {
+      successful: true,
+      source_account: organization.publicKey(),
+      ledger: 11,
+      created_at: '2026-01-15T00:00:00Z',
+      memo_type: 'text',
+      memo,
+    });
+    const verified = await request(app)
+      .post('/api/records/' + recordId + '/verify')
+      .set('Origin', origin)
+      .set('Cookie', session.cookie)
+      .send({ csrfToken: session.csrfToken });
+    expect(verified.status).toBe(200);
+    expect(verified.body.record.status).toBe('verified');
+    expect(verified.body.record.verification).toMatchObject({ memo, memoType: 'text' });
+
+    const stored = await pool.query<{ memo: string | null; memo_type: string | null }>(
+      `SELECT memo, memo_type FROM verification_results
+       WHERE aid_record_id = $1 ORDER BY checked_at DESC, id DESC LIMIT 1`,
+      [recordId],
+    );
+    expect(stored.rows[0]).toEqual({ memo, memo_type: 'text' });
+    await expectAuditEvent('record_verification_checked', session.address, {
+      recordId,
+      metadata: { status: 'verified', ledger: 11 },
+    });
+
+    const findRecord = (body: { records: { id: string }[] }) =>
+      body.records.find((record) => record.id === recordId) as
+        { verification?: Record<string, unknown> } | undefined;
+
+    const ownerView = await request(app)
+      .get('/api/transparency')
+      .query({ q: term })
+      .set('Cookie', session.cookie);
+    expect(ownerView.status).toBe(200);
+    expect(findRecord(ownerView.body)?.verification).toMatchObject({ memo, memoType: 'text' });
+
+    const adminView = await request(app)
+      .get('/api/transparency')
+      .query({ q: term })
+      .set('Cookie', adminSession.cookie);
+    expect(findRecord(adminView.body)?.verification).toMatchObject({ memo, memoType: 'text' });
+
+    for (const publicView of [
+      await request(app).get('/api/transparency').query({ q: term }),
+      await request(app)
+        .get('/api/transparency')
+        .query({ q: term })
+        .set('Cookie', otherSession.cookie),
+    ]) {
+      expect(publicView.status).toBe(200);
+      const publicRecord = findRecord(publicView.body);
+      expect(publicRecord?.verification?.status).toBe('verified');
+      expect(publicRecord?.verification).not.toHaveProperty('memo');
+      expect(publicRecord?.verification).not.toHaveProperty('memoType');
+      expect(JSON.stringify(publicView.body)).not.toContain(memo);
+    }
+
+    await assignRole(adminSession, recipient, 'beneficiary');
+    const beneficiarySession = await login(recipient);
+    const beneficiaryView = await request(app)
+      .get('/api/beneficiary')
+      .query({ q: term })
+      .set('Cookie', beneficiarySession.cookie);
+    expect(beneficiaryView.status).toBe(200);
+    expect(findRecord(beneficiaryView.body)?.verification).toMatchObject({
+      memo,
+      memoType: 'text',
+    });
+
+    // With consent the public projection includes the full record, memo included; a uint64 id
+    // memo above 2^53 round-trips through the TEXT column unchanged.
+    transactions.set(consentHash, {
+      successful: true,
+      source_account: organization.publicKey(),
+      memo_type: 'id',
+      memo: largeId,
+    });
+    const consented = await createRecord(session, recipient, term + ' consented', {
+      txHash: consentHash,
+      consent: true,
+    });
+    expect(consented.status).toBe(201);
+    expect(consented.body.record.verification).toMatchObject({ memo: largeId, memoType: 'id' });
+    const consentedPublic = await request(app)
+      .get('/api/transparency')
+      .query({ q: term + ' consented' });
+    expect(consentedPublic.body.records[0].verification).toMatchObject({
+      memo: largeId,
+      memoType: 'id',
+    });
+  }, 120_000);
+
+  it('returns a filter-bounded total on transparency pages without walking every record', async () => {
+    const adminSession = await login(admin);
+    const organization = Keypair.random();
+    await assignRole(adminSession, organization, 'organization');
+    const session = await login(organization);
+    const recipient = Keypair.random();
+    const token = 'bounded-total-' + Date.now();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 404 })),
+    );
+    for (let index = 0; index < 3; index += 1) {
+      const created = await createRecord(session, recipient, `${token} case ${index}`, {
+        txHash: createHash('sha256').update(`${token}-${index}`).digest('hex'),
+      });
+      expect(created.status).toBe(201);
+    }
+
+    const pageOne = await request(app).get('/api/transparency').query({ q: token, limit: '1' });
+    expect(pageOne.status).toBe(200);
+    expect(pageOne.body.records).toHaveLength(1);
+    expect(pageOne.body.total).toBe(3);
+    expect(pageOne.body.hasMore).toBe(true);
+    expect(typeof pageOne.body.nextCursor).toBe('string');
+
+    const pageTwo = await request(app)
+      .get('/api/transparency')
+      .query({ q: token, limit: '1', cursor: pageOne.body.nextCursor });
+    expect(pageTwo.status).toBe(200);
+    expect(pageTwo.body.records).toHaveLength(1);
+    expect(pageTwo.body.total).toBe(3);
+    expect(pageTwo.body.records[0].id).not.toBe(pageOne.body.records[0].id);
+
+    const tight = await request(app)
+      .get('/api/transparency')
+      .query({ q: `${token} case 1`, limit: '1' });
+    expect(tight.status).toBe(200);
+    expect(tight.body.total).toBe(1);
+    expect(tight.body.hasMore).toBe(false);
   }, 120_000);
 
   it('paginates and filters public records while redacting beneficiary identifiers by default', async () => {
@@ -1102,6 +1485,19 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         (event: { recordId?: string }) => event.recordId === owned.body.record.id,
       ),
     ).toBe(true);
+    await expectAuditEvent('record_voided', ownerSession.address, {
+      recordId: owned.body.record.id,
+      metadata: { voidReason: 'Duplicate entry' },
+    });
+    const sessionToken = ownerSession.cookie.slice(ownerSession.cookie.indexOf('=') + 1);
+    const leakedSecrets = await pool.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM audit_events
+       WHERE actor_wallet = $1
+         AND (strpos(summary, $2) > 0 OR strpos(metadata_json::text, $2) > 0
+              OR strpos(summary, $3) > 0 OR strpos(metadata_json::text, $3) > 0)`,
+      [ownerSession.address, sessionToken, ownerSession.csrfToken],
+    );
+    expect(Number(leakedSecrets.rows[0].count)).toBe(0);
 
     const removable = Keypair.random();
     await assignRole(adminSession, removable, 'donor');
@@ -1128,6 +1524,197 @@ integration('Database-backed wallet, records, and authorization flows', () => {
     expect(
       (await request(app).get('/api/me').set('Cookie', ownerSession.cookie)).body.session,
     ).toBeNull();
+  }, 120_000);
+
+  it('revokes every session for one wallet on logout-everywhere without touching other wallets', async () => {
+    const wallet = Keypair.random();
+    const otherWallet = Keypair.random();
+    const firstSession = await login(wallet);
+    const secondSession = await login(wallet);
+    const otherWalletSession = await login(otherWallet);
+    expect(firstSession.cookie).not.toBe(secondSession.cookie);
+
+    const firstMe = await request(app).get('/api/me').set('Cookie', firstSession.cookie);
+    const secondMe = await request(app).get('/api/me').set('Cookie', secondSession.cookie);
+    expect(firstMe.body.session.address).toBe(wallet.publicKey());
+    expect(secondMe.body.session.address).toBe(wallet.publicKey());
+
+    const logoutEverywhere = await request(app)
+      .post('/api/auth/logout-everywhere')
+      .set('Origin', origin)
+      .set('Cookie', firstSession.cookie)
+      .send({ csrfToken: firstSession.csrfToken });
+    expect(logoutEverywhere.status).toBe(200);
+
+    expect(
+      (await request(app).get('/api/me').set('Cookie', firstSession.cookie)).body.session,
+    ).toBeNull();
+    expect(
+      (await request(app).get('/api/me').set('Cookie', secondSession.cookie)).body.session,
+    ).toBeNull();
+    const otherWalletMe = await request(app)
+      .get('/api/me')
+      .set('Cookie', otherWalletSession.cookie);
+    expect(otherWalletMe.body.session.address).toBe(otherWallet.publicKey());
+
+    await expectAuditEvent('wallet_logout_everywhere', wallet.publicKey());
+  }, 60_000);
+
+  it('enforces the authorization matrix for every protected route', async () => {
+    const adminSession = await login(admin);
+    const donorWallet = Keypair.random();
+    const beneficiaryWallet = Keypair.random();
+    const organizationWallet = Keypair.random();
+    await assignRole(adminSession, beneficiaryWallet, 'beneficiary');
+    await assignRole(adminSession, organizationWallet, 'organization');
+    const donorSession = await login(donorWallet);
+    const beneficiarySession = await login(beneficiaryWallet);
+    const organizationSession = await login(organizationWallet);
+
+    type Session = Awaited<ReturnType<typeof login>>;
+    type MatrixRecord = {
+      id: string;
+      recipient: string;
+      recipientAddress: string;
+      purpose: string;
+      amount: string;
+      asset: string;
+      assetIssuer?: string;
+      network: 'testnet' | 'mainnet';
+      txHash: string;
+      date: string;
+      note: string;
+      recipientConsent?: boolean;
+    };
+    type Route = {
+      name: string;
+      method: 'get' | 'post' | 'put';
+      path: string | ((recordId: string) => string);
+      allowed: string[];
+      write?: boolean;
+      record?: boolean;
+      body?: (session: Session, record: MatrixRecord | null) => Record<string, unknown>;
+    };
+
+    const principals: { name: string; session: Session | null; role: string | null }[] = [
+      { name: 'anonymous', session: null, role: null },
+      { name: 'donor', session: donorSession, role: 'donor' },
+      { name: 'beneficiary', session: beneficiarySession, role: 'beneficiary' },
+      { name: 'organization', session: organizationSession, role: 'organization' },
+      { name: 'admin', session: adminSession, role: 'admin' },
+    ];
+
+    const routes: Route[] = [
+      {
+        name: 'GET /api/beneficiary',
+        method: 'get',
+        path: '/api/beneficiary',
+        allowed: ['beneficiary', 'admin'],
+      },
+      { name: 'GET /api/admin/roles', method: 'get', path: '/api/admin/roles', allowed: ['admin'] },
+      { name: 'GET /api/audit', method: 'get', path: '/api/audit', allowed: ['admin'] },
+      {
+        name: 'POST /api/records',
+        method: 'post',
+        path: '/api/records',
+        allowed: ['organization', 'admin'],
+        write: true,
+        body: (session) => ({
+          csrfToken: session.csrfToken,
+          recipient: 'Matrix recipient',
+          recipientAddress: Keypair.random().publicKey(),
+          purpose: 'Authorization matrix create ' + Keypair.random().publicKey().slice(-8),
+          amount: '1.25',
+          asset: 'XLM',
+          assetIssuer: '',
+          network: 'testnet',
+          txHash: '',
+          date: '2026-01-15',
+          note: '',
+          recipientConsent: false,
+        }),
+      },
+      {
+        name: 'PUT /api/records/:id',
+        method: 'put',
+        path: (recordId) => '/api/records/' + recordId,
+        allowed: ['organization', 'admin'],
+        write: true,
+        record: true,
+        body: (session, record) => ({
+          csrfToken: session.csrfToken,
+          recipient: record!.recipient,
+          recipientAddress: record!.recipientAddress,
+          purpose: record!.purpose,
+          amount: record!.amount,
+          asset: record!.asset,
+          assetIssuer: record!.assetIssuer || '',
+          network: record!.network,
+          txHash: record!.txHash,
+          date: record!.date,
+          note: record!.note,
+          recipientConsent: record!.recipientConsent || false,
+        }),
+      },
+      {
+        // Verification accepts any authenticated session, so this route has no wrong-role 403.
+        name: 'POST /api/records/:id/verify',
+        method: 'post',
+        path: (recordId) => '/api/records/' + recordId + '/verify',
+        allowed: ['donor', 'beneficiary', 'organization', 'admin'],
+        write: true,
+        record: true,
+        body: (session) => ({ csrfToken: session.csrfToken }),
+      },
+      {
+        name: 'POST /api/records/:id/void',
+        method: 'post',
+        path: (recordId) => '/api/records/' + recordId + '/void',
+        allowed: ['organization', 'admin'],
+        write: true,
+        record: true,
+        body: (session) => ({ csrfToken: session.csrfToken, reason: 'Authorization matrix void' }),
+      },
+    ];
+
+    const send = (method: Route['method'], path: string) =>
+      method === 'get'
+        ? request(app).get(path)
+        : method === 'post'
+          ? request(app).post(path)
+          : request(app).put(path);
+
+    for (const route of routes) {
+      for (const principal of principals) {
+        const label = route.name + ' as ' + principal.name;
+        let record: MatrixRecord | null = null;
+        if (route.record) {
+          const created = await createRecord(
+            organizationSession,
+            Keypair.random(),
+            'Matrix ' + route.name + ' ' + principal.name + ' ' + Keypair.random().publicKey(),
+          );
+          expect(created.status, label).toBe(201);
+          record = created.body.record as MatrixRecord;
+        }
+        const path = typeof route.path === 'function' ? route.path(record!.id) : route.path;
+        const http = send(route.method, path);
+        if (principal.session) http.set('Cookie', principal.session.cookie);
+        if (route.write) {
+          http.set('Origin', origin);
+          http.send(principal.session ? route.body!(principal.session, record) : {});
+        }
+        const response = await http;
+        if (!principal.session) {
+          expect(response.status, label).toBe(401);
+        } else if (!route.allowed.includes(principal.role!)) {
+          expect(response.status, label).toBe(403);
+        } else {
+          expect([200, 201], label).toContain(response.status);
+          if (route.name === 'POST /api/records') recordIds.add(response.body.record.id);
+        }
+      }
+    }
   }, 120_000);
 
   describe('last active admin protection', () => {
@@ -1287,6 +1874,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         expect(await roleOf(adminB.address)).toBeUndefined();
         await expectAuditEvent('wallet_role_removed', callerA.address, {
           subjectWallet: adminB.address,
+          metadata: { previousRole: 'admin', newRole: 'donor' },
         });
 
         const demoted = await setRole(callerA, adminC.address, 'organization');
@@ -1294,6 +1882,7 @@ integration('Database-backed wallet, records, and authorization flows', () => {
         expect(await roleOf(adminC.address)).toBe('organization');
         await expectAuditEvent('wallet_role_changed', callerA.address, {
           subjectWallet: adminC.address,
+          metadata: { previousRole: 'admin', newRole: 'organization' },
         });
 
         expect(await adminCount([callerA.address, adminB.address, adminC.address])).toBe(1);
@@ -1328,5 +1917,37 @@ integration('Database-backed wallet, records, and authorization flows', () => {
       },
       60_000,
     );
+  });
+});
+
+describe('transparency date range filter', () => {
+  it('returns 400 for a reversed range and runs no record list query', async () => {
+    const spy = vi.spyOn(pool, 'query');
+    try {
+      const res = await request(app)
+        .get('/api/transparency')
+        .query({ from: '2026-02-01', to: '2026-01-01' });
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(res.body)).toMatch(/from must be on or before to/i);
+      const listQueries = spy.mock.calls.filter(
+        ([sql]) => typeof sql === 'string' && /FROM\s+records/i.test(sql),
+      );
+      expect(listQueries).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it.each([
+    ['equal', '2026-01-01', '2026-01-01'],
+    ['ascending', '2026-01-01', '2026-02-01'],
+  ])('accepts %s ranges', async (_label, from, to) => {
+    const spy = vi.spyOn(pool, 'query').mockResolvedValue({ rows: [], rowCount: 0 } as never);
+    try {
+      const res = await request(app).get('/api/transparency').query({ from, to });
+      expect(res.status).toBe(200);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

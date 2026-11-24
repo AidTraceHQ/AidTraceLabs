@@ -1,18 +1,59 @@
 import '../server/environment.js';
+import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Pool, type PoolClient } from 'pg';
+import { Pool, type PoolClient, type PoolConfig } from 'pg';
 
 const migrationDirectory = fileURLToPath(new URL('../migrations/', import.meta.url));
 const migrationUrl = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
 if (!migrationUrl) {
   throw new Error('DATABASE_URL or DATABASE_URL_UNPOOLED is required to run migrations.');
 }
-const migrationPool = new Pool({ connectionString: migrationUrl });
+const resolvedMigrationUrl: string = migrationUrl;
 
-async function withTransaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
-  const client = await migrationPool.connect();
+// Bounds a migration that would otherwise wait on a lock or a stalled connection forever.
+// Mirrors the runtime (server/db.ts) and seed (scripts/seed-admin.ts) pools.
+export const MIGRATION_TIMEOUT_MS = 10_000;
+
+type MigrationPoolFactory = (config: PoolConfig) => Pool;
+
+export function createMigrationPool(
+  databaseUrl: string,
+  createPool: MigrationPoolFactory = (config) => new Pool(config),
+): Pool {
+  return createPool({
+    connectionString: databaseUrl,
+    connectionTimeoutMillis: MIGRATION_TIMEOUT_MS,
+    query_timeout: MIGRATION_TIMEOUT_MS,
+    statement_timeout: MIGRATION_TIMEOUT_MS,
+  });
+}
+
+export function migrationChecksum(sql: string): string {
+  return createHash('sha256').update(sql, 'utf8').digest('hex');
+}
+
+export class MigrationChecksumError extends Error {
+  constructor(
+    readonly version: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'MigrationChecksumError';
+  }
+}
+
+export type MigrationOptions = {
+  migrationDirectory?: string;
+  baselineChecksums?: boolean;
+};
+
+async function withTransaction<T>(
+  pool: Pool,
+  work: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const result = await work(client);
@@ -115,19 +156,50 @@ export async function migrate() {
     await migrationPool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version TEXT PRIMARY KEY,
-      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      checksum TEXT
     )
   `);
+  await pool.query('ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT');
 
-    const files = (await readdir(migrationDirectory))
-      .filter((file) => /^\d{3}_[a-z0-9_]+\.sql$/.test(file))
-      .sort();
+  const files = (await readdir(directory))
+    .filter((file) => /^\d{3}_[a-z0-9_]+\.sql$/.test(file))
+    .sort();
 
-    for (const file of files) {
-      const version = file.slice(0, file.length - '.sql'.length);
-      const alreadyApplied = await migrationPool.query(
-        'SELECT 1 FROM schema_migrations WHERE version = $1',
-        [version],
+  const appliedRows = await pool.query<{ version: string; checksum: string | null }>(
+    'SELECT version, checksum FROM schema_migrations',
+  );
+  const applied = new Map(appliedRows.rows.map((row) => [row.version, row.checksum]));
+
+  const pending: { version: string; sql: string; checksum: string }[] = [];
+  const baselines: { version: string; checksum: string }[] = [];
+  for (const file of files) {
+    const version = file.slice(0, file.length - '.sql'.length);
+    const sql = await readFile(join(directory, file), 'utf8');
+    const checksum = migrationChecksum(sql);
+    if (!applied.has(version)) {
+      pending.push({ version, sql, checksum });
+      continue;
+    }
+
+    const stored = applied.get(version);
+    if (stored === null) {
+      if (!options.baselineChecksums) {
+        throw new MigrationChecksumError(
+          version,
+          `Migration ${version} has no recorded checksum. Review the file, then run ` +
+            '`npm run db:migrate -- --baseline-checksums` to record reviewed baselines.',
+        );
+      }
+      baselines.push({ version, checksum });
+      continue;
+    }
+    if (stored !== checksum) {
+      throw new MigrationChecksumError(
+        version,
+        `Migration ${version} changed after it was applied. ` +
+          `Expected checksum ${stored}, found ${checksum}. ` +
+          'Restore the file or add a new migration instead of editing it.',
       );
       if (alreadyApplied.rowCount) continue;
 
@@ -155,17 +227,37 @@ export async function migrate() {
           );
           console.error(JSON.stringify(error.violations, null, 2));
         }
-        throw error;
+        await client.query('INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)', [
+          migration.version,
+          migration.checksum,
+        ]);
+      });
+    } catch (error) {
+      if (error instanceof DuplicateTransactionHashesError) {
+        console.error(
+          'Migration 002 aborted: duplicate network/transaction hashes require resolution:',
+        );
+        console.error(JSON.stringify(error.duplicates, null, 2));
       }
-      console.log(`Applied migration ${version}.`);
+      throw error;
     }
+    console.log(`Applied migration ${migration.version}.`);
+    appliedNow.push(migration.version);
+  }
+  return appliedNow;
+}
+
+export async function migrate(options: MigrationOptions = {}): Promise<string[]> {
+  const pool = createMigrationPool(resolvedMigrationUrl);
+  try {
+    return await runMigrations(pool, options);
   } finally {
-    await migrationPool.end();
+    await pool.end();
   }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  migrate().catch((error) => {
+  migrate({ baselineChecksums: process.argv.includes('--baseline-checksums') }).catch((error) => {
     console.error('Database migration failed:', error);
     process.exitCode = 1;
   });

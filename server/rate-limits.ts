@@ -253,7 +253,7 @@ export function createApiIpRateLimiter(
     limit,
     standardHeaders: 'draft-8',
     legacyHeaders: false,
-    message: { error: 'rate_limit_exceeded' },
+    message: rateLimitExceededMessage,
     skip: (request) =>
       request.method === 'GET' &&
       (request.path === '/transparency' || request.path === '/_healthcheck'),
