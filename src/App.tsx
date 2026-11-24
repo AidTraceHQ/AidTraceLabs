@@ -7,20 +7,9 @@ import {
   throwFreighterError,
   waitForFreighter,
 } from './freighter';
-import {
-  describeNetworkEnvironment,
-  readNetworkPreference,
-  writeNetworkPreference,
-} from './network-preference';
-import { readThemePreference, writeThemePreference, type Theme } from './theme-preference';
-import { localDateString } from './date';
-import { createToastScheduler } from './toast';
-import {
-  HORIZON_ACTIVITY_PAGE_SIZE,
-  mergeActivityItems,
-  parseHorizonActivityPage,
-  type HorizonActivityRecord,
-} from './activity';
+import { readNetworkPreference, writeNetworkPreference } from './network-preference';
+import { formatReceipt } from './receipt';
+import { formatAmount, formatDate, formatDisplayAmount, getMessage } from './localization';
 import {
   Activity,
   ArrowDownToLine,
@@ -125,21 +114,17 @@ const short = (value: string, left = 7, right = 5) =>
   value && value.length > left + right + 1
     ? value.slice(0, left) + '…' + value.slice(-right)
     : value || '—';
-const formatAmount = (value: string) => {
-  const [whole, fraction = ''] = value.split('.');
-  return BigInt(whole || '0').toLocaleString() + (fraction ? '.' + fraction : '');
-};
 const messageOf = (e: unknown) =>
   e instanceof Error ? e.message : 'Something went wrong. Please try again.';
-const labelStatus = (status: Verification) =>
+const labelStatus = (status: Verification, locale?: string) =>
   ({
-    verified: 'Verified on-chain',
-    mismatch: 'Mismatch',
-    'not-found': 'Not found',
-    unverified: 'Unverified',
-    pending: 'Checking…',
-    voided: 'Voided',
-  })[status] || 'Unverified';
+    verified: getMessage('verifiedOnChain', locale),
+    mismatch: getMessage('mismatch', locale),
+    'not-found': getMessage('notFound', locale),
+    unverified: getMessage('unverified', locale),
+    pending: getMessage('checking', locale),
+    voided: getMessage('voided', locale),
+  })[status] || getMessage('unverified', locale);
 
 function mismatchDetails(record: AidRecord) {
   const verification = record.verification;
@@ -249,6 +234,7 @@ function useDialogFocus(
 }
 
 export default function App() {
+  const locale = navigator.language || 'en-US';
   const [session, setSession] = useState<Session | null>(null);
   const [network, setNetwork] = useState<Network>(readNetworkPreference);
   const [page, setPage] = useState<'transparency' | 'activity' | 'beneficiary' | 'admin'>(
@@ -348,25 +334,16 @@ export default function App() {
   const [roleValue, setRoleValue] = useState<Role>('organization');
   const [auditAction, setAuditAction] = useState('all');
   const [auditSearch, setAuditSearch] = useState('');
+  const [auditAddress, setAuditAddress] = useState('');
+  const [auditRecordId, setAuditRecordId] = useState('');
   const [voidReason, setVoidReason] = useState('');
   const pageSize = 10;
   const transparencyRequestId = useRef(0);
-  const ledgerSeenCursors = useRef(new Set<string>());
-  const auditSeenCursors = useRef(new Set<string>());
-  const rolesSeenCursors = useRef(new Set<string>());
-  const auditCursorRef = useRef<string | null>(null);
-  const rolesCursorRef = useRef<string | null>(null);
-  const auditRequestInFlight = useRef(false);
-  const rolesRequestInFlight = useRef(false);
-  const formDialogRef = useRef<HTMLDivElement>(null);
-  const detailDialogRef = useRef<HTMLElement>(null);
-  const closeForm = useCallback(() => {
-    if (formIsDirty && !window.confirm('You have unsaved changes. Discard them?')) return;
-    setShowForm(false);
-  }, [formIsDirty]);
-  const closeDetail = useCallback(() => {
-    setSelected(null);
-    setRecordConflictId(null);
+  const auditRequestId = useRef(0);
+
+  const notify = useCallback((text: string) => {
+    setToast(text);
+    window.setTimeout(() => setToast(''), 3600);
   }, []);
   useDialogFocus(showForm, formDialogRef, closeForm, '#add-record');
   useDialogFocus(!!selected, detailDialogRef, closeDetail, `[data-record-id="${selected?.id}"]`);
@@ -488,49 +465,28 @@ export default function App() {
     setTheme(nextTheme);
     writeThemePreference(nextTheme);
   }
-  const loadAudit = useCallback(
-    async (options: { append?: boolean } = {}) => {
-      if (!session || session.role !== 'admin') return;
-      if (auditRequestInFlight.current) return;
-      auditRequestInFlight.current = true;
-      setAuditLoading(true);
-      const params = new URLSearchParams();
-      if (auditAction !== 'all') params.set('action', auditAction);
-      if (auditSearch.trim()) params.set('q', auditSearch.trim());
-      const query = params.toString();
-      const append = options.append === true;
-      if (!append) {
-        auditSeenCursors.current.clear();
-        auditCursorRef.current = null;
-        setAuditCursor(null);
-        setAuditHasMore(false);
-      }
-      try {
-        const r = await api.getPage<AuditItem>(
-          '/api/audit' + (query ? '?' + query : ''),
-          'entries',
-          {
-            limit: 20,
-            cursor: append ? auditCursorRef.current : null,
-            seenCursors: auditSeenCursors.current,
-          },
-        );
-        const entries = r.data.entries || [];
-        const next = typeof r.data.nextCursor === 'string' ? r.data.nextCursor : null;
-        setAudit((previous) => (append ? [...previous, ...entries] : entries));
+  const loadAudit = useCallback(async () => {
+    if (!session || session.role !== 'admin') return;
+    const requestId = ++auditRequestId.current;
+    const params = new URLSearchParams();
+    if (auditAction !== 'all') params.set('action', auditAction);
+    if (auditSearch.trim()) params.set('q', auditSearch.trim());
+    if (auditAddress.trim()) params.set('address', auditAddress.trim());
+    if (auditRecordId.trim()) params.set('recordId', auditRecordId.trim());
+    const query = params.toString();
+    try {
+      const r = await api.getAllPages<AuditItem>(
+        '/api/audit' + (query ? '?' + query : ''),
+        'entries',
+      );
+      if (requestId === auditRequestId.current) {
+        setAudit(r.data.entries || []);
         setAuditActionOptions(r.data.facets?.actions || []);
-        setAuditHasMore(r.data.hasMore === true);
-        auditCursorRef.current = next;
-        setAuditCursor(next);
-      } catch (e) {
-        setError(messageOf(e));
-      } finally {
-        auditRequestInFlight.current = false;
-        setAuditLoading(false);
       }
-    },
-    [session, auditAction, auditSearch],
-  );
+    } catch (e) {
+      if (requestId === auditRequestId.current) setError(messageOf(e));
+    }
+  }, [session, auditAction, auditSearch, auditAddress, auditRecordId]);
   const restoreSession = useCallback(async () => {
     try {
       const r = await api.get<{ session: Session | null }>('/api/me');
@@ -1158,12 +1114,14 @@ export default function App() {
       audit.filter(
         (a) =>
           (auditAction === 'all' || a.action === auditAction) &&
+          (!auditAddress.trim() || a.address === auditAddress.trim()) &&
+          (!auditRecordId.trim() || a.recordId === auditRecordId.trim()) &&
           [a.summary, a.address, a.recordId || '']
             .join(' ')
             .toLowerCase()
             .includes(auditSearch.toLowerCase()),
       ),
-    [audit, auditAction, auditSearch],
+    [audit, auditAction, auditSearch, auditAddress, auditRecordId],
   );
   const verified = records.filter((r) => r.status === 'verified' && !r.voidedAt);
   const pageCount = Math.max(1, Math.ceil((ledgerTotal || filteredAid.length) / pageSize));
@@ -1238,6 +1196,16 @@ export default function App() {
     } catch (e) {
       setError(messageOf(e));
     }
+  }
+
+  function downloadReceipt(record: AidRecord) {
+    const text = formatReceipt(record);
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `aidtrace-receipt-${record.id.slice(0, 8).replace(/[^a-zA-Z0-9-]/g, '') || 'record'}.txt`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   return (
@@ -1783,7 +1751,7 @@ export default function App() {
                           {item.amount} {item.asset}
                         </td>
                         <td>{item.counterparty}</td>
-                        <td>{item.date ? new Date(item.date).toLocaleString() : '—'}</td>
+                        <td>{item.date ? formatDate(item.date, locale) : '—'}</td>
                         <td>{item.status}</td>
                         <td>
                           {item.publishedRecord ? (
@@ -1992,7 +1960,7 @@ export default function App() {
                     <tr key={item.address}>
                       <td>{short(item.address)}</td>
                       <td>{item.role}</td>
-                      <td>{item.updatedAt ? new Date(item.updatedAt).toLocaleString() : '—'}</td>
+                      <td>{item.updatedAt ? formatDate(item.updatedAt, locale) : '—'}</td>
                       <td>{short(item.updatedBy)}</td>
                       <td>
                         <button
@@ -2049,6 +2017,56 @@ export default function App() {
                   <option key={action}>{action}</option>
                 ))}
               </select>
+              <label className="search">
+                <Search size={15} />
+                <input
+                  aria-label="Filter audit address"
+                  placeholder="Wallet address"
+                  value={auditAddress}
+                  onChange={(event) => setAuditAddress(event.target.value)}
+                />
+              </label>
+              {auditAddress && (
+                <button
+                  className="button secondary compact"
+                  type="button"
+                  onClick={() => setAuditAddress('')}
+                >
+                  Clear address
+                </button>
+              )}
+              <label className="search">
+                <Search size={15} />
+                <input
+                  aria-label="Filter audit record ID"
+                  placeholder="Record ID"
+                  value={auditRecordId}
+                  onChange={(event) => setAuditRecordId(event.target.value)}
+                />
+              </label>
+              {auditRecordId && (
+                <button
+                  className="button secondary compact"
+                  type="button"
+                  onClick={() => setAuditRecordId('')}
+                >
+                  Clear record ID
+                </button>
+              )}
+              {(auditAction !== 'all' || auditSearch || auditAddress || auditRecordId) && (
+                <button
+                  className="button secondary compact"
+                  type="button"
+                  onClick={() => {
+                    setAuditAction('all');
+                    setAuditSearch('');
+                    setAuditAddress('');
+                    setAuditRecordId('');
+                  }}
+                >
+                  Reset filters
+                </button>
+              )}
             </div>
             <div className="table-wrap">
               <table>
@@ -2068,7 +2086,7 @@ export default function App() {
                       <td>{item.summary}</td>
                       <td>{short(item.address)}</td>
                       <td>{item.recordId || '—'}</td>
-                      <td>{new Date(item.createdAt).toLocaleString()}</td>
+                      <td>{formatDate(item.createdAt, locale)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -2346,9 +2364,11 @@ export default function App() {
           >
             <div className="modal-head">
               <div>
-                <p className="eyebrow">AID RECORD DETAILS</p>
+                <p className="eyebrow">{getMessage('recordDetails', locale)}</p>
                 <h2 id="record-heading">{selected.recipient}</h2>
-                <p className="muted">{selected.purpose}</p>
+                <p className="muted">
+                  {getMessage('purpose', locale)}: {selected.purpose}
+                </p>
               </div>
               <button className="icon-button" aria-label="Close details" onClick={closeDetail}>
                 <X size={17} />
@@ -2371,28 +2391,28 @@ export default function App() {
             )}
             <dl className="detail-list">
               <div>
-                <dt>Amount</dt>
+                <dt>{getMessage('amount', locale)}</dt>
                 <dd>
-                  {selected.amount} {selected.asset}
+                  {formatDisplayAmount(selected.amount, locale)} {selected.asset}
                   {selected.assetIssuer ? ` · issuer ${short(selected.assetIssuer)}` : ''}
                 </dd>
               </div>
               <div>
-                <dt>Beneficiary</dt>
-                <dd>{selected.recipientAddress || 'Pseudonymous by default'}</dd>
+                <dt>{getMessage('beneficiary', locale)}</dt>
+                <dd>{selected.recipientAddress || getMessage('beneficiaryWithheld', locale)}</dd>
               </div>
               <div>
-                <dt>Organization</dt>
+                <dt>{getMessage('organization', locale)}</dt>
                 <dd>{selected.organizationName || selected.organization}</dd>
               </div>
               <div>
-                <dt>Network and date</dt>
+                <dt>{getMessage('networkAndDate', locale)}</dt>
                 <dd>
-                  {selected.network} · {selected.date}
+                  {selected.network} · {formatDate(selected.date, locale)}
                 </dd>
               </div>
               <div className="transaction-detail">
-                <dt>Transaction</dt>
+                <dt>{getMessage('transaction', locale)}</dt>
                 <dd className="transaction-value">
                   {selected.txHash && (
                     <span className="transaction-hash-row">
@@ -2400,8 +2420,8 @@ export default function App() {
                       <button
                         className="icon-button copy-transaction"
                         type="button"
-                        aria-label="Copy transaction hash"
-                        title="Copy transaction hash"
+                        aria-label={getMessage('copyTransactionHash', locale)}
+                        title={getMessage('copyTransactionHash', locale)}
                         onClick={() => void copyTransactionHash(selected.txHash)}
                       >
                         <Copy size={14} />
@@ -2410,27 +2430,27 @@ export default function App() {
                   )}
                   {!selected.txHash &&
                     (!selected.recipientConsent && selected.verification
-                      ? 'Hidden for beneficiary privacy'
-                      : 'No transaction hash supplied')}
+                      ? getMessage('transactionHidden', locale)
+                      : getMessage('noTransactionHash', locale))}
                 </dd>
               </div>
               <div>
-                <dt>Created</dt>
+                <dt>{getMessage('created', locale)}</dt>
                 <dd>
-                  {selected.createdAt ? new Date(selected.createdAt).toLocaleString() : '—'} by{' '}
+                  {selected.createdAt ? formatDate(selected.createdAt, locale) : '—'} by{' '}
                   {short(selected.createdBy)}
                 </dd>
               </div>
               <div>
-                <dt>Status</dt>
+                <dt>{getMessage('status', locale)}</dt>
                 <dd className={`status ${selected.status}`}>
                   <i />
-                  {labelStatus(selected.status)}
+                  {labelStatus(selected.status, locale)}
                 </dd>
               </div>
               {selected.verification?.reason && (
                 <div>
-                  <dt>Verification note</dt>
+                  <dt>{getMessage('verificationNote', locale)}</dt>
                   <dd>{selected.verification.reason}</dd>
                 </div>
               )}
@@ -2444,14 +2464,14 @@ export default function App() {
               )}
               {selected.voidReason && (
                 <div>
-                  <dt>Void reason</dt>
+                  <dt>{getMessage('voidReason', locale)}</dt>
                   <dd>{selected.voidReason}</dd>
                 </div>
               )}
             </dl>
             {selectedDifferences.length > 0 && (
               <div className="diff-box">
-                <b>Mismatch details</b>
+                <b>{getMessage('mismatchDetails', locale)}</b>
                 <ul>
                   {selectedDifferences.map((difference, index) => (
                     <li key={index}>{difference}</li>
@@ -2463,11 +2483,11 @@ export default function App() {
                       <div className="mismatch-row" key={detail.field}>
                         <b>{detail.field}</b>
                         <span>
-                          <small>Expected</small>
+                          <small>{getMessage('expected', locale)}</small>
                           {detail.expected}
                         </span>
                         <span>
-                          <small>Found</small>
+                          <small>{getMessage('found', locale)}</small>
                           {detail.found}
                         </span>
                       </div>
@@ -2477,6 +2497,14 @@ export default function App() {
               </div>
             )}
             <div className="detail-actions">
+              <button
+                className="button secondary compact receipt-download"
+                type="button"
+                onClick={() => downloadReceipt(selected)}
+              >
+                <ArrowDownToLine size={14} />
+                Download receipt
+              </button>
               {selected.txHash && (
                 <a
                   className="explorer-link"
@@ -2484,7 +2512,7 @@ export default function App() {
                   target="_blank"
                   rel="noreferrer"
                 >
-                  View on Stellar Expert <ExternalLink size={13} />
+                  {getMessage('viewOnStellarExpert', locale)} <ExternalLink size={13} />
                 </a>
               )}
               <button
