@@ -15,6 +15,7 @@ import {
 import { readThemePreference, writeThemePreference, type Theme } from './theme-preference';
 import { localDateString } from './date';
 import { createToastScheduler } from './toast';
+import { shouldRestartFromFirstPage } from './pagination';
 import {
   HORIZON_ACTIVITY_PAGE_SIZE,
   mergeActivityItems,
@@ -375,7 +376,7 @@ export default function App() {
   const notify = useCallback((text: string) => toastScheduler.show(text), [toastScheduler]);
   useEffect(() => () => toastScheduler.cancel(), [toastScheduler]);
   const fetchLedgerPage = useCallback(
-    async (index: number, cursors: Array<string | null>) => {
+    async (index: number, cursors: Array<string | null>): Promise<void> => {
       const requestId = ++transparencyRequestId.current;
       const params = new URLSearchParams();
       if (search.trim()) params.set('q', search.trim());
@@ -396,6 +397,12 @@ export default function App() {
           { limit: pageSize, cursor, seenCursors: ledgerSeenCursors.current },
         );
         if (requestId !== transparencyRequestId.current) return;
+        if (shouldRestartFromFirstPage(index, result.data.records?.length ?? 0)) {
+          // The requested page no longer exists (records were removed), so start over.
+          ledgerSeenCursors.current.clear();
+          await fetchLedgerPage(0, resetCursorStack());
+          return;
+        }
         const next = typeof result.data.nextCursor === 'string' ? result.data.nextCursor : null;
         setRecords(result.data.records || []);
         setLedgerTotal(typeof result.data.total === 'number' ? result.data.total : 0);
