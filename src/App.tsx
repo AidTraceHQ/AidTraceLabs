@@ -15,6 +15,7 @@ import {
 import { readThemePreference, writeThemePreference, type Theme } from './theme-preference';
 import { localDateString } from './date';
 import { createToastScheduler } from './toast';
+import { shouldRestartFromFirstPage } from './pagination';
 import {
   Activity,
   ArrowDownToLine,
