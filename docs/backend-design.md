@@ -19,7 +19,7 @@ The Vite development server listens on port 5173 and proxies `/api` to port 3001
 
 ## Data Model
 
-All application tables use PostgreSQL. Migration `001_initial_schema.sql` creates the tables and indexes below. The migration runner separately creates `schema_migrations` to track applied files. Migration `002_unique_network_tx_hash.sql` normalizes transaction hashes and adds the unique network/hash constraint. Migration `003_wallet_roles_updated_index.sql` adds an index for the admin role-list ordering. No foreign key declares `ON DELETE CASCADE`; PostgreSQL's default referential behavior applies.
+All application tables use PostgreSQL. Migration `001_initial_schema.sql` creates the tables and indexes below. The migration runner separately creates `schema_migrations` to track applied files. Migration `002_unique_network_tx_hash.sql` normalizes transaction hashes and adds the unique network/hash constraint. Migration `003_wallet_roles_updated_index.sql` adds an index for the admin role-list ordering. Migration `005_record_pagination_indexes.sql` adds the ordering index used by filtered record pages. No foreign key declares `ON DELETE CASCADE`; PostgreSQL's default referential behavior applies.
 
 ### `schema_migrations`
 
@@ -122,7 +122,7 @@ Indexes: `challenges_wallet_expiry_idx(wallet_address, expires_at, used_at)`, th
 
 The void-field check requires `void_reason`, `voided_by`, and `voided_at` to be either all NULL or all populated. Migration 002 converts blank hashes to NULL, lowercases nonblank hashes, and adds `UNIQUE (network, tx_hash)`; PostgreSQL permits multiple NULLs under this unique constraint. Its preflight groups case-insensitively by network/hash and aborts with the duplicate rows if conflicts exist.
 
-Indexes: `aid_records_created_idx(created_at DESC, id DESC)`, `aid_records_organization_created_idx(organization_wallet, created_at DESC, id DESC)`, `aid_records_recipient_created_idx(recipient_wallet, created_at DESC, id DESC)`, `aid_records_network_status_date_idx(network, status, disbursement_date, id)`, the primary key, and the migration-002 unique index on `(network, tx_hash)`.
+Indexes: `aid_records_created_idx(created_at DESC, id DESC)`, `aid_records_organization_created_idx(organization_wallet, created_at DESC, id DESC)`, `aid_records_recipient_created_idx(recipient_wallet, created_at DESC, id DESC)`, `aid_records_network_status_date_idx(network, status, disbursement_date, id)`, `aid_records_network_status_created_idx(network, status, created_at DESC, id DESC)` (migration 005), the primary key, and the migration-002 unique index on `(network, tx_hash)`.
 
 ### `verification_results`
 
@@ -255,7 +255,7 @@ Verified and mismatch results may be cached for one hour. Pending and other stat
 - Set `DATABASE_URL` for the `aidtrace_runtime` pool and `DATABASE_URL_UNPOOLED` for the `aidtrace_migration` identity. The runtime role must not own or inherit write access to `audit_events`. Use a direct (non-pooled) endpoint for migration where available. Remote connection examples should use `sslmode=verify-full`.
 - Configure distinct 32-byte-minimum `SESSION_SECRET` and `PSEUDONYM_SECRET`; exact `PUBLIC_APP_ORIGIN` and `CORS_ALLOWED_ORIGINS`; `PORT`; network-specific Horizon URLs; and optionally `DEFAULT_STELLAR_NETWORK`. Bootstrap the first admin by setting a public Stellar `ADMIN_WALLET` and running `npm run db:seed-admin`; there is no public bootstrap route.
 - Integration tests use `TEST_DATABASE_URL` and require `TEST_DATABASE_BRANCH=test`, `TEST_DATABASE_URL_UNPOOLED`, and `PRODUCTION_DATABASE_HOST`. The test setup rejects a test endpoint that matches the production hostname or runtime endpoint. Use Neon dev for local runtime and a separate Neon test branch for integration tests; never target production.
-- `npm run db:migrate` applies ordered `NNN_name.sql` migrations and records versions in `schema_migrations`. Migration 002 checks for case-insensitive duplicate hashes before creating the unique index and aborts without applying that migration if duplicates exist. Migration 003 adds the `wallet_roles` ordering index used by admin role listings.
+- `npm run db:migrate` applies ordered `NNN_name.sql` migrations and records versions in `schema_migrations`. Migration 002 checks for case-insensitive duplicate hashes before creating the unique index and aborts without applying that migration if duplicates exist. Migration 003 adds the `wallet_roles` ordering index used by admin role listings. Migration 005 adds the ordering index used by filtered record pages.
 - For production, serve the built Vite assets behind HTTPS with Express behind the same-origin `/api` proxy where possible. The cookie is Secure and SameSite=Lax. A cross-site deployment requires a separate cookie/CORS review.
 - Configure PostgreSQL access restrictions, least-privilege app/migration identities, backup retention, and tested restore procedures before production operation. No production deployment, backup/restore exercise, or browser-level Freighter cookie verification is claimed by this design.
 
