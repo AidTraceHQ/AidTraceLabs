@@ -119,6 +119,12 @@ async function request<T>(
   }
 }
 
+/**
+ * Fetches every page of a collection. Summary and facets are computed by the
+ * server on the first page only; they are carried forward from that first page
+ * so they are not re-requested (and recomputed) per cursor page. Subsequent
+ * pages are requested with `includeAggregates=false` when the server supports it.
+ */
 async function getAllPages<TItem>(
   path: string,
   collection: CollectionKey,
@@ -128,16 +134,20 @@ async function getAllPages<TItem>(
   const url = new URL(path, window.location.origin);
   url.searchParams.set('limit', '100');
   let cursor: string | null = null;
+  let firstPage: PageEnvelope & Partial<Record<CollectionKey, TItem[]>> | null = null;
   let finalPage: PageEnvelope & Partial<Record<CollectionKey, TItem[]>>;
 
   while (true) {
     if (cursor) url.searchParams.set('cursor', cursor);
     else url.searchParams.delete('cursor');
+    if (firstPage) url.searchParams.set('includeAggregates', 'false');
+    else url.searchParams.delete('includeAggregates');
     const response = await request<PageEnvelope & Partial<Record<CollectionKey, TItem[]>>>(
       'GET',
       url.pathname + url.search,
     );
     const page = response.data;
+    if (!firstPage) firstPage = page;
     finalPage = page;
     const items = page[collection];
     if (!Array.isArray(items)) {
@@ -154,7 +164,19 @@ async function getAllPages<TItem>(
     if (cursor) seenCursors.add(cursor);
     if (!cursor || page.hasMore !== true) break;
   }
-  return { data: { ...finalPage, [collection]: combined } };
+  // Retain first-page aggregate metadata (summary, facets, total) for the combined view.
+  const aggregates: PageEnvelope = {
+    total: firstPage?.total,
+    facets: firstPage?.facets,
+    summary: firstPage?.summary,
+  };
+  return {
+    data: {
+      ...finalPage,
+      ...aggregates,
+      [collection]: combined,
+    },
+  };
 }
 
 async function getPage<TItem>(

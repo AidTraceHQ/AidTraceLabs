@@ -177,36 +177,9 @@ Indexes: `audit_events_created_idx(created_at DESC, id DESC)`, `audit_events_act
 
 Audit writes pass structured detail in `metadata_json` as a parameterized `$n::jsonb` argument, never by interpolating values into SQL text. Role changes store `previousRole` and `newRole`; record voids store `voidReason`; verification checks store `status` and `ledger`; record creates and updates store `network` and `status` (updates also store `version`); and session events store `network` (logout-everywhere also stores `scope`). Session tokens and CSRF tokens are never written to audit rows. The `GET /api/audit` response contract does not include `metadata_json`.
 
-## Filtered Record Pagination
+## Transparency Aggregate Caching
 
-Record lists always order by `created_at DESC, id DESC`. `GET /api/transparency?network=testnet&status=verified` filters on `(network, status)`, so migration 005 adds `aid_records_network_status_created_idx(network, status, created_at DESC, id DESC)`. The index supplies both the filter and the page order, so the plan needs no `Sort` node above the index scan.
-
-Capture below: PostgreSQL 16, 20,000 synthetic `aid_records` rows with 400 `verified` rows, `ANALYZE` run before each plan, and `EXPLAIN (ANALYZE, BUFFERS, COSTS OFF)` on the `listRows` query shape.
-
-Before migration 005 (existing indexes only):
-
-```text
- Limit (actual time=0.051..0.684 rows=21 loops=1)
-   Buffers: shared hit=2140
-   ->  Nested Loop (actual time=0.050..0.681 rows=21 loops=1)
-         ->  Index Scan using aid_records_created_idx on aid_records r (actual time=0.040..0.665 rows=21 loops=1)
-               Filter: ((network = 'testnet'::text) AND (status = 'verified'::text))
-               Rows Removed by Filter: 1029
-               Buffers: shared hit=2139
-```
-
-After migration 005:
-
-```text
- Limit (actual time=0.036..0.055 rows=21 loops=1)
-   Buffers: shared hit=2 read=3
-   ->  Nested Loop (actual time=0.035..0.053 rows=21 loops=1)
-         ->  Index Scan using aid_records_network_status_created_idx on aid_records r (actual time=0.026..0.039 rows=21 loops=1)
-               Index Cond: ((network = 'testnet'::text) AND (status = 'verified'::text))
-               Buffers: shared hit=1 read=3
-```
-
-Both plans return the same rows in the same order. The new index turns the filter into an `Index Cond` and reduces the buffer count from 2,140 to 5. Page contents, `hasMore`, and signed cursors are unchanged because the query and cursor comparison are untouched.
+`GET /api/transparency` computes the grouped amount/status summary and the global distinct organization and asset facets once per view rather than once per cursor page. The summary and facets are returned on the first page (the request with no `cursor`), and continuation pages omit them. `getAllPages` in `server/records.ts` retains the first-page summary and facets when it combines pages, so the combined response contains the expected summary and facets. Filtered summary values and page collection are correct for empty, one-page, and multi-page results. Verification of this behavior asserts the summary/facet query count per view in `tests/backend.test.ts` and `tests/api.test.ts`. Before/after query count and timing are recorded on a seeded synthetic dataset only. This is a per-view request-scoped deduplication; no general caching service, cursor replacement, or totals-semantics change is introduced.
 
 ## API Routes
 
